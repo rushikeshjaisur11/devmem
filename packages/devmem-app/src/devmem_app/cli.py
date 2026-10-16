@@ -30,6 +30,10 @@ def main(argv=None) -> int:
     s = sub.add_parser("find", help="search across all onboarded repos"); s.add_argument("query")
     s = sub.add_parser("publish", help="write .devmem/knowledge + AGENTS.md block into a repo")
     s.add_argument("path"); s.add_argument("--commit", action="store_true", help="commit on branch devmem/knowledge-sync")
+    s = sub.add_parser("verify", help="run detected install/lint/test commands and record the result")
+    s.add_argument("path"); s.add_argument("--include-install", action="store_true")
+    s = sub.add_parser("flaky", help="rerun the suite to find flaky tests -> .devmem/flaky.txt")
+    s.add_argument("path"); s.add_argument("--runs", type=int, default=3)
     a = p.parse_args(argv)
 
     if a.cmd == "add":
@@ -51,6 +55,14 @@ def main(argv=None) -> int:
         print(f"published {len(files)} files")
         if a.commit:
             print("committed on", commit_branch(a.path))
+    elif a.cmd == "verify":
+        from . import commands
+        idx = index_repo(a.path)
+        for k, v in commands.verify(a.path, idx, a.include_install).items():
+            print(f"{k}: {v['cmd']}  verified={v.get('verified')} {v.get('note', '')}")
+    elif a.cmd == "flaky":
+        from . import commands
+        print("flaky:", commands.detect_flaky(a.path, a.runs) or "none")
     elif a.cmd == "find":
         for name, path in _ws()["repos"].items():
             try:

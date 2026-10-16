@@ -97,6 +97,32 @@ def cmd_diffcheck(ix, a) -> int:
     return 0
 
 
+def _changed_paths(a) -> list[str]:
+    if a.files:
+        return a.files
+    from . import diffcheck as dc
+    return [f.path for f in dc.collect_diff(dc.repo_root(), a.base, False) if f.status != "D"]
+
+
+def cmd_tests_for(ix: Index, a) -> int:
+    from .check import tests_for
+    ids, cmd = tests_for(ix, _changed_paths(a))
+    if not ids:
+        print("no mapped tests; run the full suite (see .devmem/knowledge/commands.md)")
+        return 0
+    print(cmd)
+    return 0
+
+
+def cmd_check(ix: Index, a) -> int:
+    from .check import run_check
+    paths = _changed_paths(a)
+    if not paths:
+        print("no changed files")
+        return 0
+    return run_check(ix, paths)
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="devmem", description="Code knowledge for coding agents")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -110,6 +136,12 @@ def main(argv=None) -> int:
     s.add_argument("target"); s.set_defaults(fn=cmd_impact)
     s = sub.add_parser("helpers", help="reusable utilities already in the repo")
     s.add_argument("-n", "--limit", type=int, default=30); s.set_defaults(fn=cmd_helpers)
+    for nm, fn, hp in (("tests-for", cmd_tests_for, "test command for tests affected by changed files"),
+                       ("check", cmd_check, "lint/types/affected tests on changed files, compact output")):
+        s = sub.add_parser(nm, help=hp)
+        s.add_argument("files", nargs="*", help="default: files changed vs HEAD")
+        s.add_argument("--base", help="changed files in BASE...HEAD instead")
+        s.set_defaults(fn=fn)
     s = sub.add_parser("diffcheck", help="minimal-change violations in the current diff")
     s.add_argument("--staged", action="store_true", help="check staged changes only (pre-commit)")
     s.add_argument("--base", help="compare BASE...HEAD (CI)")

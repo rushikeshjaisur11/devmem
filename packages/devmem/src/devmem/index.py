@@ -129,6 +129,47 @@ class Index:
         return {"table": tname, "readers": readers, "writers": writers,
                 "files": sorted({x.split("#")[0] for x in readers + writers})}
 
+    # ---- tests ----
+    def _module_paths(self, module: str) -> list[str]:
+        suf = (module.replace(".", "/") + ".py", module.replace(".", "/") + "/__init__.py")
+        return [f for f in self.data["files"] if any(f == x or f.endswith("/" + x) for x in suf)]
+
+    def tests_for_files(self, paths: list[str]) -> dict[str, list[str]]:
+        """{test_file: [test qualnames]} covering the given changed files (direct + impact tests; import fallback)."""
+        tests_by_file = defaultdict(list)
+        for s in self.symbols.values():
+            if s["is_test"]:
+                tests_by_file[s["file"]].append(s)
+        picked: dict[str, set[str]] = defaultdict(set)
+        for path in paths:
+            if path in tests_by_file:
+                picked[path] |= {s["qualname"] for s in tests_by_file[path]}
+                continue
+            found = False
+            for s in self.symbols.values():
+                if s["file"] == path and s["kind"] != "module":
+                    for t in self.impact(s["id"]).get("tests", []):
+                        f, q = t.split("#", 1)
+                        picked[f].add(q)
+                        found = True
+            if not found:  # fallback: test files that import this module
+                for tf, ts in tests_by_file.items():
+                    for imp in self.data["files"][tf].get("imports", []):
+                        mods = {imp["module"], f"{imp['module']}.{imp['name']}" if imp["name"] else imp["module"]}
+                        if any(path in self._module_paths(m) for m in mods):
+                            picked[tf] |= {t["qualname"] for t in ts}
+        return {f: sorted(q) for f, q in picked.items()}
+
+    @staticmethod
+    def pytest_ids(selection: dict[str, list[str]], collapse_over: int = 10) -> list[str]:
+        ids = []
+        for f, quals in sorted(selection.items()):
+            if len(quals) > collapse_over:
+                ids.append(f)
+            else:
+                ids += [f + "::" + q.replace(".", "::") for q in quals]
+        return ids
+
     def helpers(self, limit: int = 30) -> list[tuple[dict, int]]:
         """Reusable utilities: non-test functions called from >= 2 distinct files."""
         out = []
