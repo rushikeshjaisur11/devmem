@@ -1,0 +1,16 @@
+[project]
+name = "devmem-app"
+version = "0.1.0"
+description = "Indexer, graph and (later) publisher/UI for devmem."
+requires-python = ">=3.10"
+dependencies = ["devmem", "sqlglot>=25"]
+
+[project.scripts]
+devmem-app = "devmem_app.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

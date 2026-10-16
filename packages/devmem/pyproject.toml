@@ -1,0 +1,16 @@
+[project]
+name = "devmem"
+version = "0.1.0"
+description = "Agent-facing CLI: reads committed .devmem/ knowledge, no network at runtime."
+requires-python = ">=3.10"
+dependencies = ["PyYAML>=6"]
+
+[project.scripts]
+devmem = "devmem.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
