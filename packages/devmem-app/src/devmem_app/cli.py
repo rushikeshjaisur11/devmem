@@ -36,6 +36,10 @@ def main(argv=None) -> int:
     s.add_argument("path"); s.add_argument("--runs", type=int, default=3)
     s = sub.add_parser("hygiene", help="run ruff/vulture/radon/deptry/bandit/sqlfluff + clones, publish hygiene.md")
     s.add_argument("path")
+    s = sub.add_parser("impact-column", help="who is affected if table.column changes, across all onboarded repos")
+    s.add_argument("column", help="db.table.column")
+    s = sub.add_parser("schema", help="schema snapshots"); s.add_argument("action", choices=["import"])
+    s.add_argument("repo"); s.add_argument("csv", help="CSV with columns table,column[,type]")
     s = sub.add_parser("clones", help="token-level duplicate code across all onboarded repos")
     a = p.parse_args(argv)
 
@@ -54,7 +58,7 @@ def main(argv=None) -> int:
     elif a.cmd == "publish":
         from .publisher import commit_branch, publish
         idx = index_repo(a.path)
-        files = publish(a.path, idx)
+        files = publish(a.path, idx, _ws()["repos"])
         print(f"published {len(files)} files")
         if a.commit:
             print("committed on", commit_branch(a.path))
@@ -71,8 +75,17 @@ def main(argv=None) -> int:
         from .publisher import publish
         idx = index_repo(a.path)
         h = hygiene.run_hygiene(a.path, idx)
-        publish(a.path, idx)
+        publish(a.path, idx, _ws()["repos"])
         print("hygiene:", h["counts"], {k: v for k, v in h["tools"].items() if v != "ok"} or "all tools ran")
+    elif a.cmd == "impact-column":
+        from devmem.lineage import column_impact, format_impact, split_column
+        from .lineage import combine
+        lin = combine({n: Path(p) for n, p in _ws()["repos"].items()})
+        sc = split_column(lin, a.column)
+        print(format_impact(column_impact(lin, *sc)) if sc else f"unknown column {a.column}")
+    elif a.cmd == "schema":
+        from .lineage import import_schema_csv
+        print(f"imported {import_schema_csv(Path(a.repo), Path(a.csv))} columns")
     elif a.cmd == "clones":
         from .clones import clones_for_repo, find_clones
         srcs = {}

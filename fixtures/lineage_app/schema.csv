@@ -1,0 +1,6 @@
+table,column,type
+mart.sales_daily,day,date
+mart.sales_daily,cid,int
+mart.sales_daily,cnt,int
+dim.customers,id,int
+dim.customers,name,string

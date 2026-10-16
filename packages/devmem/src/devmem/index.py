@@ -21,6 +21,15 @@ class Index:
     def __init__(self, data: dict, root: Path):
         self.data, self.root = data, root
         self.symbols = {s["id"]: s for s in data["symbols"]}
+        self.cochange: dict[str, list[tuple[str, int]]] = defaultdict(list)
+        hp = Path(root) / ".devmem/history.json"
+        if hp.exists():
+            try:
+                for c in json.loads(hp.read_text(encoding="utf-8")).get("cochange", []):
+                    self.cochange[c["a"]].append((c["b"], c["count"]))
+                    self.cochange[c["b"]].append((c["a"], c["count"]))
+            except Exception:
+                pass
         self.out = defaultdict(list)  # src -> edges
         self.inc = defaultdict(list)  # dst -> edges
         for e in data["edges"]:
@@ -121,7 +130,16 @@ class Index:
         res["tests"] = sorted(tests)
         res["files"] = sorted({i.split("#")[0] for k in ("hop1", "hop2") for i in (x["id"] for x in res[k])}
                               | {s["file"] for s in targets})
+        res["cochange"] = self._cochange_for(res["files"])
         return res
+
+    def _cochange_for(self, files: list[str], top: int = 5) -> list[str]:
+        score: dict[str, int] = defaultdict(int)
+        for f in files:
+            for other, n in self.cochange.get(f, []):
+                if other not in files:
+                    score[other] += n
+        return [f for f, _ in sorted(score.items(), key=lambda kv: (-kv[1], kv[0]))[:top]]
 
     def _table_impact(self, tname: str) -> dict:
         readers = sorted({e["src"] for e in self.inc.get(tname, []) if e["type"] == "reads"})

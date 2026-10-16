@@ -53,6 +53,13 @@ def cmd_outline(ix: Index, a) -> int:
 
 
 def cmd_impact(ix: Index, a) -> int:
+    from . import lineage
+    lin = lineage.load(ix.root)
+    if lin and not ix.resolve(a.target) and a.target not in lineage.known_tables(lin):
+        sc = lineage.split_column(lin, a.target)
+        if sc:
+            print(lineage.format_impact(lineage.column_impact(lin, *sc)))
+            return 0
     r = ix.impact(a.target)
     if "table" in r:
         print(f"{r['table']}\n  readers: {', '.join(r['readers']) or '-'}\n  writers: {', '.join(r['writers']) or '-'}")
@@ -64,6 +71,8 @@ def cmd_impact(ix: Index, a) -> int:
     for c in r["capped"]:
         print(f"capped: {c['symbol']} has {c['callers']} callers (widely used utility)")
     print("files: " + ", ".join(r["files"]))
+    if r.get("cochange"):
+        print("usually changes together with: " + ", ".join(r["cochange"]))
     return 0
 
 

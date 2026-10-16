@@ -31,6 +31,7 @@ CHECKS = {
     "api_signature_changes": "api_change",
     "duplicate_helpers": "duplicate",
     "lint_fixes_outside_changed_lines": "lint_fix",
+    "no_touch_paths": "no_touch",
 }
 DEFAULTS = {"diff_budget": {"max_changed_lines": 200, "max_files": 8}, "checks": {k: True for k in CHECKS}}
 NON_CODE = {".md", ".txt", ".rst", ".yaml", ".yml", ".json", ".toml", ".cfg", ".ini", ".sql", ".csv"}
@@ -50,6 +51,7 @@ class FileDiff:
     path: str
     status: str  # A, M, D
     hunks: list = field(default_factory=list)  # (old_start, old_count, new_start, new_count, removed, added)
+    ignored: bool = False  # matched .devmemignore: only the no_touch check looks at these
 
     @property
     def added(self): return sum(len(h[5]) for h in self.hunks)
@@ -106,7 +108,13 @@ def collect_diff(root: Path, base: str | None, staged: bool) -> list[FileDiff]:
                 continue
             files.append(FileDiff(p, "A", [[0, 0, 1, len(lines), [], lines]]))
     ig = Ignore.for_repo(root)
-    return [f for f in files if not f.path.startswith(".devmem/") and not ig.matches(f.path)]
+    keep = []
+    for f in files:
+        if f.path.startswith(".devmem/"):
+            continue
+        f.ignored = ig.matches(f.path)
+        keep.append(f)
+    return keep
 
 
 def load_config(root: Path) -> dict:
@@ -242,6 +250,15 @@ def _symbol_at(ix, path: str, lo: int, hi: int) -> str:
 def run_checks(root: Path, files: list[FileDiff], cfg: dict, base: str | None = None) -> list[Violation]:
     v: list[Violation] = []
     on = cfg["checks"]
+    if on.get("no_touch_paths", True):
+        from . import notouch
+        pats = notouch.patterns(root)
+        for f in files:
+            hit = notouch.matches(f.path, pats) if f.status in ("M", "D") else None
+            if hit:
+                v.append(Violation("no_touch", f.path, f"edits a no-touch path (matches `{hit}`): generated, vendored, "
+                                   "migration, lockfile or secret"))
+    files = [f for f in files if not f.ignored]
     try:
         ix = Index.load(root) if (root / INDEX_PATH).exists() else None
     except Exception:
@@ -267,6 +284,10 @@ def run_checks(root: Path, files: list[FileDiff], cfg: dict, base: str | None = 
                 x = parent[x]
             return x
 
+        for a_ in changed:
+            for b_, _n in ix.cochange.get(a_, []):
+                if b_ in changed:
+                    parent[find(a_)] = find(b_)
         for sid in _edited_symbols(ix, files):
             sym = ix.symbols[sid]
             related = set(ix.impact(sid).get("files", [])) | {c["file"] for c in ix.callees(sym)}

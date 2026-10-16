@@ -25,6 +25,7 @@ checks:
   api_signature_changes: true
   duplicate_helpers: true
   lint_fixes_outside_changed_lines: true
+  no_touch_paths: true
 """
 
 DEFAULT_RULES = """# Rules (global + repo)
@@ -74,10 +75,10 @@ steps:
 """
 
 AGENT_BLOCK = """## devmem (code knowledge)
-Read `.devmem/knowledge/map.md` first; run/test commands are in `commands.md`, known lint/dead-code state in `hygiene.md`, house patterns in `conventions.md`, reusable code in `helpers.md`; module details are in `.devmem/knowledge/modules/`.
+Read `.devmem/knowledge/map.md` first; run/test commands are in `commands.md`, known lint/dead-code state in `hygiene.md`, house patterns in `conventions.md`, reusable code in `helpers.md`, data in `lineage.md`, risky files in `history.md`; module details are in `.devmem/knowledge/modules/`.
 Do not read whole files to explore. Use the CLI (`pip install devmem`):
 - `devmem find "<concept>"` ranked hits; `devmem show <symbol>` one symbol; `devmem outline <file>`
-- `devmem impact <symbol|table>` callers, tests, dependents before changing it
+- `devmem impact <symbol|table|table.column>` callers, tests, dependents before changing it
 - `devmem helpers` reusable utilities; reuse them before writing new code
 - `devmem check` lint/types/affected tests with a short summary; `devmem tests-for` prints the test command
 - `devmem diffcheck` before every commit; fix what it reports (a justified exception: `devmem-allow: <check> <reason>` in the PR)
@@ -102,7 +103,7 @@ def _module_of(path: str) -> str:
     return parts[1] if parts[0] in ("src", "lib") and len(parts) > 2 else parts[0]
 
 
-def publish(root: str | Path, idx: dict) -> list[str]:
+def publish(root: str | Path, idx: dict, peers: dict | None = None) -> list[str]:
     root = Path(root).resolve()
     commit = idx.get("commit")
     written: list[str] = []
@@ -181,9 +182,23 @@ def publish(root: str | Path, idx: dict) -> list[str]:
         from .hygiene import render_hygiene_md
         _write(root, f"{k}/hygiene.md", render_hygiene_md(_json.loads(hp.read_text(encoding="utf-8"))), commit, written)
 
-    # no-touch.md
-    nt = ["# No-touch paths", "Agents must not edit these (generated, vendored, migrations, lockfiles, secrets)."]
-    nt += [f"- `{p}`" for p in ("migrations/", "vendor/", "*_pb2.py", "*.lock", ".env*", "dist/", "build/")]
+    # lineage.md (+ lineage.json, schemas)
+    from . import history as hist, lineage as lin_mod
+    if any(r.get("sql") or r.get("df_columns") for r in idx["files"].values()):
+        lin = lin_mod.write(root, idx)
+        peers_lin = lin_mod.combine({n: p for n, p in (peers or {}).items() if Path(p).resolve() != root}) if peers else None
+        _write(root, f"{k}/lineage.md", lin_mod.render_lineage_md(idx, lin, peers_lin, idx["repo"]), commit, written)
+
+    # history.md (needs git; hotspots, co-change)
+    h = hist.mine(root, idx)
+    if h["commits_mined"]:
+        _write(root, f"{k}/history.md", hist.render_history_md(h), commit, written)
+
+    # no-touch.md: defaults + detected + repo-owned .devmem/no-touch.txt
+    from devmem import notouch
+    nt = ["# No-touch paths", "Agents must not edit these (generated, vendored, migrations, lockfiles, secrets). "
+          "`devmem diffcheck` fails edits to them. Add your own in `.devmem/no-touch.txt`."]
+    nt += [f"- `{p}`" for p in notouch.patterns(root)]
     _write(root, f"{k}/no-touch.md", "\n".join(nt), commit, written)
 
     # config + rules: created once, then owned by the repo (never overwritten)

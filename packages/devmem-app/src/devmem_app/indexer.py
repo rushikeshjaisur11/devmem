@@ -23,7 +23,10 @@ SQL_START = re.compile(r"^\s*(select|insert|create|with|merge|update|delete)\b",
 LANGS = {".py": "python", ".sql": "sql", ".js": "js", ".ts": "ts", ".tsx": "ts", ".yaml": "yaml",
          ".yml": "yaml", ".ipynb": "notebook", ".md": "markdown"}
 MAX_FILE_BYTES = 1_000_000
-PARSER_VERSION = 2  # bump when per-file records gain fields (forces re-parse of cached files)
+MAX_SQL_STMTS, MAX_SQL_LEN = 60, 20_000
+COLUMN_FUNCS = {"select", "withColumn", "col", "groupBy", "groupby", "orderBy", "sort", "drop", "withColumnRenamed",
+                "sum", "avg", "max", "min", "count", "countDistinct", "first", "collect_list", "agg", "join"}
+PARSER_VERSION = 3  # bump when per-file records gain fields (forces re-parse of cached files)
 
 
 def git_head(root: Path) -> str | None:
@@ -161,7 +164,8 @@ def _features(tree) -> dict:
 
 def parse_python(path: str, src: str) -> tuple[dict, list[dict]]:
     """Return (file_record, symbols)."""
-    rec = {"lang": "python", "imports": [], "tables": [], "calls": [], "lines": len(src.splitlines())}
+    rec = {"lang": "python", "imports": [], "tables": [], "calls": [], "lines": len(src.splitlines()), "sql": [],
+           "df_columns": []}
     syms: list[dict] = []
     try:
         tree = ast.parse(src)
@@ -207,12 +211,34 @@ def parse_python(path: str, src: str) -> tuple[dict, list[dict]]:
                         and len(n.value) > 15:
                     for tname, mode in sql_tables(n.value):
                         rec["tables"].append({"name": tname, "mode": mode, "caller": caller, "line": n.lineno})
+                    if len(rec["sql"]) < MAX_SQL_STMTS and len(n.value) <= MAX_SQL_LEN:
+                        rec["sql"].append({"sql": n.value, "caller": caller, "line": n.lineno})
+
+    def df_cols(body_nodes, caller):
+        tables, cols = [], []
+        for top in body_nodes:
+            for n in ast.walk(top):
+                if isinstance(n, ast.Call):
+                    name, recv = _call_parts(n)
+                    if name == "table" and n.args and isinstance(n.args[0], ast.Constant) and isinstance(n.args[0].value, str) \
+                            and recv and (recv.endswith("spark") or recv.endswith("spark.read")):
+                        tables.append(n.args[0].value)
+                    elif name in COLUMN_FUNCS:
+                        for a in n.args:
+                            if isinstance(a, ast.Constant) and isinstance(a.value, str) and re.fullmatch(r"[A-Za-z_]\w*", a.value):
+                                cols.append(a.value)
+                elif isinstance(n, ast.Subscript) and isinstance(n.slice, ast.Constant) and isinstance(n.slice.value, str) \
+                        and re.fullmatch(r"[A-Za-z_]\w*", n.slice.value):
+                    cols.append(n.slice.value)
+        if tables:
+            rec["df_columns"].append({"caller": caller, "tables": sorted(set(tables)), "cols": sorted(set(cols))})
 
     module_body = []
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             add_symbol(node, node.name, "function", test_file and node.name.startswith("test"))
             scan(node.body, node.name)
+            df_cols(node.body, node.name)
         elif isinstance(node, ast.ClassDef):
             cls_test = test_file and node.name.startswith("Test")
             add_symbol(node, node.name, "class", False)
@@ -221,10 +247,12 @@ def parse_python(path: str, src: str) -> tuple[dict, list[dict]]:
                     q = f"{node.name}.{m.name}"
                     add_symbol(m, q, "method", cls_test and m.name.startswith("test"))
                     scan(m.body, q)
+                    df_cols(m.body, q)
         else:
             module_body.append(node)
     if module_body:
         scan(module_body, "<module>")
+        df_cols(module_body, "<module>")
         syms.append({"id": f"{path}#<module>", "name": "<module>", "qualname": "<module>", "kind": "module",
                      "file": path, "line": 1, "end_line": 1, "sig": f"module {path}", "doc": "",
                      "is_test": False})
@@ -232,10 +260,20 @@ def parse_python(path: str, src: str) -> tuple[dict, list[dict]]:
 
 
 def parse_sql_file(src: str) -> dict:
+    import sqlglot
+    stmts = []
+    try:
+        for t in sqlglot.parse(src, read="spark"):
+            if t is not None and len(stmts) < MAX_SQL_STMTS:
+                text = t.sql(dialect="spark")
+                if len(text) <= MAX_SQL_LEN:
+                    stmts.append({"sql": text, "caller": "<module>", "line": 1})
+    except Exception:
+        pass
     tables = []
     for tname, mode in sql_tables(src):
         tables.append({"name": tname, "mode": mode, "caller": "<module>", "line": 1})
-    return {"lang": "sql", "imports": [], "tables": tables, "calls": []}
+    return {"lang": "sql", "imports": [], "tables": tables, "calls": [], "sql": stmts, "df_columns": []}
 
 
 # ---------- driver ----------
