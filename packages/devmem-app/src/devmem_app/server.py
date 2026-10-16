@@ -259,6 +259,9 @@ def create_app() -> FastAPI:
             sym = {s["id"]: s for s in idx["symbols"]}
             nodes.append({"data": {"id": f"repo:{rname}", "label": rname, "kind": "repo"}})
             mods = Counter(_module_of(s["file"]) for s in idx["symbols"] if s["kind"] != "module" and not s["is_test"])
+            for f in idx["files"]:   # files without symbols (SQL, config) still need a module node
+                if f.split("/")[0] not in ("tests",) and f.endswith((".py", ".sql")):
+                    mods.setdefault(_module_of(f), 0)
             for mod, n in mods.items():
                 nodes.append({"data": {"id": f"{rname}:{mod}", "label": mod, "parent": f"repo:{rname}", "kind": "module", "size": n}})
             agg = Counter()

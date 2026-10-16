@@ -4,3 +4,5 @@ __pycache__/
 .pytest_cache/
 .devmem-local/
 .devmem/
+ui/node_modules/
+ui/dist/
