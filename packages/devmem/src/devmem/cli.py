@@ -73,6 +73,30 @@ def cmd_helpers(ix: Index, a) -> int:
     return 0
 
 
+def cmd_diffcheck(ix, a) -> int:
+    import os
+    from . import diffcheck as dc
+    root = dc.repo_root()
+    cfg = dc.load_config(root)
+    files = dc.collect_diff(root, a.base, a.staged)
+    text = os.environ.get("DEVMEM_PR_BODY", "")
+    for fpath in a.allow_file or []:
+        text += "\n" + open(fpath, encoding="utf-8").read()
+    if a.base:
+        text += "\n" + dc._git(root, "log", f"{a.base}..HEAD", "--format=%B", check=False)
+    blocked, passed = dc.apply_allow(dc.run_checks(root, files, cfg, a.base), dc.allowances(text))
+    for x in passed:
+        print(f"ALLOWED [{x.check}] {x.path}: {x.msg}  (devmem-allow: {x.allowed})")
+    for x in blocked:
+        print(f"FAIL    [{x.check}] {x.path}: {x.msg}")
+    if blocked:
+        print(f"\n{len(blocked)} violation(s). Fix them, or if the larger change is truly required, add a line "
+              "`devmem-allow: <check> <reason>` to the PR description.")
+        return 1
+    print(f"diffcheck ok: {len(files)} files, {sum(f.added + f.removed for f in files)} changed lines")
+    return 0
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="devmem", description="Code knowledge for coding agents")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -86,7 +110,18 @@ def main(argv=None) -> int:
     s.add_argument("target"); s.set_defaults(fn=cmd_impact)
     s = sub.add_parser("helpers", help="reusable utilities already in the repo")
     s.add_argument("-n", "--limit", type=int, default=30); s.set_defaults(fn=cmd_helpers)
+    s = sub.add_parser("diffcheck", help="minimal-change violations in the current diff")
+    s.add_argument("--staged", action="store_true", help="check staged changes only (pre-commit)")
+    s.add_argument("--base", help="compare BASE...HEAD (CI)")
+    s.add_argument("--allow-file", action="append", help="file whose devmem-allow: lines apply (e.g. PR body)")
+    s.set_defaults(fn=cmd_diffcheck, nolog=True)
     a = p.parse_args(argv)
+    if a.cmd == "diffcheck":
+        try:
+            ix = Index.load()
+        except FileNotFoundError:
+            ix = None
+        return a.fn(ix, a)
     try:
         ix = Index.load()
     except FileNotFoundError as e:

@@ -20,6 +20,7 @@ checks:
   format_only_changes: true
   new_dependencies: true
   deleted_tests: true
+  api_signature_changes: true
   duplicate_helpers: true
 """
 
@@ -31,12 +32,51 @@ DEFAULT_RULES = """# Rules (global + repo)
 - If a rule blocks the correct fix, make the fix and say why in the PR description.
 """
 
+PRECOMMIT = """# Merge into .pre-commit-config.yaml (runs inside Devin's session too, after `pip install devmem`)
+repos:
+  - repo: local
+    hooks:
+      - id: devmem-diffcheck
+        name: devmem diffcheck
+        entry: devmem diffcheck --staged
+        language: system
+        pass_filenames: false
+        always_run: true
+"""
+
+GITHUB_CI = """name: devmem diffcheck
+on: [pull_request]
+jobs:
+  diffcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - run: pip install devmem
+      - run: devmem diffcheck --base origin/${{ github.base_ref }}
+        env:
+          DEVMEM_PR_BODY: ${{ github.event.pull_request.body }}
+"""
+
+AZURE_CI = """trigger: none
+pr: [main]
+steps:
+  - checkout: self
+    fetchDepth: 0
+  - script: pip install devmem
+  - script: devmem diffcheck --base origin/$(System.PullRequest.TargetBranch)
+    displayName: devmem diffcheck
+"""
+
 AGENT_BLOCK = """## devmem (code knowledge)
 Read `.devmem/knowledge/map.md` first; module details are in `.devmem/knowledge/modules/`.
 Do not read whole files to explore. Use the CLI (`pip install devmem`):
 - `devmem find "<concept>"` ranked hits; `devmem show <symbol>` one symbol; `devmem outline <file>`
 - `devmem impact <symbol|table>` callers, tests, dependents before changing it
 - `devmem helpers` reusable utilities; reuse them before writing new code
+- `devmem diffcheck` before every commit; fix what it reports (a justified exception: `devmem-allow: <check> <reason>` in the PR)
 Rules: `.devmem/rules.md`. Minimal diffs: change only what the task needs, no unrelated reformatting,
 no new dependencies, keep public signatures. Do not edit `.devmem/knowledge/no-touch.md` paths.
 Knowledge files carry a commit stamp; if stale, trust the code over them."""
@@ -123,9 +163,12 @@ def publish(root: str | Path, idx: dict) -> list[str]:
     _write(root, f"{k}/no-touch.md", "\n".join(nt), commit, written)
 
     # config + rules: created once, then owned by the repo (never overwritten)
-    for rel, body in ((".devmem/config.yaml", DEFAULT_CONFIG), (".devmem/rules.md", DEFAULT_RULES)):
+    for rel, body in ((".devmem/config.yaml", DEFAULT_CONFIG), (".devmem/rules.md", DEFAULT_RULES),
+                      (".devmem/ci/pre-commit-snippet.yaml", PRECOMMIT), (".devmem/ci/github-actions.yml", GITHUB_CI),
+                      (".devmem/ci/azure-pipelines.yml", AZURE_CI)):
         p = root / rel
         if not p.exists():
+            p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(body, encoding="utf-8")
             written.append(rel)
 
