@@ -28,6 +28,8 @@ def main(argv=None) -> int:
     s = sub.add_parser("add", help="onboard a repo (local clone path)"); s.add_argument("path"); s.add_argument("--name")
     s = sub.add_parser("index", help="(re)index a path, or all onboarded repos"); s.add_argument("path", nargs="?")
     s = sub.add_parser("find", help="search across all onboarded repos"); s.add_argument("query")
+    s = sub.add_parser("publish", help="write .devmem/knowledge + AGENTS.md block into a repo")
+    s.add_argument("path"); s.add_argument("--commit", action="store_true", help="commit on branch devmem/knowledge-sync")
     a = p.parse_args(argv)
 
     if a.cmd == "add":
@@ -42,6 +44,13 @@ def main(argv=None) -> int:
         for name, path in targets.items():
             idx = index_repo(path, name)
             print(f"{name}: {len(idx['symbols'])} symbols, {len(idx['edges'])} edges {idx['stats']}")
+    elif a.cmd == "publish":
+        from .publisher import commit_branch, publish
+        idx = index_repo(a.path)
+        files = publish(a.path, idx)
+        print(f"published {len(files)} files")
+        if a.commit:
+            print("committed on", commit_branch(a.path))
     elif a.cmd == "find":
         for name, path in _ws()["repos"].items():
             try:

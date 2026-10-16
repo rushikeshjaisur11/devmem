@@ -103,3 +103,59 @@ def test_cli_runs(py_repo, monkeypatch, capsys):
     assert "app/retry.py:5" in capsys.readouterr().out
     assert main(["impact", "retry"]) == 0
     assert "hop 1" in capsys.readouterr().out
+
+
+# ---- ranking + publisher ----
+from devmem.knowledge import check_knowledge, est_tokens, managed_block, parse_header, replace_managed_block
+from devmem_app.publisher import publish
+from devmem_app.ranking import pagerank, render_map
+
+
+def test_pagerank_prefers_widely_called(py_repo):
+    idx = index_repo(py_repo)
+    r = pagerank(idx)
+    top3 = sorted(r, key=r.get, reverse=True)[:3]
+    assert "app/retry.py#retry" in top3
+    assert r["app/retry.py#retry"] > r["app/service.py#main"]
+    assert abs(sum(r.values()) - 1) < 1e-6
+
+
+def test_map_respects_budget(py_repo):
+    idx = index_repo(py_repo)
+    text, inc = render_map(idx, budget=30)
+    assert est_tokens(text) <= 30 and 0 < len(inc) < 6
+    full, inc2 = render_map(idx, budget=1500)
+    assert "def retry" in full and len(inc2) == 8
+
+
+def test_publish(py_repo):
+    idx = index_repo(py_repo)
+    (py_repo / "AGENTS.md").write_text("# Mine\nkeep this\n")
+    files = publish(py_repo, idx)
+    assert ".devmem/knowledge/map.md" in files and ".devmem/knowledge/modules/app.md" in files
+    k = py_repo / ".devmem/knowledge"
+    assert parse_header((k / "overview.md").read_text())["tokens"] > 0
+    ag = (py_repo / "AGENTS.md").read_text()
+    assert "keep this" in ag and "devmem find" in managed_block(ag)
+    assert (py_repo / ".github/copilot-instructions.md").exists()
+    assert check_knowledge(py_repo) == []
+    # idempotent: second publish keeps a single block and does not clobber repo-owned config
+    (py_repo / ".devmem/rules.md").write_text("custom\n")
+    publish(py_repo, index_repo(py_repo))
+    assert (py_repo / "AGENTS.md").read_text().count("<!-- devmem:start -->") == 1
+    assert (py_repo / ".devmem/rules.md").read_text() == "custom\n"
+
+
+def test_stale_detection(py_repo):
+    idx = index_repo(py_repo)
+    publish(py_repo, idx)
+    idx_head = "deadbeef" * 5
+    # stamps say 'unknown' (no git) so force one
+    f = py_repo / ".devmem/knowledge/overview.md"
+    f.write_text(f.read_text().replace("commit=unknown", "commit=aaaaaaaa11111111"))
+    assert any("stale" in p for p in check_knowledge(py_repo, head=idx_head))
+
+
+def test_replace_block_roundtrip():
+    t = replace_managed_block("a\n", "X")
+    assert replace_managed_block(t, "Y").count("Y") == 1 and "X" not in replace_managed_block(t, "Y")
