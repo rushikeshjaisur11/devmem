@@ -146,6 +146,41 @@ def cmd_hygiene(ix: Index, a) -> int:
     return 0
 
 
+def cmd_recall(ix: Index, a) -> int:
+    from . import memory
+    print(memory.format_recall(memory.recall(ix, a.task, a.files, a.limit)))
+    return 0
+
+
+def cmd_remember(ix: Index, a) -> int:
+    import sys as _sys
+    from . import memory
+    problem, fix = a.problem, a.fix
+    if (not problem or not fix) and not _sys.stdin.isatty():
+        data = _sys.stdin.read()
+        problem = problem or memory.section("## Problem\n" + data.split("## Fix")[0].replace("## Problem", ""), "Problem")
+        fix = fix or (data.split("## Fix", 1)[1].strip() if "## Fix" in data else "")
+    refs = [memory.normalize_ref(r, ix.data["repo"], ix.data.get("commit")) for r in a.ref or []]
+    try:
+        status, lid = memory.write_lesson(ix.root, a.title, problem or "", fix or "", ix.data["repo"], a.tag or [], refs,
+                                          a.cmd or [], a.source, a.force)
+    except ValueError as e:
+        print(f"not saved: {e}")
+        return 2
+    if status == "duplicate":
+        print(f"similar lesson already exists: {lid} (use --force to add anyway)")
+        return 0
+    print(f"saved .devmem/lessons/{lid}.md; commit it with your PR")
+    return 0
+
+
+def cmd_feedback(ix: Index, a) -> int:
+    from . import memory
+    memory.add_feedback(ix.root, a.lesson, a.verdict, a.note or "")
+    print("recorded")
+    return 0
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="devmem", description="Code knowledge for coding agents")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -165,6 +200,18 @@ def main(argv=None) -> int:
         s.add_argument("files", nargs="*", help="default: files changed vs HEAD")
         s.add_argument("--base", help="changed files in BASE...HEAD instead")
         s.set_defaults(fn=fn)
+    s = sub.add_parser("recall", help="lessons, rules and cross-repo pointers for a task")
+    s.add_argument("task"); s.add_argument("--files", nargs="*"); s.add_argument("-n", "--limit", type=int, default=3)
+    s.set_defaults(fn=cmd_recall)
+    s = sub.add_parser("remember", help="save a lesson (problem + fix) as a file for your PR")
+    s.add_argument("title"); s.add_argument("--problem"); s.add_argument("--fix")
+    s.add_argument("--tag", action="append"); s.add_argument("--ref", action="append", help="path#symbol")
+    s.add_argument("--cmd", action="append", help="command that verifies or applies the fix")
+    s.add_argument("--source", default="agent"); s.add_argument("--force", action="store_true")
+    s.set_defaults(fn=cmd_remember)
+    s = sub.add_parser("feedback", help="was a recalled lesson useful?")
+    s.add_argument("lesson"); s.add_argument("verdict", choices=["useful", "useless"]); s.add_argument("--note")
+    s.set_defaults(fn=cmd_feedback)
     s = sub.add_parser("hygiene", help="known lint/dead-code/complexity issues in a file")
     s.add_argument("file"); s.set_defaults(fn=cmd_hygiene)
     s = sub.add_parser("diffcheck", help="minimal-change violations in the current diff")

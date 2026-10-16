@@ -9,17 +9,23 @@ from pathlib import Path
 from devmem.index import Index
 
 from .indexer import index_repo
+from .paths import devmem_home
 
-WORKSPACE = Path.home() / ".devmem" / "workspace.json"
+
+
+def _workspace() -> Path:
+    return devmem_home() / "workspace.json"
 
 
 def _ws() -> dict:
-    return json.loads(WORKSPACE.read_text()) if WORKSPACE.exists() else {"repos": {}}
+    w = _workspace()
+    return json.loads(w.read_text()) if w.exists() else {"repos": {}}
 
 
 def _save(ws: dict):
-    WORKSPACE.parent.mkdir(parents=True, exist_ok=True)
-    WORKSPACE.write_text(json.dumps(ws, indent=1))
+    w = _workspace()
+    w.parent.mkdir(parents=True, exist_ok=True)
+    w.write_text(json.dumps(ws, indent=1))
 
 
 def main(argv=None) -> int:
@@ -40,6 +46,12 @@ def main(argv=None) -> int:
     s.add_argument("column", help="db.table.column")
     s = sub.add_parser("schema", help="schema snapshots"); s.add_argument("action", choices=["import"])
     s.add_argument("repo"); s.add_argument("csv", help="CSV with columns table,column[,type]")
+    s = sub.add_parser("memory", help="lessons/rules: sync, share, to-rule, ingest-reviews, ingest-failures, proposals, approve, reject")
+    s.add_argument("action", choices=["sync", "share", "to-rule", "ingest-reviews", "ingest-failures", "proposals", "approve", "reject"])
+    s.add_argument("arg", nargs="?", help="lesson id / proposal id / json file / repo path")
+    s.add_argument("--repos", help="comma-separated repo names (share)"); s.add_argument("--all", action="store_true")
+    s.add_argument("--applies-to", default="**"); s.add_argument("--repo", help="repo name to write the rule/lesson into")
+    s.add_argument("--fix", help="fix text (approving a lesson proposal)"); s.add_argument("--severity", default="rule")
     s = sub.add_parser("clones", help="token-level duplicate code across all onboarded repos")
     a = p.parse_args(argv)
 
@@ -86,6 +98,29 @@ def main(argv=None) -> int:
     elif a.cmd == "schema":
         from .lineage import import_schema_csv
         print(f"imported {import_schema_csv(Path(a.repo), Path(a.csv))} columns")
+    elif a.cmd == "memory":
+        from . import memory as mem
+        repos = _ws()["repos"]
+        tgt = Path(repos[a.repo]) if a.repo else None
+        if a.action == "sync":
+            print(mem.sync(repos))
+        elif a.action == "share":
+            print("shared with", mem.share(a.arg, (a.repos or "").split(",") if a.repos else None, a.all))
+        elif a.action == "to-rule":
+            print("rule written:", mem.lesson_to_rule(a.arg, a.applies_to, tgt, a.severity))
+        elif a.action == "ingest-reviews":
+            for p in mem.propose_from_reviews(a.arg):
+                print(f"proposed {p['id']} ({p['count']} comments in {p['prs']} PRs, {p['applies_to']}): {p['text']}")
+        elif a.action == "ingest-failures":
+            for p in mem.propose_from_failures(a.arg):
+                print(f"proposed {p['id']} ({p['count']}x): {p['text']}")
+        elif a.action == "proposals":
+            for p in mem.list_proposals():
+                print(f"{p['id']}  [{p['kind']}] {p['text']}")
+        elif a.action == "approve":
+            print("written:", mem.approve(a.arg, tgt, a.severity, a.fix))
+        elif a.action == "reject":
+            mem.reject(a.arg); print("rejected")
     elif a.cmd == "clones":
         from .clones import clones_for_repo, find_clones
         srcs = {}

@@ -10,6 +10,7 @@ from devmem.knowledge import (AGENTS_INDEX_BUDGET, KNOWLEDGE_DIR, check_knowledg
 from devmem.schema import knowledge_header
 
 from . import commands as cmdmod
+from . import memory as memmod
 from . import conventions
 from .ranking import pagerank, render_map
 
@@ -75,16 +76,13 @@ steps:
 """
 
 AGENT_BLOCK = """## devmem (code knowledge)
-Read `.devmem/knowledge/map.md` first; run/test commands are in `commands.md`, known lint/dead-code state in `hygiene.md`, house patterns in `conventions.md`, reusable code in `helpers.md`, data in `lineage.md`, risky files in `history.md`; module details are in `.devmem/knowledge/modules/`.
-Do not read whole files to explore. Use the CLI (`pip install devmem`):
-- `devmem find "<concept>"` ranked hits; `devmem show <symbol>` one symbol; `devmem outline <file>`
-- `devmem impact <symbol|table|table.column>` callers, tests, dependents before changing it
-- `devmem helpers` reusable utilities; reuse them before writing new code
-- `devmem check` lint/types/affected tests with a short summary; `devmem tests-for` prints the test command
-- `devmem diffcheck` before every commit; fix what it reports (a justified exception: `devmem-allow: <check> <reason>` in the PR)
-Rules: `.devmem/rules.md`. Minimal diffs: change only what the task needs, no unrelated reformatting,
-no new dependencies, keep public signatures. Do not edit `.devmem/knowledge/no-touch.md` paths.
-Knowledge files carry a commit stamp; if stale, trust the code over them."""
+Start: `devmem recall "<task>"` (lessons, rules, code solved elsewhere), then `.devmem/knowledge/map.md`.
+Do not read whole files to explore. CLI (`pip install devmem`):
+- `devmem find "<concept>"`, `show <symbol>`, `outline <file>`; `helpers` reusable code
+- `devmem impact <symbol|table|table.column>` before changing anything
+- `devmem check` lint/types/affected tests; `devmem diffcheck` before every commit (exception: `devmem-allow: <check> <reason>` in the PR)
+- Learned something non-obvious? `devmem remember "<title>" --problem .. --fix ..`; rate recalls: `devmem feedback <id> useful|useless`
+Rules: `.devmem/rules.md`, `knowledge/rules.md`. Minimal diffs: only what the task needs; no unrelated reformatting, new dependencies or signature changes. Details by topic: commands.md, hygiene.md, conventions.md, helpers.md, lineage.md, history.md, no-touch.md. Stale stamp => trust the code."""
 
 
 def _write(root: Path, rel: str, body: str, commit: str | None, written: list[str]):
@@ -193,6 +191,17 @@ def publish(root: str | Path, idx: dict, peers: dict | None = None) -> list[str]
     h = hist.mine(root, idx)
     if h["commits_mined"]:
         _write(root, f"{k}/history.md", hist.render_history_md(h), commit, written)
+
+    # memory: lessons.md, rules.md, cross-repo pointers
+    from devmem import memory as m
+    if m.load_lessons(root):
+        _write(root, f"{k}/lessons.md", memmod.render_lessons_md(root), commit, written)
+    if (root / m.RULES_DIR).exists() and m.load_rules(root):
+        _write(root, f"{k}/rules.md", memmod.render_rules_md(root), commit, written)
+    if peers:
+        entries = memmod.build_cross_repo(idx["repo"], root, peers)
+        if entries:
+            _write(root, f"{k}/cross-repo.md", memmod.render_cross_repo_md(entries), commit, written)
 
     # no-touch.md: defaults + detected + repo-owned .devmem/no-touch.txt
     from devmem import notouch

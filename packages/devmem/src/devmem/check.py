@@ -33,6 +33,19 @@ def tests_for(ix: Index, paths: list[str]) -> tuple[list[str], str | None]:
     return ids, (tmpl.replace("{tests}", quote_all(ids)) if ids else None)
 
 
+def _log_failure(root: Path, kind: str, lines: list[str]) -> None:
+    import datetime as dt
+    p = root / ".devmem/failures.jsonl"
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "a", encoding="utf-8") as fh:
+            for l in lines[:5]:
+                fh.write(json.dumps({"ts": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+                                     "kind": kind, "line": l[:200]}) + "\n")
+    except OSError:
+        pass
+
+
 def run_check(ix: Index, paths: list[str]) -> int:
     root, cmds, flaky = ix.root, load_commands(ix.root), load_flaky(ix.root)
     py = [p for p in paths if p.endswith(".py") and (root / p).exists()]
@@ -61,6 +74,7 @@ def run_check(ix: Index, paths: list[str]) -> int:
                 print(f"ok   test ({len(known)} known flaky failure(s) ignored: " + "; ".join(k[:80] for k in known) + ")")
                 continue
         failed = True
+        _log_failure(root, kind, lines)
         print(f"FAIL {kind} ({r['secs']}s): {cmd[:120]}")
         for l in lines:
             print("   " + l)
