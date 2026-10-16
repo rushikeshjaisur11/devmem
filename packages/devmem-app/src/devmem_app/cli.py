@@ -34,6 +34,9 @@ def main(argv=None) -> int:
     s.add_argument("path"); s.add_argument("--include-install", action="store_true")
     s = sub.add_parser("flaky", help="rerun the suite to find flaky tests -> .devmem/flaky.txt")
     s.add_argument("path"); s.add_argument("--runs", type=int, default=3)
+    s = sub.add_parser("hygiene", help="run ruff/vulture/radon/deptry/bandit/sqlfluff + clones, publish hygiene.md")
+    s.add_argument("path")
+    s = sub.add_parser("clones", help="token-level duplicate code across all onboarded repos")
     a = p.parse_args(argv)
 
     if a.cmd == "add":
@@ -63,6 +66,24 @@ def main(argv=None) -> int:
     elif a.cmd == "flaky":
         from . import commands
         print("flaky:", commands.detect_flaky(a.path, a.runs) or "none")
+    elif a.cmd == "hygiene":
+        from . import hygiene
+        from .publisher import publish
+        idx = index_repo(a.path)
+        h = hygiene.run_hygiene(a.path, idx)
+        publish(a.path, idx)
+        print("hygiene:", h["counts"], {k: v for k, v in h["tools"].items() if v != "ok"} or "all tools ran")
+    elif a.cmd == "clones":
+        from .clones import clones_for_repo, find_clones
+        srcs = {}
+        for name, path in _ws()["repos"].items():
+            idx = index_repo(path, name, write=False)
+            for f in idx["files"]:
+                if f.endswith(".py") and "/tests/" not in f"/{f}":
+                    srcs[f"{name}:{f}"] = (Path(path) / f).read_text(encoding="utf-8", errors="replace")
+        for c in find_clones(srcs):
+            if c["a"].split(":")[0] != c["b"].split(":")[0]:
+                print(f"{c['a']}:{c['a_lines'][0]}-{c['a_lines'][1]}  ~  {c['b']}:{c['b_lines'][0]}-{c['b_lines'][1]}  ({c['tokens']} tokens)")
     elif a.cmd == "find":
         for name, path in _ws()["repos"].items():
             try:

@@ -23,6 +23,7 @@ checks:
   deleted_tests: true
   api_signature_changes: true
   duplicate_helpers: true
+  lint_fixes_outside_changed_lines: true
 """
 
 DEFAULT_RULES = """# Rules (global + repo)
@@ -72,7 +73,7 @@ steps:
 """
 
 AGENT_BLOCK = """## devmem (code knowledge)
-Read `.devmem/knowledge/map.md` first; run/test commands are in `commands.md`; module details are in `.devmem/knowledge/modules/`.
+Read `.devmem/knowledge/map.md` first; run/test commands are in `commands.md`, known lint/dead-code state in `hygiene.md`; module details are in `.devmem/knowledge/modules/`.
 Do not read whole files to explore. Use the CLI (`pip install devmem`):
 - `devmem find "<concept>"` ranked hits; `devmem show <symbol>` one symbol; `devmem outline <file>`
 - `devmem impact <symbol|table>` callers, tests, dependents before changing it
@@ -165,6 +166,13 @@ def publish(root: str | Path, idx: dict) -> list[str]:
     cmdmod.save_commands(root, cmds)
     _write(root, f"{k}/commands.md", cmdmod.render_commands_md(cmds), commit, written)
     _write(root, f"{k}/tests.md", cmdmod.render_tests_md(idx, load_flaky(root)), commit, written)
+
+    # hygiene.md (only after `devmem-app hygiene` has run; tools are not run during publish)
+    hp = root / ".devmem/hygiene.json"
+    if hp.exists():
+        import json as _json
+        from .hygiene import render_hygiene_md
+        _write(root, f"{k}/hygiene.md", render_hygiene_md(_json.loads(hp.read_text(encoding="utf-8"))), commit, written)
 
     # no-touch.md
     nt = ["# No-touch paths", "Agents must not edit these (generated, vendored, migrations, lockfiles, secrets)."]

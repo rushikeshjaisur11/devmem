@@ -30,6 +30,7 @@ CHECKS = {
     "deleted_tests": "deleted_test",
     "api_signature_changes": "api_change",
     "duplicate_helpers": "duplicate",
+    "lint_fixes_outside_changed_lines": "lint_fix",
 }
 DEFAULTS = {"diff_budget": {"max_changed_lines": 200, "max_files": 8}, "checks": {k: True for k in CHECKS}}
 NON_CODE = {".md", ".txt", ".rst", ".yaml", ".yml", ".json", ".toml", ".cfg", ".ini", ".sql", ".csv"}
@@ -213,6 +214,31 @@ def _edited_symbols(ix: Index | None, files: list[FileDiff]) -> set[str]:
     return edited
 
 
+def _ruff_lines(root: Path, path: str, text: str | None) -> list[tuple[int, str]]:
+    """[(line, code)] ruff finds in `text` (stdin), same rule set as hygiene. [] if ruff is unavailable."""
+    from .runner import find_tool, run_argv
+    import json
+    t = find_tool("ruff")
+    if not t or text is None:
+        return []
+    cfg = (root / "ruff.toml").exists() or (root / ".ruff.toml").exists() or \
+        ((root / "pyproject.toml").exists() and "[tool.ruff" in (root / "pyproject.toml").read_text(errors="replace"))
+    r = run_argv([*t, "check", "--output-format", "json", "--no-cache", *([] if cfg else ["--select", "E,F,W,B"]),
+                  "--stdin-filename", path, "-"], root, input=text)
+    try:
+        return [(d["location"]["row"], d["code"]) for d in json.loads(r["out"] or "[]")]
+    except Exception:
+        return []
+
+
+def _symbol_at(ix, path: str, lo: int, hi: int) -> str:
+    hit = [s for s in ix.symbols.values() if s["file"] == path and s["kind"] != "module"
+           and s["line"] <= hi and s["end_line"] >= lo]
+    if not hit:
+        return f"{path}#<module>"
+    return min(hit, key=lambda s: s["end_line"] - s["line"])["id"]
+
+
 def run_checks(root: Path, files: list[FileDiff], cfg: dict, base: str | None = None) -> list[Violation]:
     v: list[Violation] = []
     on = cfg["checks"]
@@ -262,6 +288,7 @@ def run_checks(root: Path, files: list[FileDiff], cfg: dict, base: str | None = 
                         v.append(Violation("out_of_scope", p, "unrelated to the main change in "
                                            + ", ".join(sorted(code_groups[main])[:3]) + " (no call/impact link)"))
 
+    lint_hunks: list[tuple[str, str, int, bool]] = []  # (path, symbol, line, is_lint_fix)
     for f in files:
         # format-only hunks
         if on.get("format_only_changes", True) and f.status == "M":
@@ -284,6 +311,16 @@ def run_checks(root: Path, files: list[FileDiff], cfg: dict, base: str | None = 
         old_src = None if f.status == "A" else _old(root, base, f.path)
         new_src = None if f.status == "D" else _new(root, f.path)
         old_t, new_t = _parse(old_src), _parse(new_src)
+
+        # lint-only edits (collected here, judged after all files are seen)
+        if on.get("lint_fixes_outside_changed_lines", True) and ix is not None and f.status == "M":
+            from collections import Counter
+            ov, nv = _ruff_lines(root, f.path, old_src), _ruff_lines(root, f.path, new_src)
+            oc_, nc_ = Counter(c for _, c in ov), Counter(c for _, c in nv)
+            for o, oc, n, nc, rem, add in f.hunks:
+                lo, hi = (o, o) if oc == 0 else (o, o + oc - 1)
+                fixed = oc > 0 and any(lo <= ln <= hi and nc_[c] < oc_[c] for ln, c in ov)
+                lint_hunks.append((f.path, _symbol_at(ix, f.path, lo, hi), n, fixed))
 
         # tests removed / weakened
         if on.get("deleted_tests", True) and _is_test(f.path) and old_t is not None:
@@ -346,6 +383,14 @@ def run_checks(root: Path, files: list[FileDiff], cfg: dict, base: str | None = 
                             break
                         except Exception:
                             continue
+    if lint_hunks and any(not fixed for *_, fixed in lint_hunks):
+        by_sym: dict[tuple[str, str], list] = {}
+        for path, sym, line, fixed in lint_hunks:
+            by_sym.setdefault((path, sym), []).append((line, fixed))
+        for (path, sym), hs in by_sym.items():
+            if all(fx for _, fx in hs):
+                v.append(Violation("lint_fix", f"{path}:{hs[0][0]}", f"lint-only edit in {sym.split('#')[-1]}, unrelated "
+                                   "to the substantive change (leave existing lint issues alone)"))
     return v
 
 

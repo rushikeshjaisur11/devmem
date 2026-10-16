@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -45,3 +46,29 @@ def summarize(kind: str, out: str, limit: int = 15) -> list[str]:
         hits = [l for l in lines if re.search(r"(error|warning|[A-Z]+\d{2,4})\b", l)] or lines
         return [l[:200] for l in hits[:limit]] + ([f"… {len(hits) - limit} more"] if len(hits) > limit else [])
     return [l[:200] for l in lines[-limit:]]
+
+
+def find_tool(name: str) -> list[str] | None:
+    """argv prefix to launch a python-installed tool: its binary next to this interpreter, on PATH, or `-m`."""
+    import importlib.util
+    import os
+    from pathlib import Path
+    bindir = Path(sys.executable).parent
+    for cand in (bindir / name, bindir / f"{name}.exe"):
+        if cand.exists():
+            return [str(cand)]
+    found = shutil.which(name)
+    if found:
+        return [found]
+    if importlib.util.find_spec(name):
+        return [sys.executable, "-m", name]
+    return None
+
+
+def run_argv(argv: list[str], cwd, input: str | None = None, timeout: int = TIMEOUT) -> dict:
+    try:
+        r = subprocess.run(argv, cwd=str(cwd), input=input, capture_output=True, text=True, errors="replace",
+                           timeout=timeout)
+        return {"code": r.returncode, "out": r.stdout or "", "err": r.stderr or ""}
+    except (subprocess.TimeoutExpired, OSError) as e:
+        return {"code": 124, "out": "", "err": str(e)}

@@ -123,6 +123,20 @@ def cmd_check(ix: Index, a) -> int:
     return run_check(ix, paths)
 
 
+def cmd_hygiene(ix: Index, a) -> int:
+    import json
+    p = ix.root / ".devmem/hygiene.json"
+    if not p.exists():
+        print("no hygiene data (run `devmem-app hygiene <repo>`)")
+        return 0
+    issues = [i for i in json.loads(p.read_text(encoding="utf-8"))["issues"] if i["path"] == a.file]
+    for i in sorted(issues, key=lambda i: i["line"]):
+        print(f"{i['path']}:{i['line']}  {i['tool']} {i['code']} {i['msg']}")
+    if not issues:
+        print("no known hygiene issues")
+    return 0
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="devmem", description="Code knowledge for coding agents")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -142,6 +156,8 @@ def main(argv=None) -> int:
         s.add_argument("files", nargs="*", help="default: files changed vs HEAD")
         s.add_argument("--base", help="changed files in BASE...HEAD instead")
         s.set_defaults(fn=fn)
+    s = sub.add_parser("hygiene", help="known lint/dead-code/complexity issues in a file")
+    s.add_argument("file"); s.set_defaults(fn=cmd_hygiene)
     s = sub.add_parser("diffcheck", help="minimal-change violations in the current diff")
     s.add_argument("--staged", action="store_true", help="check staged changes only (pre-commit)")
     s.add_argument("--base", help="compare BASE...HEAD (CI)")
