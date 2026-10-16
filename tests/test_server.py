@@ -130,3 +130,30 @@ def test_share_code_between_repos(api):
     assert (api.repos["py_app"] / "app/slug.py").read_text().count("def slug") == 2
     bad = {**body, "dest": "../escape.py"}
     assert api.post("/api/share", json=bad, headers=H).status_code == 400
+
+
+def test_chat_retrieval_and_llm(api, monkeypatch):
+    from devmem_app import chat
+    r = api.post("/api/chat", json={"question": "slug"}, headers=H).json()
+    assert r["mode"] == "retrieval" and r["hits"][0]["pointer"].startswith("conv_app:app/util.py")
+    assert r["hits"][0]["snippet"].startswith("def slug")
+    r = api.post("/api/chat", json={"question": "who reads mart.sales_report table", "repos": ["consumer_app", "lineage_app"]}, headers=H).json()
+    assert any(h["kind"] == "table" for h in r["hits"]) and {h["repo"] for h in r["hits"]} >= {"consumer_app", "lineage_app"}
+    assert api.post("/api/chat", json={"question": "x", "repos": ["nope"]}, headers=H).status_code == 404
+    assert api.post("/api/chat", json={"question": "x", "llm": True}, headers=H).status_code == 409   # not configured
+    assert api.get("/api/chat/status").json()["configured"] is False
+    assert api.post("/api/chat", json={"question": "zzzzqqq"}, headers=H).json()["hits"] == []
+
+    class Fake:
+        name = "fake"
+        def generate(self, prompt):
+            assert "Context:" in prompt and "slug" in prompt
+            return "It is a slug helper [1], also see [99]."
+        def embed(self, texts):
+            return [[float("slug" in t), 1.0] for t in texts]
+    res = chat.ask("slug", dict(api.repos), provider=Fake())
+    assert res["mode"] == "llm" and res["cited"] == [1] and res["dropped_citations"] == [99] and "[99]" not in res["answer"]
+    class Boom(Fake):
+        def generate(self, prompt): raise RuntimeError("quota")
+    res = chat.ask("slug", {"conv_app": api.repos["conv_app"]}, provider=Boom())
+    assert res["mode"] == "retrieval" and "quota" in res["llm_error"]

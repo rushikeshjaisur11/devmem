@@ -34,6 +34,8 @@ def main(argv=None) -> int:
     s = sub.add_parser("add", help="onboard a repo (local clone path)"); s.add_argument("path"); s.add_argument("--name")
     s = sub.add_parser("index", help="(re)index a path, or all onboarded repos"); s.add_argument("path", nargs="?")
     s = sub.add_parser("find", help="search across all onboarded repos"); s.add_argument("query")
+    s = sub.add_parser("ask", help="ask a question across onboarded repos (retrieval; --llm adds a Vertex answer)")
+    s.add_argument("question"); s.add_argument("--repo", action="append"); s.add_argument("--llm", action="store_true")
     s = sub.add_parser("publish", help="write .devmem/knowledge + AGENTS.md block into a repo")
     s.add_argument("path"); s.add_argument("--commit", action="store_true", help="commit on branch devmem/knowledge-sync")
     s = sub.add_parser("verify", help="run detected install/lint/test commands and record the result")
@@ -142,6 +144,17 @@ def main(argv=None) -> int:
         for c in find_clones(srcs):
             if c["a"].split(":")[0] != c["b"].split(":")[0]:
                 print(f"{c['a']}:{c['a_lines'][0]}-{c['a_lines'][1]}  ~  {c['b']}:{c['b_lines'][0]}-{c['b_lines'][1]}  ({c['tokens']} tokens)")
+    elif a.cmd == "ask":
+        from . import chat
+        allr = _ws()["repos"]
+        res = chat.ask(a.question, {n: Path(p) for n, p in allr.items() if not a.repo or n in a.repo}, use_llm=a.llm)
+        print(res["answer"])
+        if res.get("llm_error"):
+            print("(LLM failed, showing retrieval:", res["llm_error"] + ")")
+        if res["mode"] == "llm":
+            print("\nSources:")
+            for h in res["hits"]:
+                print(f"  [{h['n']}] {h['pointer']}  {h['title']}")
     elif a.cmd == "find":
         for name, path in _ws()["repos"].items():
             try:

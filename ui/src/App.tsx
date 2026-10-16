@@ -9,11 +9,12 @@ import Memory from "./pages/Memory";
 import Share from "./pages/Share";
 import Graph from "./pages/Graph";
 import Metrics from "./pages/Metrics";
+import Chat from "./pages/Chat";
 
 const PAGES: [string, string, any][] = [
   ["repos", "Repos", Repos], ["explorer", "Explorer", Explorer], ["impact", "Impact", Impact], ["graph", "Graph", Graph],
   ["lineage", "Lineage", Lineage], ["hygiene", "Hygiene", Hygiene], ["memory", "Memory", Memory], ["share", "Share", Share],
-  ["metrics", "Metrics", Metrics],
+  ["chat", "Chat", Chat], ["metrics", "Metrics", Metrics],
 ];
 
 export default function App() {

@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from . import chat as chat_mod
 from . import hygiene as hyg
 from . import lineage as lin_mod
 from . import memory as am
@@ -443,6 +444,31 @@ def create_app() -> FastAPI:
         except FileNotFoundError:
             raise HTTPException(404, "no such proposal")
         return {"ok": True}
+
+    # ---------- chat ----------
+    class Chat(BaseModel):
+        question: str
+        repos: list[str] | None = None
+        llm: bool = False
+        limit: int = 8
+
+    @app.get("/api/chat/status")
+    def chat_status():
+        return chat_mod.llm_status()
+
+    @app.post("/api/chat")
+    def chat(body: Chat):
+        allr = ws()["repos"]
+        names = body.repos or list(allr)
+        unknown = [n for n in names if n not in allr]
+        if unknown:
+            raise HTTPException(404, f"unknown repo {unknown[0]}")
+        if body.llm and not chat_mod.llm_status()["configured"]:
+            raise HTTPException(409, "no LLM configured: set DEVMEM_VERTEX_PROJECT (and pip install google-genai)")
+        try:
+            return chat_mod.ask(body.question, {n: Path(allr[n]) for n in names}, min(max(body.limit, 1), 20), use_llm=body.llm)
+        except ImportError as e:
+            raise HTTPException(409, f"LLM client not installed: {e}")
 
     # ---------- share code between repos ----------
     COMMENT = {".py": "#", ".sh": "#", ".yaml": "#", ".yml": "#", ".sql": "--", ".js": "//", ".ts": "//", ".tsx": "//"}

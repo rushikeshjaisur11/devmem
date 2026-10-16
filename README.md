@@ -2,7 +2,7 @@
 
 Cross-repo code knowledge for coding agents (Devin primary, Copilot). Plan: the "devmem — Full Application Plan" doc.
 
-## Status (build steps 1-12)
+## Status (build steps 1-13)
 - [x] 1. Core formats (`devmem.schema`), `.devmemignore`, fixture repos + golden tests
 - [x] 2. Indexer: Python (stdlib `ast`), SQL + Spark table lineage (sqlglot), incremental by content hash
 - [x] 3. Graph: call/test/table edges with confidence; impact (hop 1 required, hop 2 contract check, utility cap, tests separate)
@@ -15,7 +15,8 @@ Cross-repo code knowledge for coding agents (Devin primary, Copilot). Plan: the 
 - [x] 10. Lineage + history: SQL/PySpark column lineage (sqlglot, schema snapshots via `devmem-app schema import`), DataFrame heuristic, `devmem impact <table.column>`, cross-repo `devmem-app impact-column`, `lineage.md`; git hotspots, co-change pairs (feed impact + diffcheck scope), no-touch zones + diffcheck `no_touch`
 - [x] 11. Memory: lessons (`devmem remember`/`recall`/`feedback`, one file each, dedupe, usefulness-weighted ranking), rules (files + globs), hub sync/share (`devmem-app memory ...`), proposed rules from repeated review comments and lessons from recurring `check` failures, cross-repo pointers (`cross-repo.md`)
 - [x] 12. Web UI: `devmem-app ui` serves a React/Cytoscape app (repos, explorer, impact, graph, lineage, hygiene, memory, share, metrics) from the FastAPI backend; source in `ui/` (`npm install && npm run build` rebuilds `ui_dist`)
-- [ ] Not yet: chat, PR metrics loop; Graphify + scip-python as extra edge sources, SQLite/FTS5 store, eslint/knip (JS/TS) hygiene
+- [x] 13. Chat: local BM25 retrieval over symbols, files, tables, lessons and rules across repos (`devmem-app ask`, `/api/chat`, Chat page); optional Vertex answer (`DEVMEM_VERTEX_PROJECT`, `pip install google-genai`; only retrieved snippets are sent, citations validated) and optional embedding rerank (`DEVMEM_VERTEX_EMBED_MODEL`)
+- [ ] Not yet: PR metrics loop; Graphify + scip-python as extra edge sources, SQLite/FTS5 store, eslint/knip (JS/TS) hygiene
 
 ## Use
     uv sync   # or: pip install -e packages/devmem -e packages/devmem-app
