@@ -56,7 +56,7 @@ class Detector:
             lines = (self.root / path).read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
             return ""
-        start = max(0, line - 2)
+        start = max(0, line - 1)
         return "\n".join(lines[start:start + n]).rstrip()
 
     # ---- categories ----
