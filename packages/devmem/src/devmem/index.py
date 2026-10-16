@@ -170,14 +170,17 @@ class Index:
                 ids += [f + "::" + q.replace(".", "::") for q in quals]
         return ids
 
-    def helpers(self, limit: int = 30) -> list[tuple[dict, int]]:
-        """Reusable utilities: non-test functions called from >= 2 distinct files."""
+    UTILITY_PATH = re.compile(r"(^|/)(utils?|helpers?|common|shared|lib|core)(/|\.py$|_)", re.I)
+
+    def helpers(self, limit: int = 40) -> list[tuple[dict, int]]:
+        """Reusable utilities: public non-test functions called from >= 2 files, or documented functions in
+        utility modules (util/helpers/common/shared/lib/core)."""
         out = []
         for s in self.symbols.values():
             if s["kind"] != "function" or s["is_test"] or s["name"].startswith("_"):
                 continue
             files = {e["src"].split("#")[0] for e in self.inc.get(s["id"], []) if e["type"] == "calls"}
-            if len(files) >= 2:
+            if len(files) >= 2 or (s["doc"] and self.UTILITY_PATH.search(s["file"])):
                 out.append((s, len(files)))
         out.sort(key=lambda x: (-x[1], x[0]["id"]))
         return out[:limit]

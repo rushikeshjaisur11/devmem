@@ -23,6 +23,7 @@ SQL_START = re.compile(r"^\s*(select|insert|create|with|merge|update|delete)\b",
 LANGS = {".py": "python", ".sql": "sql", ".js": "js", ".ts": "ts", ".tsx": "ts", ".yaml": "yaml",
          ".yml": "yaml", ".ipynb": "notebook", ".md": "markdown"}
 MAX_FILE_BYTES = 1_000_000
+PARSER_VERSION = 2  # bump when per-file records gain fields (forces re-parse of cached files)
 
 
 def git_head(root: Path) -> str | None:
@@ -125,14 +126,48 @@ SPARK_READ = {"table"}
 SPARK_WRITE = {"saveAsTable", "insertInto"}
 
 
+def _exc_names(node) -> list[str]:
+    if node is None:
+        return []
+    if isinstance(node, ast.Tuple):
+        return [n for e in node.elts for n in _exc_names(e)]
+    if isinstance(node, ast.Call):
+        return _exc_names(node.func)
+    if isinstance(node, ast.Name):
+        return [node.id]
+    if isinstance(node, ast.Attribute):
+        return [node.attr]
+    return []
+
+
+def _features(tree) -> dict:
+    """Small per-file counters used for convention detection."""
+    exc, raises, decs, bare = {}, {}, {}, 0
+    for n in ast.walk(tree):
+        if isinstance(n, ast.ExceptHandler):
+            if n.type is None:
+                bare += 1
+            for name in _exc_names(n.type):
+                exc[name] = exc.get(name, 0) + 1
+        elif isinstance(n, ast.Raise):
+            for name in _exc_names(n.exc):
+                raises[name] = raises.get(name, 0) + 1
+        elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            for d in n.decorator_list:
+                head = ast.unparse(d).split("(")[0]
+                decs[head] = decs.get(head, 0) + 1
+    return {"except": exc, "raises": raises, "decorators": decs, "bare_except": bare}
+
+
 def parse_python(path: str, src: str) -> tuple[dict, list[dict]]:
     """Return (file_record, symbols)."""
-    rec = {"lang": "python", "imports": [], "tables": [], "calls": []}
+    rec = {"lang": "python", "imports": [], "tables": [], "calls": [], "lines": len(src.splitlines())}
     syms: list[dict] = []
     try:
         tree = ast.parse(src)
     except SyntaxError:
         return rec, syms
+    rec["features"] = _features(tree)
     test_file = _is_test_file(path)
     pkg_parts = path.replace("\\", "/").split("/")[:-1]
 
@@ -230,7 +265,7 @@ def index_repo(root: str | Path, name: str | None = None, write: bool = True) ->
         h = _hash(raw)
         lang = LANGS.get(fp.suffix.lower(), "other")
         old = prev.get("files", {}).get(rel)
-        if old and old.get("hash") == h:
+        if old and old.get("hash") == h and old.get("v") == PARSER_VERSION:
             idx["files"][rel] = old
             idx["symbols"].extend(prev_syms.get(rel, []))
             stats["reused"] += 1
@@ -242,6 +277,7 @@ def index_repo(root: str | Path, name: str | None = None, write: bool = True) ->
         else:
             rec, syms = {"lang": lang, "imports": [], "tables": [], "calls": []}, []
         rec["hash"] = h
+        rec["v"] = PARSER_VERSION
         idx["files"][rel] = rec
         idx["symbols"].extend(syms)
         stats["parsed"] += 1

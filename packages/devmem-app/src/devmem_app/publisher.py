@@ -10,6 +10,7 @@ from devmem.knowledge import (AGENTS_INDEX_BUDGET, KNOWLEDGE_DIR, check_knowledg
 from devmem.schema import knowledge_header
 
 from . import commands as cmdmod
+from . import conventions
 from .ranking import pagerank, render_map
 
 DEFAULT_CONFIG = """# devmem repo config (reviewed like code)
@@ -73,7 +74,7 @@ steps:
 """
 
 AGENT_BLOCK = """## devmem (code knowledge)
-Read `.devmem/knowledge/map.md` first; run/test commands are in `commands.md`, known lint/dead-code state in `hygiene.md`; module details are in `.devmem/knowledge/modules/`.
+Read `.devmem/knowledge/map.md` first; run/test commands are in `commands.md`, known lint/dead-code state in `hygiene.md`, house patterns in `conventions.md`, reusable code in `helpers.md`; module details are in `.devmem/knowledge/modules/`.
 Do not read whole files to explore. Use the CLI (`pip install devmem`):
 - `devmem find "<concept>"` ranked hits; `devmem show <symbol>` one symbol; `devmem outline <file>`
 - `devmem impact <symbol|table>` callers, tests, dependents before changing it
@@ -159,6 +160,12 @@ def publish(root: str | Path, idx: dict) -> list[str]:
         if ext_in:
             card.append("Used by: " + ", ".join(f"`{x}`" for x in ext_in))
         _write(root, f"{k}/modules/{m.strip('()')}.md", "\n".join(card), commit, written)
+
+    # conventions.md + helpers.md
+    conv = conventions.detect(idx, root)
+    if conv:
+        _write(root, f"{k}/conventions.md", conventions.render_conventions_md(conv), commit, written)
+    _write(root, f"{k}/helpers.md", conventions.render_helpers_md(idx, root), commit, written)
 
     # commands.md + tests.md (commands.json keeps verification results across publishes)
     from devmem.check import load_flaky
