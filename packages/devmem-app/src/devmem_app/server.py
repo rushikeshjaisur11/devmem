@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 from . import chat as chat_mod
 from . import hygiene as hyg
+from . import metrics as metrics_mod
 from . import lineage as lin_mod
 from . import memory as am
 from .indexer import git_head, index_repo
@@ -346,7 +347,20 @@ def create_app() -> FastAPI:
                 "knowledge_problems": check_knowledge(root, git_head(root)) if (root / ".devmem/knowledge").exists() else ["not published"],
                 "hygiene_trend": [json.loads(l) for l in hist.read_text().splitlines() if l.strip()] if hist.exists() else [],
                 "hotspots": json.loads(hh.read_text()).get("hotspots", []) if hh.exists() else [],
-                "pr_metrics": None}
+                "pr_metrics": metrics_mod.summary(root)}
+
+    @app.post("/api/metrics/devin")
+    async def ingest_devin(request: Request):
+        import tempfile
+        raw = await request.body()
+        with tempfile.NamedTemporaryFile("wb", suffix=".json", delete=False) as t:
+            t.write(raw)
+        try:
+            return metrics_mod.ingest_devin(Path(t.name))
+        except (ValueError, KeyError, AttributeError, TypeError) as e:
+            raise HTTPException(422, f"not a session export: {e}")
+        finally:
+            Path(t.name).unlink(missing_ok=True)
 
     # ---------- memory ----------
     @app.get("/api/memory")

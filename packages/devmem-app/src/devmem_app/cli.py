@@ -54,6 +54,8 @@ def main(argv=None) -> int:
     s.add_argument("--repos", help="comma-separated repo names (share)"); s.add_argument("--all", action="store_true")
     s.add_argument("--applies-to", default="**"); s.add_argument("--repo", help="repo name to write the rule/lesson into")
     s.add_argument("--fix", help="fix text (approving a lesson proposal)"); s.add_argument("--severity", default="rule")
+    s = sub.add_parser("metrics", help="PR metrics: show a repo's before/after summary, or ingest a Devin session export")
+    s.add_argument("action", choices=["show", "ingest-devin"]); s.add_argument("arg", help="repo name (show) or JSON file (ingest-devin)")
     s = sub.add_parser("ui", help="start the local web app")
     s.add_argument("--port", type=int, default=8765); s.add_argument("--no-open", action="store_true")
     s = sub.add_parser("clones", help="token-level duplicate code across all onboarded repos")
@@ -125,6 +127,19 @@ def main(argv=None) -> int:
             print("written:", mem.approve(a.arg, tgt, a.severity, a.fix))
         elif a.action == "reject":
             mem.reject(a.arg); print("rejected")
+    elif a.cmd == "metrics":
+        from . import metrics as mt
+        if a.action == "ingest-devin":
+            print(mt.ingest_devin(Path(a.arg)))
+        else:
+            r = mt.summary(Path(_ws()["repos"][a.arg]))
+            print(f"devmem added: {r['split'] or 'unknown'}; {r['agent_commits']} agent commits of {r['commits_scanned']} scanned")
+            for who in ("agent", "human"):
+                for k, v in r[who].items():
+                    print(f"  {who:6} {k:6} {v}")
+            print("  runs:", {k: v for k, v in r["runs"].items() if k != "recent"})
+            if r["devin"]:
+                print("  devin:", r["devin"])
     elif a.cmd == "ui":
         import threading
         import webbrowser

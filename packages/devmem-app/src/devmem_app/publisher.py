@@ -81,6 +81,7 @@ Do not read whole files to explore. CLI (`pip install devmem`):
 - `devmem find "<concept>"`, `show <symbol>`, `outline <file>`; `helpers` reusable code
 - `devmem impact <symbol|table|table.column>` before changing anything
 - `devmem check` lint/types/affected tests; `devmem diffcheck` before every commit (exception: `devmem-allow: <check> <reason>` in the PR)
+- Before the PR: `devmem report --base <default-branch> --task "<what>"` and commit `.devmem/metrics/`
 - Learned something non-obvious? `devmem remember "<title>" --problem .. --fix ..`; rate recalls: `devmem feedback <id> useful|useless`
 Rules: `.devmem/rules.md`, `knowledge/rules.md`. Minimal diffs: only what the task needs; no unrelated reformatting, new dependencies or signature changes. Details by topic: commands.md, hygiene.md, conventions.md, helpers.md, lineage.md, history.md, no-touch.md. Stale stamp => trust the code."""
 

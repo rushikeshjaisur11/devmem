@@ -96,7 +96,7 @@ def test_hygiene_and_metrics(api):
     h = api.get("/api/repos/messy/hygiene").json()
     assert h["available"] and h["counts"]["vulture"] >= 3 and h["clones"]
     m = api.get("/api/repos/messy/metrics").json()
-    assert m["symbols"] > 0 and m["pr_metrics"] is None and m["hygiene_trend"]
+    assert m["symbols"] > 0 and m["pr_metrics"]["commits_scanned"] == 0 and m["hygiene_trend"]
 
 
 def test_memory_flow(api):
@@ -157,3 +157,9 @@ def test_chat_retrieval_and_llm(api, monkeypatch):
         def generate(self, prompt): raise RuntimeError("quota")
     res = chat.ask("slug", {"conv_app": api.repos["conv_app"]}, provider=Boom())
     assert res["mode"] == "retrieval" and "quota" in res["llm_error"]
+
+
+def test_devin_upload_endpoint(api):
+    body = json.dumps([{"id": "d1", "created_at": "2026-02-01T00:00:00Z", "acus": 4}])
+    assert api.post("/api/metrics/devin", content=body, headers=H).json()["new"] == 1
+    assert api.post("/api/metrics/devin", content="42", headers=H).status_code == 422

@@ -106,6 +106,18 @@ def cmd_diffcheck(ix, a) -> int:
     return 0
 
 
+def cmd_report(ix, a) -> int:
+    from . import diffcheck as dc
+    from .report import build_record, write_record
+    root = dc.repo_root()
+    rec = build_record(root, a.base, a.task or "", a.tokens, a.recalls, a.rounds)
+    path = write_record(root, rec)
+    v = rec["violations"]
+    print(f"recorded {path.relative_to(root).as_posix()}: {rec['files']} files, +{rec['added']}/-{rec['removed']}, "
+          f"{len(v['blocked'])} blocked, {len(v['allowed'])} allowed. Commit it with the PR.")
+    return 0
+
+
 def _changed_paths(a) -> list[str]:
     if a.files:
         return a.files
@@ -219,8 +231,12 @@ def main(argv=None) -> int:
     s.add_argument("--base", help="compare BASE...HEAD (CI)")
     s.add_argument("--allow-file", action="append", help="file whose devmem-allow: lines apply (e.g. PR body)")
     s.set_defaults(fn=cmd_diffcheck, nolog=True)
+    s = sub.add_parser("report", help="record this PR's diff size and diffcheck result in .devmem/metrics/runs (commit it)")
+    s.add_argument("--base"); s.add_argument("--task"); s.add_argument("--tokens", type=int, help="tokens/ACUs the agent knows it used")
+    s.add_argument("--recalls", type=int); s.add_argument("--rounds", type=int, help="review rounds so far")
+    s.set_defaults(fn=cmd_report, nolog=True)
     a = p.parse_args(argv)
-    if a.cmd == "diffcheck":
+    if a.cmd in ("diffcheck", "report"):
         try:
             ix = Index.load()
         except FileNotFoundError:
