@@ -3,7 +3,10 @@ name = "devmem-app"
 version = "0.1.0"
 description = "Indexer, graph and (later) publisher/UI for devmem."
 requires-python = ">=3.10"
-dependencies = ["devmem", "sqlglot>=25"]
+dependencies = ["devmem", "sqlglot>=25", "fastapi>=0.110", "uvicorn>=0.29"]
+
+[project.optional-dependencies]
+test = ["httpx", "pytest"]
 
 [project.scripts]
 devmem-app = "devmem_app.cli:main"
@@ -14,3 +17,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+devmem_app = ["ui_dist/**/*"]

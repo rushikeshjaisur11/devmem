@@ -52,6 +52,8 @@ def main(argv=None) -> int:
     s.add_argument("--repos", help="comma-separated repo names (share)"); s.add_argument("--all", action="store_true")
     s.add_argument("--applies-to", default="**"); s.add_argument("--repo", help="repo name to write the rule/lesson into")
     s.add_argument("--fix", help="fix text (approving a lesson proposal)"); s.add_argument("--severity", default="rule")
+    s = sub.add_parser("ui", help="start the local web app")
+    s.add_argument("--port", type=int, default=8765); s.add_argument("--no-open", action="store_true")
     s = sub.add_parser("clones", help="token-level duplicate code across all onboarded repos")
     a = p.parse_args(argv)
 
@@ -121,6 +123,14 @@ def main(argv=None) -> int:
             print("written:", mem.approve(a.arg, tgt, a.severity, a.fix))
         elif a.action == "reject":
             mem.reject(a.arg); print("rejected")
+    elif a.cmd == "ui":
+        import threading
+        import webbrowser
+
+        import uvicorn
+        if not a.no_open:
+            threading.Timer(1.0, lambda: webbrowser.open(f"http://127.0.0.1:{a.port}")).start()
+        uvicorn.run("devmem_app.server:app", host="127.0.0.1", port=a.port, log_level="warning")
     elif a.cmd == "clones":
         from .clones import clones_for_repo, find_clones
         srcs = {}
