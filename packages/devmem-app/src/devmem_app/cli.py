@@ -62,6 +62,9 @@ def main(argv=None) -> int:
     s.add_argument("action", choices=["show", "ingest-devin"]); s.add_argument("arg", help="repo name (show) or JSON file (ingest-devin)")
     s = sub.add_parser("ui", help="start the local web app")
     s.add_argument("--port", type=int, default=8765); s.add_argument("--no-open", action="store_true")
+    s = sub.add_parser("reuse", help="what other onboarded repos already built for a need, and the effort to adapt it into --into")
+    s.add_argument("need"); s.add_argument("--into", required=True, help="target repo name"); s.add_argument("-n", "--limit", type=int, default=5)
+    s.add_argument("--prompt", action="store_true"); s.add_argument("--json", action="store_true")
     s = sub.add_parser("clones", help="token-level duplicate code across all onboarded repos")
     a = p.parse_args(argv)
 
@@ -152,6 +155,21 @@ def main(argv=None) -> int:
         if not a.no_open:
             threading.Timer(1.0, lambda: webbrowser.open(f"http://127.0.0.1:{a.port}")).start()
         uvicorn.run("devmem_app.server:app", host="127.0.0.1", port=a.port, log_level="warning")
+    elif a.cmd == "reuse":
+        from devmem import reuse as core
+        from .reuse import live
+        repos = _ws()["repos"]
+        if a.into not in repos:
+            sys.exit(f"unknown repo {a.into}; onboarded: {', '.join(repos)}")
+        hits = live(a.need, a.into, repos, a.limit)
+        if a.json:
+            print(json.dumps(hits, indent=1))
+        for h in ([] if a.json else hits):
+            print(core.render_card(h["score"], h["entry"], h["fit"]) + "\n")
+            if a.prompt:
+                print(h["prompt"] + "\n")
+        if not hits and not a.json:
+            print("nothing in the other repos matches; write it fresh")
     elif a.cmd == "clones":
         from .clones import clones_for_repo, find_clones
         srcs = {}

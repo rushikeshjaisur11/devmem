@@ -9,7 +9,7 @@ devmem keeps token use low and diffs small. Follow this order; every step replac
 
 ## 0. Make sure the CLI exists (once per session)
 
-Run `devmem --version`. If it is missing, run `bash <this skill folder>/scripts/bootstrap.sh` (it installs the wheel bundled in `vendor/`, or from git if `DEVMEM_GIT_URL` is set). If all fail, tell the user and continue without devmem. Do not retry in a loop.
+Run `devmem --version`. If it is missing, run `bash <this skill folder>/scripts/bootstrap.sh` (it installs the wheel bundled in `vendor/`, or from git if `DEVMEM_GIT_URL` is set). If all fail, tell the user and continue without devmem. Do not retry in a loop. If `devmem reuse --help` fails, the installed CLI is older than this skill: run `python3 -m pip install --force-reinstall <this skill folder>/vendor/devmem-*.whl`.
 
 If `.devmem/index.json` does not exist in the repo, devmem has no data here: work normally and mention that `devmem-app publish <repo>` has not been run.
 
@@ -17,7 +17,8 @@ If `.devmem/index.json` does not exist in the repo, devmem has no data here: wor
 
 1. `devmem recall "<the task in one sentence>"`: lessons already learned, standing rules, and code other repos already solved. Apply them. Rate what you used: `devmem feedback <id> useful` or `useless`.
 2. Read `.devmem/knowledge/map.md` (ranked repo map), then only the topic files that match the task (`commands.md`, `conventions.md`, `helpers.md`, `lineage.md`, `no-touch.md`, `hygiene.md`).
-3. Locate code: `devmem find "<concept>"`, `devmem show <symbol>`, `devmem outline <file>`. Prefer these to `grep`/`cat` on whole files. Reuse what `devmem helpers` lists before writing a new helper.
+3. Before writing anything non-trivial, `devmem reuse "<what you need>"`: finds code other onboarded repos already built, shows its source, tests and what it depends on, and rates the effort to adapt it here (`--prompt` prints porting instructions). Copy with a one-line origin comment and fit this repo's conventions instead of rewriting.
+4. Locate code: `devmem find "<concept>"`, `devmem show <symbol>`, `devmem outline <file>`. Prefer these to `grep`/`cat` on whole files. Reuse what `devmem helpers` lists before writing a new helper.
 
 ## 2. Scope the change
 

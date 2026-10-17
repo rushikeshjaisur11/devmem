@@ -11,9 +11,11 @@ import Share from "./pages/Share";
 import Graph from "./pages/Graph";
 import Metrics from "./pages/Metrics";
 import Chat from "./pages/Chat";
+import Reuse from "./pages/Reuse";
 
 const ic = (d: string) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" dangerouslySetInnerHTML={{ __html: d }} />;
 const ICONS: Record<string, string> = {
+  reuse: '<path d="M17 2l4 4-4 4"/><path d="M3 11V9a3 3 0 0 1 3-3h15"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a3 3 0 0 1-3 3H3"/>',
   repos: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
   explorer: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
   impact: '<circle cx="12" cy="12" r="2"/><path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 7.8a6 6 0 0 1 0 8.4M4.9 4.9a10 10 0 0 0 0 14.2M19.1 4.9a10 10 0 0 1 0 14.2"/>',
@@ -25,9 +27,9 @@ const ICONS: Record<string, string> = {
   chat: '<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/>',
   metrics: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
 };
-const GROUPS: [string, string[]][] = [["Explore", ["repos", "explorer", "impact", "graph", "lineage"]], ["Quality", ["hygiene", "memory", "metrics"]], ["Collaborate", ["share", "chat"]]];
+const GROUPS: [string, string[]][] = [["Explore", ["repos", "explorer", "reuse", "impact", "graph", "lineage"]], ["Quality", ["hygiene", "memory", "metrics"]], ["Collaborate", ["share", "chat"]]];
 const PAGES: [string, string, any][] = [
-  ["repos", "Repos", Repos], ["explorer", "Explorer", Explorer], ["impact", "Impact", Impact], ["graph", "Graph", Graph],
+  ["repos", "Repos", Repos], ["explorer", "Explorer", Explorer], ["reuse", "Reuse", Reuse], ["impact", "Impact", Impact], ["graph", "Graph", Graph],
   ["lineage", "Lineage", Lineage], ["hygiene", "Hygiene", Hygiene], ["memory", "Memory", Memory], ["share", "Share", Share],
   ["chat", "Chat", Chat], ["metrics", "Metrics", Metrics],
 ];

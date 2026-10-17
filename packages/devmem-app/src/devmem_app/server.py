@@ -315,6 +315,17 @@ def create_app() -> FastAPI:
             out["column_reads"] = [r for r in lin["reads"] if r["col"].rsplit(".", 1)[0] == table]
         return out
 
+    # ---------- cross-repo reuse ----------
+    @app.get("/api/reuse")
+    def reuse_search(q: str, into: str, limit: int = 6):
+        from .reuse import live
+        repos = ws()["repos"]
+        if into not in repos:
+            raise HTTPException(404, f"unknown repo {into}")
+        if not (Path(repos[into]) / ".devmem/index.json").exists():
+            raise HTTPException(409, f"{into} is not indexed yet")
+        return live(q, into, repos, max(1, min(limit, 15)))
+
     # ---------- graph ----------
     @app.get("/api/graph/overview")
     def graph_overview():

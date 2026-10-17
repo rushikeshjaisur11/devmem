@@ -61,7 +61,7 @@ machine: `pip install -e packages/devmem`.
 ### 4. Run the web UI
     devmem-app ui                      # http://127.0.0.1:8765, opens your browser (--port N, --no-open)
 
-The built UI ships inside the package, so Node is not needed to use it. Pages: Repos, Explorer, Impact, Graph, Lineage,
+The built UI ships inside the package, so Node is not needed to use it. Pages: Repos, Explorer, Reuse, Impact, Graph, Lineage,
 Hygiene, Memory, Metrics, Share, Chat. Light/dark follows your OS; the sidebar button overrides it.
 
 - **Onboard** a repo from a local path or a git URL (https, ssh or `git@host:path`; cloned into `~/.devmem/clones/<name>` with your
@@ -77,7 +77,22 @@ To change the UI (React + Vite, source in `ui/`):
     npm run dev                        # terminal 2: hot-reload UI on :5173, proxies /api to :8765
     npm run build                      # writes packages/devmem-app/src/devmem_app/ui_dist (commit it)
 
-### 5. Improve accuracy (optional)
+### 5. Cross-repo reuse
+Onboard the repos you want to borrow from, then ask for what you need:
+
+    devmem-app reuse "retry a failing call with backoff" --into my-service --prompt
+    # or the Reuse page in the UI
+
+Each hit shows the source, its tests, and an *effort to reuse* rating for the target repo: packages the target doesn't use yet, name
+clashes, helpers to copy along, tables it touches, language mismatch, and similar code the target already has.
+
+**How agents see it (Devin, Claude Code, Copilot):** agents only read what is committed in the repo they work in, so
+`devmem-app publish <repo>` writes `.devmem/reuse-catalog.json` (the best ~150 public functions/classes of every *other* onboarded
+repo, source trimmed to 60 lines, file capped at 1.5 MB). The plugin's skill then runs `devmem reuse "<need>"` and `devmem recall`
+offline against it. Re-publish after the source repos change; it is a snapshot. It copies code from your other repos into this one, so
+only onboard repos that are fine to share with each other.
+
+### 6. Improve accuracy (optional)
 Structural edges alone are about 92% precise (see [docs/ACCURACY.md](docs/ACCURACY.md)). Layer in independent sources:
 
     pip install graphifyy                                 # tree-sitter call graph, no LLM or key

@@ -160,7 +160,32 @@ def cmd_hygiene(ix: Index, a) -> int:
 
 def cmd_recall(ix: Index, a) -> int:
     from . import memory
-    print(memory.format_recall(memory.recall(ix, a.task, a.files, a.limit)))
+    r = memory.recall(ix, a.task, a.files, a.limit)
+    from . import reuse
+    hits = [h for h in reuse.reuse(ix, a.task, limit=2) if h["score"] >= 0.5]
+    if hits:   # catalog search is far better than the keyword pointers; show it instead
+        r["cross_repo"] = []
+    print(memory.format_recall(r))
+    if hits:
+        print("ALSO SOLVED IN OTHER REPOS (`devmem reuse \"<need>\"` for source and how to adapt)")
+        for h in hits:
+            e = h["entry"]
+            print(f" {e['repo']}:{e['file']}:{e['line']}  {e['sig'] or e['name']}  [effort to reuse: {h['fit']['effort']}]")
+    return 0
+
+
+def cmd_reuse(ix: Index, a) -> int:
+    from . import reuse
+    if not reuse.load_catalog(ix.root):
+        print("no reuse catalog: onboard the other repos in devmem-app, then `devmem-app publish` this one")
+        return 0
+    hits = reuse.reuse(ix, a.need, limit=a.limit)
+    for h in hits:
+        print(reuse.render_card(h["score"], h["entry"], h["fit"], a.lines) + "\n")
+        if a.prompt:
+            print(reuse.port_prompt(h["entry"], h["fit"], ix.data["repo"]) + "\n")
+    if not hits:
+        print("nothing in other repos matches; write it fresh")
     return 0
 
 
@@ -224,6 +249,11 @@ def main(argv=None) -> int:
     s = sub.add_parser("recall", help="lessons, rules and cross-repo pointers for a task")
     s.add_argument("task"); s.add_argument("--files", nargs="*"); s.add_argument("-n", "--limit", type=int, default=3)
     s.set_defaults(fn=cmd_recall)
+    s = sub.add_parser("reuse", help="code other onboarded repos already built for a need, with how much work it is to adapt here")
+    s.add_argument("need"); s.add_argument("-n", "--limit", type=int, default=3)
+    s.add_argument("--lines", type=int, default=40, help="source lines to print per hit")
+    s.add_argument("--prompt", action="store_true", help="also print a ready-to-use porting instruction")
+    s.set_defaults(fn=cmd_reuse)
     s = sub.add_parser("remember", help="save a lesson (problem + fix) as a file for your PR")
     s.add_argument("title"); s.add_argument("--problem"); s.add_argument("--fix")
     s.add_argument("--tag", action="append"); s.add_argument("--ref", action="append", help="path#symbol")

@@ -76,7 +76,7 @@ steps:
 """
 
 AGENT_BLOCK = """## devmem (code knowledge)
-Start: `devmem recall "<task>"` (lessons, rules, code solved elsewhere), then `.devmem/knowledge/map.md`.
+Start: `devmem recall "<task>"` (lessons, rules), `devmem reuse "<need>"` (code other repos already built), then `.devmem/knowledge/map.md`.
 Do not read whole files to explore. CLI (`pip install devmem`):
 - `devmem find "<concept>"`, `show <symbol>`, `outline <file>`; `helpers` reusable code
 - `devmem impact <symbol|table|table.column>` before changing anything
@@ -203,6 +203,9 @@ def publish(root: str | Path, idx: dict, peers: dict | None = None) -> list[str]
         entries = memmod.build_cross_repo(idx["repo"], root, peers)
         if entries:
             _write(root, f"{k}/cross-repo.md", memmod.render_cross_repo_md(entries), commit, written)
+        from . import reuse as reusemod
+        if reusemod.write_catalog(idx["repo"], root, peers):
+            written.append(".devmem/reuse-catalog.json")
 
     # no-touch.md: defaults + detected + repo-owned .devmem/no-touch.txt
     from devmem import notouch
