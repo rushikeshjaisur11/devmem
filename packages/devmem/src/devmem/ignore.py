@@ -5,7 +5,7 @@ import fnmatch
 from pathlib import Path
 
 DEFAULT_PATTERNS = [
-    ".git/", ".devmem/", "node_modules/", "__pycache__/", ".venv/", "venv/", "dist/", "build/",
+    ".git/", ".devmem/", "graphify-out/", "node_modules/", "__pycache__/", ".venv/", "venv/", "dist/", "build/",
     "*.egg-info/", ".pytest_cache/", ".ruff_cache/", ".mypy_cache/",
     "*.lock", "package-lock.json", "poetry.lock", "uv.lock", "yarn.lock",
     "*.min.js", "*.pyc", "*.ipynb_checkpoints/", "data/samples/", "*.csv", "*.parquet",

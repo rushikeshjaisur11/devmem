@@ -1,0 +1,7 @@
+{
+  "name": "devmem",
+  "version": "0.1.0",
+  "description": "Token-lean, minimal-diff coding: repo map, blast radius, targeted tests, diff guard, and lessons that carry across repos.",
+  "keywords": ["tokens", "code-graph", "impact", "diffcheck", "memory"],
+  "skills": ["skills"]
+}

@@ -17,7 +17,9 @@ from pathlib import Path
 from devmem.ignore import Ignore
 from devmem.schema import INDEX_PATH, new_index
 
-from . import graph, jsparse, scip as scip_mod
+from . import graph, jsparse
+from . import graphify as graphify_mod
+from . import scip as scip_mod
 
 SQL_START = re.compile(r"^\s*(select|insert|create|with|merge|update|delete)\b", re.I)
 LANGS = {".py": "python", ".sql": "sql", ".js": "js", ".jsx": "js", ".mjs": "js", ".cjs": "js", ".ts": "ts", ".tsx": "ts", ".mts": "ts", ".yaml": "yaml",
@@ -277,7 +279,8 @@ def parse_sql_file(src: str) -> dict:
 
 
 # ---------- driver ----------
-def index_repo(root: str | Path, name: str | None = None, write: bool = True, scip: bool | list = False) -> dict:
+def index_repo(root: str | Path, name: str | None = None, write: bool = True, scip: bool | list = False,
+               graphify: bool | Path | str = False) -> dict:
     """scip=True runs scip-python/scip-typescript; a list of .scip paths imports prebuilt indexes. Cached SCIP edges are
     always merged while the files they cover are unchanged."""
     root = Path(root).resolve()
@@ -337,6 +340,15 @@ def index_repo(root: str | Path, name: str | None = None, write: bool = True, sc
         if files:
             scip_mod.build_cache(root, idx, files)
         stats["scip_messages"] = msgs
+    if graphify:
+        gf, msg = (Path(graphify), "") if not isinstance(graphify, bool) else graphify_mod.run_graphify(root)
+        if gf:
+            graphify_mod.build_cache(root, idx, gf)
+        elif msg:
+            stats["graphify_message"] = msg
+    gs = graphify_mod.apply_cache(root, idx)       # structural second opinion first, then SCIP (type-resolved) wins
+    if gs:
+        stats["graphify"] = gs
     sc = scip_mod.apply_cache(root, idx)
     if sc:
         stats["scip"] = sc

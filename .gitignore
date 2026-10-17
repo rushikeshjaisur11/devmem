@@ -6,3 +6,7 @@ __pycache__/
 .devmem/
 ui/node_modules/
 ui/dist/
+graphify-out/
+.devmem/metrics/
+node_modules/
+build/

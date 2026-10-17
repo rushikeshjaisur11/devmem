@@ -2,7 +2,7 @@
 
 Cross-repo code knowledge for coding agents (Devin primary, Copilot). Plan: the "devmem — Full Application Plan" doc.
 
-## Status (build steps 1-16)
+## Status (build steps 1-18)
 - [x] 1. Core formats (`devmem.schema`), `.devmemignore`, fixture repos + golden tests
 - [x] 2. Indexer: Python (stdlib `ast`), SQL + Spark table lineage (sqlglot), incremental by content hash
 - [x] 3. Graph: call/test/table edges with confidence; impact (hop 1 required, hop 2 contract check, utility cap, tests separate)
@@ -19,6 +19,8 @@ Cross-repo code knowledge for coding agents (Devin primary, Copilot). Plan: the 
 - [x] 14. Metrics loop: `devmem report` writes a per-PR record (diff size, diffcheck result, agent-reported tokens) to `.devmem/metrics/runs/`; `devmem-app metrics show|ingest-devin` and the Metrics page compare agent commits before vs after devmem was added (from git history), summarize PR reports, and read an exported Devin sessions JSON (offline)
 - [x] 15. JS/TS: tree-sitter parser (`pip install devmem-app[js]`) for functions, classes, methods, arrow consts, ES imports/require, jest/vitest tests as symbols; import-resolved call/test edges; `tests-for`/`check` run the right JS test files (vitest, jest or `npm test`), eslint and `tsc --noEmit`; eslint and knip in hygiene
 - [x] 16. SCIP: `devmem-app index <repo> --scip` (needs Node; runs scip-python / scip-typescript) or `--scip-file x.scip`; precise edges upgrade structural ones and replace ambiguous guesses; cached per file hash in `.devmem/scip-edges.json`
+- [x] 17. Graphify cross-check (`devmem-app index --graphify`), tightened name resolution (edge precision 0.81 -> 0.92 on psf/requests; see docs/ACCURACY.md), `scripts/accuracy.py`
+- [x] 18. Plugin for Devin (and Claude Code / Copilot / Cursor): `plugins/devmem` with three skills and a bundled wheel; install steps in docs/INSTALL.md
 - [ ] Not yet: Graphify + scip-python as extra edge sources, SQLite/FTS5 store, eslint/knip (JS/TS) hygiene
 
 ## Use

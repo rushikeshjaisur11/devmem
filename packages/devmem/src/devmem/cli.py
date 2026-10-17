@@ -193,8 +193,17 @@ def cmd_feedback(ix: Index, a) -> int:
     return 0
 
 
+def _version() -> str:
+    try:
+        from importlib.metadata import version
+        return version("devmem")
+    except Exception:
+        return "unknown"
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="devmem", description="Code knowledge for coding agents")
+    p.add_argument("--version", action="version", version="devmem " + _version())
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("find", help="ranked path:line hits for a concept")
     s.add_argument("query"); s.add_argument("-n", "--limit", type=int, default=10); s.set_defaults(fn=cmd_find)

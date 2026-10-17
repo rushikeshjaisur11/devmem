@@ -5,10 +5,20 @@ Where several sources give the same edge, the highest confidence wins.
 """
 from __future__ import annotations
 
+from devmem.jsresolve import resolve as _js_resolve
 from devmem.schema import CONF_AMBIGUOUS, CONF_STRUCTURAL
 
 RANK = {"precise": 3, "structural": 2, "ambiguous": 1, "co-change": 0}
 MAX_AMBIGUOUS = 3
+# Method names that collide with builtins (dict/list/str/set): `x.items()` matched to some user class that happens to
+# define `items` was wrong 9 times in 10 on psf/requests, so these never resolve by name alone.
+BUILTIN_METHODS = {"items", "values", "keys", "pop", "popitem", "setdefault", "update", "copy", "clear", "append", "extend",
+                   "insert", "remove", "add", "discard", "join", "split", "strip", "format", "encode", "decode", "replace",
+                   "lower", "upper", "sort", "index", "count", "find", "startswith", "endswith", "push", "slice", "map",
+                   "filter", "reduce", "forEach", "toString"}
+# Generic verbs (also on files, clients, loggers): the candidate must live in the caller's file or a file it imports.
+COMMON_METHODS = {"get", "send", "run", "start", "stop", "load", "dump", "dumps", "loads", "read", "write", "close", "open",
+                  "then", "catch", "json", "text"}
 
 
 def _module_files(files: dict, module: str) -> list[str]:
@@ -17,9 +27,6 @@ def _module_files(files: dict, module: str) -> list[str]:
         return []
     suffixes = (module.replace(".", "/") + ".py", module.replace(".", "/") + "/__init__.py")
     return [f for f in files if any(f == s or f.endswith("/" + s) for s in suffixes)]
-
-
-from devmem.jsresolve import resolve as _js_resolve
 
 
 def _js_files(files: dict, importer: str, spec: str) -> list[str]:
@@ -53,8 +60,21 @@ def _js_cands(path, rec, c, files, by_id, by_name, by_file, local, from_imp, mod
             out += [s for q, s in by_file.get(f, {}).items() if s["name"] == name and "." not in q]
         return out
     if head in from_imp or head == "this" or recv.startswith("new "):
-        return [s for s in by_name.get(name, []) if s["kind"] == "method"]
+        out = [] if name in BUILTIN_METHODS else [s for s in by_name.get(name, []) if s["kind"] == "method"]
+        if name in COMMON_METHODS:
+            near = {path} | {f for i in rec.get("imports", []) for f in _js_files(files, path, i["module"])}
+            out = [s for s in out if s["file"] in near]
+        return out
     return []  # unknown receiver (builtin, parameter, library): leave it unresolved
+
+
+def _imported_files(files: dict, path: str, imports: list[dict]) -> set[str]:
+    out = {path}
+    for i in imports:
+        out.update(_module_files(files, i["module"]))
+        if i["name"]:
+            out.update(_module_files(files, f"{i['module']}.{i['name']}"))
+    return out
 
 
 def build_edges(idx: dict) -> list[dict]:
@@ -131,10 +151,15 @@ def build_edges(idx: dict) -> list[dict]:
                 if not cands and head in mod_alias:
                     for f in _module_files(files, mod_alias[head]):
                         cands += [s for q, s in by_file.get(f, {}).items() if s["name"] == name and "." not in q]
-                if not cands and head not in mod_alias and head not in from_imp:
+                if not cands and head not in mod_alias:
                     cands = [s for s in by_name.get(name, []) if s["kind"] == "method"]
                 elif not cands and head in from_imp:  # Class.method / imported_obj.method
                     cands = [s for s in by_name.get(name, []) if s["kind"] == "method"]
+                if cands and name in BUILTIN_METHODS:
+                    cands = []
+                elif cands and name in COMMON_METHODS:
+                    near = _imported_files(files, path, imports)
+                    cands = [s for s in cands if s["file"] in near]
             if not cands:
                 continue
             if len(cands) > 1:

@@ -1,0 +1,7 @@
+{
+  "name": "devmem",
+  "owner": { "name": "devmem" },
+  "plugins": [
+    { "name": "devmem", "source": "./plugins/devmem", "description": "Token-lean, minimal-diff coding with a code graph, impact analysis, diff guard and cross-repo lessons." }
+  ]
+}
