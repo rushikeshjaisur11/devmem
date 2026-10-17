@@ -17,16 +17,16 @@ from pathlib import Path
 from devmem.ignore import Ignore
 from devmem.schema import INDEX_PATH, new_index
 
-from . import graph
+from . import graph, jsparse, scip as scip_mod
 
 SQL_START = re.compile(r"^\s*(select|insert|create|with|merge|update|delete)\b", re.I)
-LANGS = {".py": "python", ".sql": "sql", ".js": "js", ".ts": "ts", ".tsx": "ts", ".yaml": "yaml",
+LANGS = {".py": "python", ".sql": "sql", ".js": "js", ".jsx": "js", ".mjs": "js", ".cjs": "js", ".ts": "ts", ".tsx": "ts", ".mts": "ts", ".yaml": "yaml",
          ".yml": "yaml", ".ipynb": "notebook", ".md": "markdown"}
 MAX_FILE_BYTES = 1_000_000
 MAX_SQL_STMTS, MAX_SQL_LEN = 60, 20_000
 COLUMN_FUNCS = {"select", "withColumn", "col", "groupBy", "groupby", "orderBy", "sort", "drop", "withColumnRenamed",
                 "sum", "avg", "max", "min", "count", "countDistinct", "first", "collect_list", "agg", "join"}
-PARSER_VERSION = 3  # bump when per-file records gain fields (forces re-parse of cached files)
+PARSER_VERSION = 4  # bump when per-file records gain fields (forces re-parse of cached files)
 
 
 def git_head(root: Path) -> str | None:
@@ -277,7 +277,9 @@ def parse_sql_file(src: str) -> dict:
 
 
 # ---------- driver ----------
-def index_repo(root: str | Path, name: str | None = None, write: bool = True) -> dict:
+def index_repo(root: str | Path, name: str | None = None, write: bool = True, scip: bool | list = False) -> dict:
+    """scip=True runs scip-python/scip-typescript; a list of .scip paths imports prebuilt indexes. Cached SCIP edges are
+    always merged while the files they cover are unchanged."""
     root = Path(root).resolve()
     prev = {}
     p = root / INDEX_PATH
@@ -292,6 +294,7 @@ def index_repo(root: str | Path, name: str | None = None, write: bool = True) ->
 
     idx = new_index(name or root.name, git_head(root))
     stats = {"parsed": 0, "reused": 0}
+    js_ok = jsparse.available()
     for rel in list_files(root):
         fp = root / rel
         try:
@@ -312,6 +315,14 @@ def index_repo(root: str | Path, name: str | None = None, write: bool = True) ->
             rec, syms = parse_python(rel, raw.decode("utf-8", "replace"))
         elif lang == "sql":
             rec, syms = parse_sql_file(raw.decode("utf-8", "replace")), []
+        elif lang in ("js", "ts") and js_ok:
+            try:
+                rec, syms = jsparse.parse_js(rel, raw.decode("utf-8", "replace"))
+            except Exception:
+                rec, syms = {"lang": lang, "imports": [], "tables": [], "calls": []}, []
+        elif lang in ("js", "ts"):
+            stats["js_skipped"] = stats.get("js_skipped", 0) + 1  # pip install devmem-app[js]
+            rec, syms = {"lang": lang, "imports": [], "tables": [], "calls": []}, []
         else:
             rec, syms = {"lang": lang, "imports": [], "tables": [], "calls": []}, []
         rec["hash"] = h
@@ -321,6 +332,14 @@ def index_repo(root: str | Path, name: str | None = None, write: bool = True) ->
         stats["parsed"] += 1
 
     idx["edges"] = graph.build_edges(idx)
+    if scip:
+        files, msgs = ([Path(f) for f in scip], []) if isinstance(scip, list) else scip_mod.run_indexer(root, idx)
+        if files:
+            scip_mod.build_cache(root, idx, files)
+        stats["scip_messages"] = msgs
+    sc = scip_mod.apply_cache(root, idx)
+    if sc:
+        stats["scip"] = sc
     idx["stats"] = stats
     if write:
         p.parent.mkdir(parents=True, exist_ok=True)

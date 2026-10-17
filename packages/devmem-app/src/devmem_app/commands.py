@@ -18,9 +18,11 @@ def _read(root: Path, name: str) -> str:
 def detect(root: str | Path) -> dict:
     root = Path(root)
     pyproject, reqs = _read(root, "pyproject.toml"), _read(root, "requirements.txt") + _read(root, "requirements-dev.txt")
-    pkg = {}
+    pkg, pkg_deps = {}, {}
     try:
-        pkg = json.loads(_read(root, "package.json") or "{}").get("scripts", {})
+        pj = json.loads(_read(root, "package.json") or "{}")
+        pkg = pj.get("scripts", {})
+        pkg_deps = {**pj.get("dependencies", {}), **pj.get("devDependencies", {})}
     except Exception:
         pass
     make = _read(root, "Makefile")
@@ -55,6 +57,19 @@ def detect(root: str | Path) -> dict:
 
     if "[tool.mypy" in pyproject or (root / "mypy.ini").exists() or "mypy" in reqs:
         out["types"] = "mypy {files}"
+    if pkg_deps or pkg:
+        if "vitest" in pkg_deps:
+            out["test_one_js"] = "npx vitest run {tests}"
+        elif "jest" in pkg_deps:
+            out["test_one_js"] = "npx jest {tests}"
+        elif "test" in pkg:
+            out["test_one_js"] = "npm test -- {tests}"
+        if "eslint" in pkg_deps or any(root.glob("eslint.config.*")) or any(root.glob(".eslintrc*")):
+            out["lint_js"] = "npx eslint {files}"
+        if (root / "tsconfig.json").exists():
+            out["types_js"] = "npx tsc --noEmit"
+        if "install" not in out and (root / "package.json").exists():
+            out["install"] = "npm install"
     return {k: {"cmd": v, "verified": None} for k, v in out.items()}
 
 

@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from .index import Index
+from .jsresolve import is_js
 from .runner import quote_all, run_cmd, summarize
 
 COMMANDS_PATH = ".devmem/commands.json"
@@ -25,12 +26,29 @@ def is_flaky(failed_line: str, flaky: list[str]) -> bool:
     return any(f in failed_line for f in flaky)
 
 
-def tests_for(ix: Index, paths: list[str]) -> tuple[list[str], str | None]:
-    """(pytest node ids, ready-to-run command or None)."""
-    ids = Index.pytest_ids(ix.tests_for_files(paths))
+def test_commands(ix: Index, paths: list[str]) -> tuple[list[str], list[str]]:
+    """(selected test ids/files, ready-to-run commands): pytest ids for Python tests, test files for JS/TS runners."""
+    sel = ix.tests_for_files(paths)
+    py = {f: q for f, q in sel.items() if not is_js(f)}
+    js = sorted(f for f in sel if is_js(f))
     cmds = load_commands(ix.root)
-    tmpl = (cmds.get("test_one") or {}).get("cmd") or "python -m pytest -q {tests}"
-    return ids, (tmpl.replace("{tests}", quote_all(ids)) if ids else None)
+    ids, out = [], []
+    if py:
+        pids = Index.pytest_ids(py)
+        tmpl = (cmds.get("test_one") or {}).get("cmd") or "python -m pytest -q {tests}"
+        ids += pids
+        out.append(tmpl.replace("{tests}", quote_all(pids)))
+    if js:
+        tmpl = (cmds.get("test_one_js") or {}).get("cmd") or "npm test -- {tests}"
+        ids += js
+        out.append(tmpl.replace("{tests}", quote_all(js)))
+    return ids, out
+
+
+def tests_for(ix: Index, paths: list[str]) -> tuple[list[str], str | None]:
+    """(test ids, one ready-to-run command or None)."""
+    ids, cmds = test_commands(ix, paths)
+    return ids, (" && ".join(cmds) if cmds else None)
 
 
 def _log_failure(root: Path, kind: str, lines: list[str]) -> None:
@@ -49,14 +67,20 @@ def _log_failure(root: Path, kind: str, lines: list[str]) -> None:
 def run_check(ix: Index, paths: list[str]) -> int:
     root, cmds, flaky = ix.root, load_commands(ix.root), load_flaky(ix.root)
     py = [p for p in paths if p.endswith(".py") and (root / p).exists()]
+    js = [p for p in paths if is_js(p) and (root / p).exists()]
     failed = False
     steps = []
     for name in ("lint", "types"):
         spec = cmds.get(name)
         if spec and py:
             steps.append((name, spec["cmd"].replace("{files}", quote_all(py))))
-    ids, tcmd = tests_for(ix, paths)
-    if tcmd:
+    if js:
+        if cmds.get("lint_js"):
+            steps.append(("lint", cmds["lint_js"]["cmd"].replace("{files}", quote_all(js))))
+        if cmds.get("types_js"):
+            steps.append(("types", cmds["types_js"]["cmd"]))
+    ids, tcmds = test_commands(ix, paths)
+    for tcmd in tcmds:
         steps.append(("test", tcmd))
     if not steps:
         print("nothing to check (no lint/types commands detected and no mapped tests)")
@@ -68,8 +92,8 @@ def run_check(ix: Index, paths: list[str]) -> int:
             print(f"ok   {kind} ({r['secs']}s)")
             continue
         if kind == "test":
-            real = [l for l in lines if l.startswith(("FAILED", "ERROR")) and not is_flaky(l, flaky)]
-            known = [l for l in lines if l.startswith(("FAILED", "ERROR")) and is_flaky(l, flaky)]
+            real = [l for l in lines if l.startswith(("FAILED", "ERROR", "FAIL ")) and not is_flaky(l, flaky)]
+            known = [l for l in lines if l.startswith(("FAILED", "ERROR", "FAIL ")) and is_flaky(l, flaky)]
             if not real and known and r["code"] == 1:
                 print(f"ok   test ({len(known)} known flaky failure(s) ignored: " + "; ".join(k[:80] for k in known) + ")")
                 continue

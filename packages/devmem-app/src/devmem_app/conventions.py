@@ -42,7 +42,7 @@ class Detector:
         for f, (n, line) in scores.items():
             if _is_test(f) and not tests_ok:
                 continue
-            size = self.recs[f].get("lines", 100)
+            size = self.recs.get(f, {}).get("lines", 100)
             sc = 3 * n + min(self.inbound[f], 10) - size / 200
             if sc > best_s:
                 best, best_s = f, sc
@@ -153,7 +153,7 @@ class Detector:
 
     def retries(self):
         styles, scores = Counter(), {}
-        syms = [s for s in self.idx["symbols"] if s["kind"] == "function" and re.search(r"retry|backoff", s["name"], re.I)
+        syms = [s for s in self.idx["symbols"] if s["file"] in self.recs and s["kind"] == "function" and re.search(r"retry|backoff", s["name"], re.I)
                 and not _is_test(s["file"])]
         for s in syms:
             n = sum(1 for e in self.idx["edges"] if e["dst"] == s["id"] and e["type"] == "calls")

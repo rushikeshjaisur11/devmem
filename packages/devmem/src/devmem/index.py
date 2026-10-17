@@ -6,6 +6,8 @@ import re
 from collections import defaultdict, deque
 from pathlib import Path
 
+from .jsresolve import is_js
+from .jsresolve import resolve as js_resolve
 from .schema import INDEX_PATH, MAX_HOPS, UTILITY_CALLER_CAP
 
 
@@ -173,6 +175,10 @@ class Index:
             if not found:  # fallback: test files that import this module
                 for tf, ts in tests_by_file.items():
                     for imp in self.data["files"][tf].get("imports", []):
+                        if is_js(tf):
+                            if path in js_resolve(self.data["files"], tf, imp["module"]):
+                                picked[tf] |= {t["qualname"] for t in ts}
+                            continue
                         mods = {imp["module"], f"{imp['module']}.{imp['name']}" if imp["name"] else imp["module"]}
                         if any(path in self._module_paths(m) for m in mods):
                             picked[tf] |= {t["qualname"] for t in ts}

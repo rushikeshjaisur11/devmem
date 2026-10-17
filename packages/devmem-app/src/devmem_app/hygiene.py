@@ -58,6 +58,71 @@ def run_ruff(root, py):
     return out, "ok"
 
 
+def parse_eslint(text: str, root: Path) -> list[dict]:
+    out = []
+    for f in json.loads(text or "[]"):
+        for m in f.get("messages", []):
+            out.append(_issue("eslint", _rel(root, f["filePath"]), m.get("line", 1), m.get("ruleId") or "parse-error", m["message"],
+                              severity="error" if m.get("severity") == 2 else "warning"))
+    return out
+
+
+def parse_knip(text: str) -> list[dict]:
+    d = json.loads(text or "{}")
+    out = [_issue("knip", f, 1, "unused-file", "file is not imported by anything") for f in d.get("files", [])]
+    kinds = (("dependencies", "unused-dependency"), ("devDependencies", "unused-dev-dependency"), ("unlisted", "unlisted-dependency"),
+             ("unresolved", "unresolved-import"), ("exports", "unused-export"), ("types", "unused-type"))
+    for it in d.get("issues", []):
+        for key, code in kinds:
+            for e in it.get(key, []):
+                out.append(_issue("knip", it["file"], e.get("line", 1), code, e["name"]))
+    return out
+
+
+def _js_tool(root: Path, name: str) -> list[str] | None:
+    import shutil
+    b = root / "node_modules" / ".bin"
+    if not ((b / name).exists() or (b / f"{name}.cmd").exists()):
+        return None
+    npx = shutil.which("npx") or shutil.which("npx.cmd")
+    return [npx, "--no-install", name] if npx else None
+
+
+def _has_eslint_config(root: Path) -> bool:
+    return any(root.glob("eslint.config.*")) or any(root.glob(".eslintrc*"))
+
+
+def run_eslint(root, js):
+    if not js:
+        return [], "-"
+    if not _has_eslint_config(root):
+        return None, "skipped: no eslint config"
+    t = _js_tool(root, "eslint")
+    if not t:
+        return None, "unavailable: run npm install"
+    out = []
+    for ch in _chunks(js):
+        r = run_argv([*t, "-f", "json", *ch], root)
+        try:
+            out += parse_eslint(r["out"], root)
+        except (json.JSONDecodeError, KeyError):
+            return out, f"error: {(r['err'] or r['out'])[:100]}"
+    return out, "ok"
+
+
+def run_knip(root, js):
+    if not js:
+        return [], "-"
+    t = _js_tool(root, "knip")
+    if not t:
+        return None, "unavailable: add knip as a devDependency"
+    r = run_argv([*t, "--reporter", "json"], root)
+    try:
+        return parse_knip(r["out"]), "ok"
+    except (json.JSONDecodeError, KeyError):
+        return None, f"error: {(r['err'] or r['out'])[:100]}"
+
+
 def run_vulture(root, py, ix=None):
     t = find_tool("vulture")
     if not t:
@@ -164,10 +229,12 @@ def run_hygiene(root: str | Path, idx: dict, name: str | None = None, history: b
     files = sorted(idx["files"])
     py = [f for f in files if f.endswith(".py")]
     sql = [f for f in files if f.endswith(".sql")]
+    js = [f for f in files if f.endswith((".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts"))]
     issues, tools = [], {}
     for tool, fn in (("ruff", lambda: run_ruff(root, py)), ("vulture", lambda: run_vulture(root, py, idx)),
                      ("radon", lambda: run_radon(root, py)), ("deptry", lambda: run_deptry(root)),
-                     ("bandit", lambda: run_bandit(root, py)), ("sqlfluff", lambda: run_sqlfluff(root, sql))):
+                     ("bandit", lambda: run_bandit(root, py)), ("sqlfluff", lambda: run_sqlfluff(root, sql)),
+                     ("eslint", lambda: run_eslint(root, js)), ("knip", lambda: run_knip(root, js))):
         res, status = fn()
         tools[tool] = status
         issues += res or []
@@ -201,7 +268,9 @@ def render_hygiene_md(h: dict) -> str:
     lines = ["# Hygiene", "Current lint / dead-code / complexity / dependency / security state. Do not add new items of "
              "these kinds; fix them only when the task touches that code.", "",
              "| Tool | Findings | Status |", "| --- | --- | --- |"]
-    for t in ("ruff", "vulture", "radon", "deptry", "bandit", "sqlfluff"):
+    for t in ("ruff", "vulture", "radon", "deptry", "bandit", "sqlfluff", "eslint", "knip"):
+        if h["tools"].get(t, "-") == "-":
+            continue
         lines.append(f"| {t} | {c.get(t, 0)}{delta(t)} | {h['tools'].get(t, '-')} |")
     lines.append(f"| clones | {c.get('clones', 0)}{delta('clones')} | ok |")
 
@@ -231,6 +300,21 @@ def render_hygiene_md(h: dict) -> str:
     if sq:
         sc = Counter(i["code"] for i in sq)
         lines += ["", "## SQL style (sqlfluff)"] + [f"- `{k}` x{n}" for k, n in sc.most_common(5)]
+    es = by("eslint")
+    if es:
+        ec = Counter(i["code"] for i in es)
+        lines += ["", "## JS/TS lint rules in force (eslint, most frequent)"] + [f"- `{k}` x{n}" for k, n in ec.most_common(6)]
+    kn = by("knip")
+    if kn:
+        files_ = [i for i in kn if i["code"] == "unused-file"]
+        if files_:
+            lines += ["", "## Unused JS/TS files (do not extend; remove only if asked)"] + [f"- `{i['path']}`" for i in files_[:8]]
+        ex = [i for i in kn if i["code"] in ("unused-export", "unused-type")]
+        if ex:
+            lines += ["", "## Unused exports"] + [f"- `{i['path']}:{i['line']}` {i['msg']}" for i in ex[:8]]
+        dp = [i for i in kn if "dependency" in i["code"] or i["code"] == "unresolved-import"]
+        if dp:
+            lines += ["", "## JS dependencies"] + [f"- {i['code']} {i['msg']}" for i in dp[:8]]
     if h["clones"]:
         lines += ["", "## Duplicated code (reuse, do not copy again)"]
         lines += [f"- `{c_['a']}:{c_['a_lines'][0]}-{c_['a_lines'][1]}` ~ `{c_['b']}:{c_['b_lines'][0]}-{c_['b_lines'][1]}`"

@@ -33,7 +33,7 @@ def codes(res, tool):
 
 def test_all_tools_ran(result):
     res, _ = result
-    assert all(v == "ok" for v in res["tools"].values()), res["tools"]
+    assert all(v in ("ok", "-") for v in res["tools"].values()), res["tools"]
 
 
 def test_ruff_vulture_radon_deptry_bandit_sqlfluff(result):

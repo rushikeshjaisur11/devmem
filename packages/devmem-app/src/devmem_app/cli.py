@@ -33,6 +33,8 @@ def main(argv=None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("add", help="onboard a repo (local clone path)"); s.add_argument("path"); s.add_argument("--name")
     s = sub.add_parser("index", help="(re)index a path, or all onboarded repos"); s.add_argument("path", nargs="?")
+    s.add_argument("--scip", action="store_true", help="also run scip-python/scip-typescript (needs Node) for type-resolved edges")
+    s.add_argument("--scip-file", action="append", help="import a prebuilt index.scip instead of running the indexers")
     s = sub.add_parser("find", help="search across all onboarded repos"); s.add_argument("query")
     s = sub.add_parser("ask", help="ask a question across onboarded repos (retrieval; --llm adds a Vertex answer)")
     s.add_argument("question"); s.add_argument("--repo", action="append"); s.add_argument("--llm", action="store_true")
@@ -71,7 +73,7 @@ def main(argv=None) -> int:
     elif a.cmd == "index":
         targets = {Path(a.path).name: a.path} if a.path else _ws()["repos"]
         for name, path in targets.items():
-            idx = index_repo(path, name)
+            idx = index_repo(path, name, scip=a.scip_file or a.scip)
             print(f"{name}: {len(idx['symbols'])} symbols, {len(idx['edges'])} edges {idx['stats']}")
     elif a.cmd == "publish":
         from .publisher import commit_branch, publish

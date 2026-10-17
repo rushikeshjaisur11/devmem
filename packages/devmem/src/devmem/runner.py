@@ -38,7 +38,7 @@ def quote_all(items) -> str:
 def summarize(kind: str, out: str, limit: int = 15) -> list[str]:
     lines = [l.rstrip() for l in out.splitlines() if l.strip()]
     if kind == "test":
-        fails = [l for l in lines if re.match(r"(FAILED|ERROR) ", l)]
+        fails = [l for l in lines if re.match(r"(FAILED|ERROR|FAIL) ", l)]
         last = [l for l in lines if re.search(r"\d+ (passed|failed|error)", l)][-1:]
         if fails or last:
             return [l[:200] for l in fails[:limit]] + (["…"] if len(fails) > limit else []) + last

@@ -19,6 +19,44 @@ def _module_files(files: dict, module: str) -> list[str]:
     return [f for f in files if any(f == s or f.endswith("/" + s) for s in suffixes)]
 
 
+from devmem.jsresolve import resolve as _js_resolve
+
+
+def _js_files(files: dict, importer: str, spec: str) -> list[str]:
+    return _js_resolve(files, importer, spec)
+
+
+def _js_cands(path, rec, c, files, by_id, by_name, by_file, local, from_imp, mod_alias) -> list[dict]:
+    name, recv = c["name"], c["recv"]
+    if recv is None:
+        if name in from_imp:
+            imp = from_imp[name]
+            out = []
+            for f in _js_files(files, path, imp["module"]):
+                syms = by_file.get(f, {})
+                if imp["name"] == "default":
+                    d = files[f].get("default_export")
+                    out += [syms[d]] if d in syms else []
+                else:
+                    out += [s for q, s in syms.items() if s["name"] == imp["name"] and "." not in q]
+            return out
+        if name in local and "." not in name:
+            return [local[name]]
+        return [s for s in by_name.get(name, []) if s["kind"] != "method"]
+    head = recv.split(".")[0].split("(")[0]
+    if recv == "this" and "." in c["caller"]:
+        q = f"{c['caller'].split('.')[0]}.{name}"
+        return [local[q]] if q in local else []
+    if head in mod_alias:
+        out = []
+        for f in _js_files(files, path, mod_alias[head]):
+            out += [s for q, s in by_file.get(f, {}).items() if s["name"] == name and "." not in q]
+        return out
+    if head in from_imp or head == "this" or recv.startswith("new "):
+        return [s for s in by_name.get(name, []) if s["kind"] == "method"]
+    return []  # unknown receiver (builtin, parameter, library): leave it unresolved
+
+
 def build_edges(idx: dict) -> list[dict]:
     files = idx["files"]
     by_id = {s["id"]: s for s in idx["symbols"]}
@@ -38,6 +76,23 @@ def build_edges(idx: dict) -> list[dict]:
             best[k] = conf
 
     for path, rec in files.items():
+        if rec.get("lang") in ("js", "ts"):
+            imports = rec.get("imports", [])
+            from_imp = {i["alias"]: i for i in imports if i["name"]}
+            mod_alias = {i["alias"]: i["module"] for i in imports if not i["name"]}
+            local = by_file.get(path, {})
+            for c in rec.get("calls", []):
+                src_id = f"{path}#{c['caller']}"
+                if src_id not in by_id:
+                    continue
+                cands = _js_cands(path, rec, c, files, by_id, by_name, by_file, local, from_imp, mod_alias)
+                if not cands or len(cands) > MAX_AMBIGUOUS:
+                    continue
+                conf = CONF_AMBIGUOUS if len(cands) > 1 else CONF_STRUCTURAL
+                for d in cands:
+                    if d["id"] != src_id:
+                        add(src_id, d["id"], "tests" if by_id[src_id]["is_test"] else "calls", conf)
+            continue
         if rec.get("lang") != "python":
             # SQL files: table edges attach to the file itself
             for t in rec.get("tables", []):
