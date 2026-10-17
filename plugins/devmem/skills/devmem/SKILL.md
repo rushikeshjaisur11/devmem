@@ -17,7 +17,8 @@ If `.devmem/index.json` does not exist in the repo, devmem has no data here: wor
 
 1. `devmem recall "<the task in one sentence>"`: lessons already learned, standing rules, and code other repos already solved. Apply them. Rate what you used: `devmem feedback <id> useful` or `useless`.
 2. Read `.devmem/knowledge/map.md` (ranked repo map), then only the topic files that match the task (`commands.md`, `conventions.md`, `helpers.md`, `lineage.md`, `no-touch.md`, `hygiene.md`).
-3. Before writing anything non-trivial, `devmem reuse "<what you need>"`: finds code other onboarded repos already built, shows its source, tests and what it depends on, and rates the effort to adapt it here (`--prompt` prints porting instructions). Copy with a one-line origin comment and fit this repo's conventions instead of rewriting.
+3. Before writing anything non-trivial, look for code that already exists in the organisation's other repos: `devmem reuse "<what you need>"`. It shows source, tests and dependencies of matching code and rates the effort to adapt it here (`--prompt` prints porting instructions). Copy with a one-line origin comment and fit this repo's conventions instead of rewriting.
+   - If `.devmem/hub.txt` exists (or `DEVMEM_HUB` is set) there is a central knowledge hub with every onboarded repo. Run `devmem hub sync` once per session (needs git read access to it; if it fails, carry on: `devmem reuse` falls back to the catalog committed in this repo). `devmem hub repos` lists what the hub knows; `devmem hub show <repo>` prints another repo's overview.
 4. Locate code: `devmem find "<concept>"`, `devmem show <symbol>`, `devmem outline <file>`. Prefer these to `grep`/`cat` on whole files. Reuse what `devmem helpers` lists before writing a new helper.
 
 ## 2. Scope the change

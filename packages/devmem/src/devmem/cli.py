@@ -176,16 +176,55 @@ def cmd_recall(ix: Index, a) -> int:
 
 def cmd_reuse(ix: Index, a) -> int:
     from . import reuse
-    if not reuse.load_catalog(ix.root):
-        print("no reuse catalog: onboard the other repos in devmem-app, then `devmem-app publish` this one")
+    entries, note = reuse.all_entries(ix.root)
+    if note:
+        print(f"[{note}]")
+    if not entries:
+        print("no reuse catalog or hub: onboard the other repos in devmem-app, then `devmem-app publish` this one (or set up a hub)")
         return 0
-    hits = reuse.reuse(ix, a.need, limit=a.limit)
+    hits = reuse.reuse(ix, a.need, entries, limit=a.limit)
     for h in hits:
         print(reuse.render_card(h["score"], h["entry"], h["fit"], a.lines) + "\n")
         if a.prompt:
             print(reuse.port_prompt(h["entry"], h["fit"], ix.data["repo"]) + "\n")
     if not hits:
         print("nothing in other repos matches; write it fresh")
+    return 0
+
+
+def cmd_hub(ix: Index, a) -> int:
+    from . import hub
+    s = hub.spec(ix.root)
+    if not s:
+        print("no hub configured (.devmem/hub.txt or DEVMEM_HUB): this repo only has its own committed catalog")
+        return 0
+    if a.action == "sync":
+        d, note = hub.sync(s)
+        print(note + (f": {d}" if d else ""))
+        return 0 if d else 1
+    d, note = hub.resolve(ix.root, auto_sync=a.action != "status")
+    if note:
+        print(f"[{note}]")
+    if not d:
+        print(f"hub {s}: not available here (run `devmem hub sync`; needs git access to it)")
+        return 1
+    if a.action == "status":
+        ag = hub.age(d)
+        print(f"hub {s}\n  at {d}" + (f"\n  synced {int(ag // 3600)}h ago" if ag is not None else ""))
+    if a.action in ("status", "repos"):
+        for m in hub.repos(d):
+            print(f"  {m['name']}: {m.get('symbols', '?')} symbols, {', '.join(m.get('langs', {})) or '-'}"
+                  + (f"  [{m['origin']}]" if m.get("origin") else "") + (f"  @{m['branch']}" if m.get("branch") else ""))
+        print(f"  {len(hub.entries(d))} reusable symbols in catalog")
+    elif a.action == "show":
+        name = a.repo or ""
+        for f in ("overview.md", "map.md"):
+            p = d / "repos" / name / f
+            if p.exists():
+                print(p.read_text(encoding="utf-8")[: a.chars])
+                return 0
+        print(f"no knowledge for {name!r} in the hub; `devmem hub repos` lists what is there")
+        return 1
     return 0
 
 
@@ -254,6 +293,9 @@ def main(argv=None) -> int:
     s.add_argument("--lines", type=int, default=40, help="source lines to print per hit")
     s.add_argument("--prompt", action="store_true", help="also print a ready-to-use porting instruction")
     s.set_defaults(fn=cmd_reuse)
+    s = sub.add_parser("hub", help="central knowledge repo of all onboarded repos: sync | status | repos | show <repo>")
+    s.add_argument("action", choices=["sync", "status", "repos", "show"]); s.add_argument("repo", nargs="?")
+    s.add_argument("--chars", type=int, default=6000); s.set_defaults(fn=cmd_hub)
     s = sub.add_parser("remember", help="save a lesson (problem + fix) as a file for your PR")
     s.add_argument("title"); s.add_argument("--problem"); s.add_argument("--fix")
     s.add_argument("--tag", action="append"); s.add_argument("--ref", action="append", help="path#symbol")

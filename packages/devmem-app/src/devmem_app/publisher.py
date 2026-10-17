@@ -76,7 +76,7 @@ steps:
 """
 
 AGENT_BLOCK = """## devmem (code knowledge)
-Start: `devmem recall "<task>"` (lessons, rules), `devmem reuse "<need>"` (code other repos already built), then `.devmem/knowledge/map.md`.
+Start: `devmem recall "<task>"` (lessons, rules), `devmem reuse "<need>"` (code other repos built; hub: `.devmem/hub.txt`), then `.devmem/knowledge/map.md`.
 Do not read whole files to explore. CLI (`pip install devmem`):
 - `devmem find "<concept>"`, `show <symbol>`, `outline <file>`; `helpers` reusable code
 - `devmem impact <symbol|table|table.column>` before changing anything
@@ -206,6 +206,18 @@ def publish(root: str | Path, idx: dict, peers: dict | None = None) -> list[str]
         from . import reuse as reusemod
         if reusemod.write_catalog(idx["repo"], root, peers):
             written.append(".devmem/reuse-catalog.json")
+    hub_url = None
+    try:
+        from . import hub as hubmod2
+        hub_url = hubmod2.configured_url()
+    except Exception:
+        pass
+    hp = root / ".devmem/hub.txt"
+    if hub_url:
+        hp.write_text("# central knowledge hub (git): `devmem hub sync` pulls it, `devmem reuse` searches it\n" + hub_url + "\n", encoding="utf-8")
+        written.append(".devmem/hub.txt")
+    elif hp.exists():
+        hp.unlink()
 
     # no-touch.md: defaults + detected + repo-owned .devmem/no-touch.txt
     from devmem import notouch

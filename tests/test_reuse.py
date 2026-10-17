@@ -67,3 +67,78 @@ def test_search_ranks_name_over_noise():
           {"repo": "a", "name": "retry_with_backoff", "sig": "", "doc": "call again on failure", "file": "n.py", "line": 1}]
     assert core.search(es, "retry on failure")[0][1]["name"] == "retry_with_backoff"
     assert core.search(es, "zzzz") == []
+
+
+# ---------- embeddings, summaries, central hub ----------
+class FakeProvider:
+    """Embeds by concept: 'reliable'/'flaky'/'retry' land on the same axis, so meaning (not shared words) decides."""
+    name = "fake"
+    def embed(self, texts):
+        def v(t):
+            t = t.lower()
+            return [1.0 if any(w in t for w in ("retry", "reliable", "flaky", "backoff")) else 0.0,
+                    1.0 if any(w in t for w in ("sql", "table")) else 0.0, 0.1]
+        return [v(t) for t in texts]
+    def generate(self, prompt):
+        n = prompt.count("### ")
+        return json.dumps([{"i": i, "summary": "makes unreliable calls dependable by trying again; retry, flaky, resilient"} for i in range(n)])
+
+
+def test_embeddings_find_what_keywords_miss(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEVMEM_HOME", str(tmp_path / "home"))
+    repos = {k: str(v) for k, v in _repos(tmp_path).items()}
+    need = "make unreliable network calls dependable"           # shares no word with `retry`
+    assert app_reuse.live(need, "py_app", repos) == []
+    hits = app_reuse.live(need, "py_app", repos, provider=FakeProvider())
+    assert hits and "retry" in hits[0]["entry"]["name"].lower()
+
+
+def test_summaries_make_offline_keyword_search_semantic(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEVMEM_HOME", str(tmp_path / "home"))
+    entries = app_reuse.build_entries(Index.load(_repos(tmp_path)["conv_app"]))
+    need = "make unreliable calls dependable"
+    assert core.search(entries, need) == []
+    assert app_reuse.summarize(entries, FakeProvider()) == len(entries)
+    assert core.search(entries, need)                           # pure BM25, no provider, no network
+    assert app_reuse.summarize(entries, None) == len(entries)    # second run is served from the cache
+
+
+def test_hub_roundtrip_and_agent_reads_it_offline(tmp_path, monkeypatch, capsys):
+    from devmem import hub as agent_hub
+    from devmem.cli import main
+    from devmem_app import hub
+    monkeypatch.setenv("DEVMEM_HOME", str(tmp_path / "home"))
+    repos = {k: str(v) for k, v in _repos(tmp_path).items()}
+    hubdir = tmp_path / "central"
+    hub.configure(str(hubdir))
+    res = hub.push(repos)
+    assert set(res["repos"]) == {"conv_app", "py_app"} and res["committed"]
+    assert (hubdir / "catalog/conv_app.json").exists() and (hubdir / "repos/py_app/meta.json").exists() and (hubdir / "INDEX.md").exists()
+    assert hub.push(repos).get("note") == "no changes since the last sync"
+    assert not hub.configured_url()                              # a local path is never published to agents
+    # an agent in a repo that has NO committed catalog, pointed at the hub by env
+    work = tmp_path / "work"
+    shutil.copytree(FIX / "py_app", work)
+    index_repo(work, "work")
+    monkeypatch.setenv("DEVMEM_HUB", str(hubdir))
+    import os
+    cwd = os.getcwd(); os.chdir(work)
+    try:
+        assert main(["reuse", "retry with backoff"]) == 0
+        assert "conv_app:" in capsys.readouterr().out
+        assert main(["hub", "repos"]) == 0
+        out = capsys.readouterr().out
+        assert "conv_app" in out and "reusable symbols" in out
+    finally:
+        os.chdir(cwd)
+    assert agent_hub.spec(work) == str(hubdir)
+
+
+def test_hub_url_is_validated_and_credentials_stripped(tmp_path, monkeypatch):
+    from devmem_app import hub
+    monkeypatch.setenv("DEVMEM_HOME", str(tmp_path / "home"))
+    repo = tmp_path / "r"; repo.mkdir()
+    subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", "https://user:tok3n@github.com/o/r.git"], check=True)
+    assert hub._origin(repo) == "https://github.com/o/r.git"
+    assert hub.URL_OK.match("git@github.com:o/hub.git") and not hub.URL_OK.match("ext::sh -c id") and not hub.URL_OK.match("-oFoo=bar")

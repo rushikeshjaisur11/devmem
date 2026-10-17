@@ -65,6 +65,12 @@ def main(argv=None) -> int:
     s = sub.add_parser("reuse", help="what other onboarded repos already built for a need, and the effort to adapt it into --into")
     s.add_argument("need"); s.add_argument("--into", required=True, help="target repo name"); s.add_argument("-n", "--limit", type=int, default=5)
     s.add_argument("--prompt", action="store_true"); s.add_argument("--json", action="store_true")
+    s = sub.add_parser("hub", help="central knowledge repo for all onboarded repos: set <git-url|dir> | status | push")
+    s.add_argument("action", choices=["set", "status", "push"]); s.add_argument("spec", nargs="?")
+    s.add_argument("--push", action="store_true", help="also git push the hub to its remote")
+    s.add_argument("--summarize", action="store_true", help="have the configured LLM (Vertex) describe each function so offline search matches by meaning")
+    s.add_argument("--prune", action="store_true", help="remove repos from the hub that are no longer onboarded")
+    s.add_argument("--per-repo", type=int, default=400)
     s = sub.add_parser("clones", help="token-level duplicate code across all onboarded repos")
     a = p.parse_args(argv)
 
@@ -155,13 +161,32 @@ def main(argv=None) -> int:
         if not a.no_open:
             threading.Timer(1.0, lambda: webbrowser.open(f"http://127.0.0.1:{a.port}")).start()
         uvicorn.run("devmem_app.server:app", host="127.0.0.1", port=a.port, log_level="warning")
+    elif a.cmd == "hub":
+        from . import hub as hubmod
+        if a.action == "set":
+            if not a.spec:
+                sys.exit("usage: devmem-app hub set <git-url|directory>")
+            print(json.dumps(hubmod.configure(a.spec), indent=1))
+        elif a.action == "status":
+            print(json.dumps(hubmod.status(), indent=1))
+        else:
+            from .chat import provider_from_env
+            prov = provider_from_env() if a.summarize else None
+            if a.summarize and prov is None:
+                sys.exit("--summarize needs DEVMEM_VERTEX_PROJECT (and pip install google-genai)")
+            print(json.dumps(hubmod.push(_ws()["repos"], a.per_repo, prov, True, a.push, a.prune), indent=1))
     elif a.cmd == "reuse":
         from devmem import reuse as core
         from .reuse import live
         repos = _ws()["repos"]
         if a.into not in repos:
             sys.exit(f"unknown repo {a.into}; onboarded: {', '.join(repos)}")
-        hits = live(a.need, a.into, repos, a.limit)
+        try:
+            from .chat import provider_from_env
+            prov = provider_from_env()
+        except Exception:
+            prov = None
+        hits = live(a.need, a.into, repos, a.limit, provider=prov)
         if a.json:
             print(json.dumps(hits, indent=1))
         for h in ([] if a.json else hits):

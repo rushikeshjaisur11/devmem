@@ -324,7 +324,49 @@ def create_app() -> FastAPI:
             raise HTTPException(404, f"unknown repo {into}")
         if not (Path(repos[into]) / ".devmem/index.json").exists():
             raise HTTPException(409, f"{into} is not indexed yet")
-        return live(q, into, repos, max(1, min(limit, 15)))
+        try:
+            prov = chat_mod.provider_from_env()
+        except Exception:
+            prov = None
+        return live(q, into, repos, max(1, min(limit, 15)), provider=prov)
+
+    # ---------- central knowledge hub ----------
+    class HubSet(BaseModel):
+        spec: str
+
+    class HubPush(BaseModel):
+        push: bool = False
+        summarize: bool = False
+        prune: bool = False
+
+    @app.get("/api/hub")
+    def hub_status():
+        from . import hub as hubmod
+        return {**hubmod.status(), "llm": chat_mod.llm_status()}
+
+    @app.post("/api/hub")
+    def hub_set(body: HubSet):
+        from . import hub as hubmod
+        try:
+            return hubmod.configure(body.spec)
+        except (RuntimeError, subprocess.TimeoutExpired) as e:
+            raise HTTPException(422, str(e))
+
+    @app.post("/api/hub/push")
+    def hub_push(body: HubPush):
+        from . import hub as hubmod
+        prov = None
+        if body.summarize:
+            try:
+                prov = chat_mod.provider_from_env()
+            except Exception:
+                prov = None
+            if prov is None:
+                raise HTTPException(422, "summaries need DEVMEM_VERTEX_PROJECT and google-genai installed")
+        try:
+            return hubmod.push(ws()["repos"], 400, prov, True, body.push, body.prune)
+        except (RuntimeError, subprocess.TimeoutExpired) as e:
+            raise HTTPException(422, str(e))
 
     # ---------- graph ----------
     @app.get("/api/graph/overview")

@@ -92,6 +92,25 @@ repo, source trimmed to 60 lines, file capped at 1.5 MB). The plugin's skill the
 offline against it. Re-publish after the source repos change; it is a snapshot. It copies code from your other repos into this one, so
 only onboard repos that are fine to share with each other.
 
+#### Central knowledge hub (recommended for teams and Devin)
+Instead of copying code from every repo into every other repo, keep everything in one git repo that agents read:
+
+    devmem-app hub set git@github.com:acme/devmem-hub.git     # an empty repo you own; or the Knowledge hub page
+    devmem-app hub push --push                                 # all onboarded repos -> catalog/, repos/<name>/, lessons/, INDEX.md
+
+`devmem-app publish` then writes `.devmem/hub.txt` (the URL) into each repo. In a session the skill runs `devmem hub sync` (a shallow
+clone into `~/.cache/devmem`, never prompting for credentials) and `devmem reuse` / `devmem hub repos` / `devmem hub show <repo>` read it.
+Or skip the file and set `DEVMEM_HUB=<url>` in the agent's environment. The agent needs git read access to the hub; if it has none or is
+offline, `devmem reuse` quietly falls back to the catalog committed in the repo. A local-folder hub works for you on your machine but
+agents cannot reach it, so it is not written to `hub.txt`.
+
+#### Matching by meaning (optional)
+Keyword search misses a need phrased unlike the code. With Vertex configured (`pip install google-genai`, `DEVMEM_VERTEX_PROJECT`,
+`DEVMEM_VERTEX_EMBED_MODEL`), `devmem-app reuse` and the Reuse page blend embedding similarity into the ranking (cached on disk).
+Agents run offline and cannot embed a query, so for them add `--summarize` to `hub push`: the LLM writes a one-sentence description
+and related search words per function, stored in the catalog, which the offline keyword search then matches. Only code snippets of the
+functions being summarised go to Vertex, and results are cached by code hash.
+
 ### 6. Improve accuracy (optional)
 Structural edges alone are about 92% precise (see [docs/ACCURACY.md](docs/ACCURACY.md)). Layer in independent sources:
 

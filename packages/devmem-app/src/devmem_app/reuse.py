@@ -4,11 +4,13 @@ target repo lives in `devmem.reuse` (pure stdlib) so agents can run it offline f
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 
 from devmem import reuse as core
 from devmem.index import Index
 
+from .paths import devmem_home
 from .ranking import pagerank
 
 NODE_BUILTINS = {"fs", "path", "os", "http", "https", "url", "util", "crypto", "stream", "events", "child_process", "zlib", "net", "buffer", "assert"}
@@ -62,6 +64,64 @@ def build_entries(ix: Index, per_peer: int | None = 150, code_lines: int = 60) -
     return [_entry(ix, s, internal, code_lines) for s in (cands[:per_peer] if per_peer else cands)]
 
 
+def _etext(e: dict) -> str:
+    return f"{e['name']}. {e.get('summary', '')} {e.get('doc', '')} {e.get('sig', '')}"[:500]
+
+
+def rank(pool: list[dict], need: str, limit: int, provider=None) -> list[tuple[float, dict]]:
+    """BM25 always; with an embedding provider, blend in meaning-based similarity so a need phrased differently from the code
+    ("make flaky calls reliable" vs `retry`) still finds it. Embeddings are cached on disk per text."""
+    bm = core.search(pool, need, 60 if provider else limit)
+    if provider is None:
+        return bm
+    try:
+        from .chat import _cos, _embed_cached
+        cand = pool[:2000]
+        vecs = _embed_cached(provider, [need] + [_etext(e) for e in cand])
+        emb = sorted(((max(_cos(vecs[0], v), 0.0), e) for v, e in zip(vecs[1:], cand)), key=lambda x: -x[0])[:60]
+    except Exception:
+        return bm[:limit]   # embeddings are a boost, never a requirement
+    top = emb[0][0] or 1.0
+    blended: dict[tuple[str, str], list] = {}
+    for s, e in bm:
+        blended.setdefault((e["repo"], e["id"]), [0.0, 0.0, e])[0] = s
+    for s, e in emb:
+        blended.setdefault((e["repo"], e["id"]), [0.0, 0.0, e])[1] = s / top
+    out = [(round(0.5 * a + 0.5 * b, 3), e) for a, b, e in blended.values()]
+    out.sort(key=lambda x: (-x[0], x[1]["repo"], x[1]["file"], x[1]["line"]))
+    return out[:limit]
+
+
+def summarize(entries: list[dict], provider, batch: int = 12) -> int:
+    """Give each entry a plain-language `summary` (one sentence + related search words) written by the LLM, so the offline,
+    keyword-only agent search can match needs phrased differently from the identifiers. Cached by code hash."""
+    path = devmem_home() / "summary-cache.json"
+    cache = json.loads(path.read_text()) if path.exists() else {}
+    key = lambda e: hashlib.sha1(f"{e['repo']}|{e['id']}|{e.get('code', '')}".encode()).hexdigest()
+    todo = [e for e in entries if key(e) not in cache]
+    for i in range(0, len(todo), batch):
+        chunk = todo[i:i + batch]
+        prompt = ("For each Python/JS function below write ONE plain-English sentence saying what it does for a developer who "
+                  "has never seen it, then 6-10 related words someone might search for (synonyms, the problem it solves). "
+                  "Do not repeat the code. Reply with ONLY a JSON list: [{\"i\": 0, \"summary\": \"...\"}, ...]\n\n"
+                  + "\n\n".join(f"### {n}\n{e['sig']}\n{e.get('doc', '')}\n{(e.get('code') or '')[:700]}" for n, e in enumerate(chunk)))
+        try:
+            text = provider.generate(prompt).strip().strip("`")
+            text = text[text.index("["): text.rindex("]") + 1]
+            for item in json.loads(text):
+                cache[key(chunk[int(item["i"])])] = str(item["summary"])[:300]
+        except Exception:
+            continue   # a bad batch just stays unsummarized
+    if todo:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(cache))
+    n = 0
+    for e in entries:
+        if key(e) in cache:
+            e["summary"] = cache[key(e)]; n += 1
+    return n
+
+
 def _peers(name: str, root: Path, peers: dict[str, str | Path]):
     for pname, proot in peers.items():
         if pname == name or Path(proot).resolve() == Path(root).resolve():
@@ -89,7 +149,7 @@ def write_catalog(name: str, root: Path, peers: dict[str, str | Path], per_peer:
     return entries
 
 
-def live(need: str, target: str, repos: dict[str, str | Path], limit: int = 5, code_lines: int = 60) -> list[dict]:
+def live(need: str, target: str, repos: dict[str, str | Path], limit: int = 5, code_lines: int = 60, provider=None) -> list[dict]:
     """Search every other repo's current index (no catalog needed) and fit the best hits against `target`."""
     tix = Index.load(Path(repos[target]))
     pool, ixs = [], {}
@@ -97,7 +157,7 @@ def live(need: str, target: str, repos: dict[str, str | Path], limit: int = 5, c
         ixs[pname] = ix
         pool += build_entries(ix, None, 0)
     out = []
-    for score, e in core.search(pool, need, limit):
+    for score, e in rank(pool, need, limit, provider):
         ix = ixs[e["repo"]]
         full = _entry(ix, ix.symbols[e["id"]], _internal_names(ix), code_lines)
         out.append({"score": score, "entry": full, "fit": core.fit(full, tix), "prompt": core.port_prompt(full, core.fit(full, tix), target)})

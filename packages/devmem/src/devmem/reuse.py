@@ -26,7 +26,9 @@ def tokens(text: str) -> list[str]:
 
 def _doc(e: dict) -> str:
     # name words are weighted by repetition: a function called `retry_with_backoff` is the strongest signal
-    return f"{e['name']} {e['name']} {e['name']} {e.get('sig', '')} {e.get('doc', '')} {e['file']}"
+    # `summary` is an optional plain-language description written at publish time (LLM): it lets offline keyword search
+    # match a need phrased differently from the identifiers
+    return f"{e['name']} {e['name']} {e['name']} {e.get('summary', '')} {e.get('summary', '')} {e.get('sig', '')} {e.get('doc', '')} {e['file']}"
 
 
 def search(entries: list[dict], need: str, limit: int = 5) -> list[tuple[float, dict]]:
@@ -133,7 +135,17 @@ def port_prompt(e: dict, f: dict, target: str) -> str:
     return "\n".join(steps)
 
 
+def all_entries(root: Path, auto_sync: bool = True) -> tuple[list[dict], str]:
+    """The catalog committed in the repo plus the central hub's catalogs (hub wins on duplicates)."""
+    from . import hub
+    merged = {(e["repo"], e["id"]): e for e in load_catalog(root)}
+    d, note = hub.resolve(root, auto_sync)
+    if d:
+        merged.update({(e["repo"], e["id"]): e for e in hub.entries(d)})
+    return list(merged.values()), note
+
+
 def reuse(ix: Index, need: str, entries: list[dict] | None = None, limit: int = 3) -> list[dict]:
-    entries = load_catalog(ix.root) if entries is None else entries
+    entries = all_entries(ix.root)[0] if entries is None else entries
     entries = [e for e in entries if e["repo"] != ix.data.get("repo")]
     return [{"score": s, "entry": e, "fit": fit(e, ix)} for s, e in search(entries, need, limit)]

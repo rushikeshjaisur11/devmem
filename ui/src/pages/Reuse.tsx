@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { api, q } from "../api";
-import { Badge, Empty, Err, RepoSelect, useRepos } from "../components";
+import { Badge, Empty, Err, RepoSelect, useAsync, useRepos } from "../components";
 import { nav } from "../route";
 
 const EFFORT: Record<string, string> = { low: "good", medium: "warn", high: "bad" };
@@ -56,6 +56,7 @@ export default function Reuse({ params }: { params: Record<string, string> }) {
   const [res, setRes] = useState<any[] | null>(null);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
+  const llm = useAsync(() => api.get("/api/chat/status"), []);
   const peers = (repos.data || []).filter((r) => r.indexed && r.name !== into).length;
 
   async function go() {
@@ -76,6 +77,10 @@ export default function Reuse({ params }: { params: Record<string, string> }) {
             onChange={(e) => setNeed(e.target.value)} onKeyDown={(e) => e.key === "Enter" && need.trim() && into && go()} aria-label="What do you need" />
           <button className="primary" disabled={!need.trim() || !into || busy} onClick={go}>{busy ? "Searching…" : "Find reusable code"}</button>
         </div>
+        <p className="muted" style={{ margin: "10px 0 0", fontSize: 12.5 }}>
+          Ranking: {llm.data?.embeddings ? <Badge kind="good">semantic (embeddings) + keywords</Badge> : <Badge>keywords only</Badge>}
+          {!llm.data?.embeddings && <> Set <code>DEVMEM_VERTEX_PROJECT</code> and <code>DEVMEM_VERTEX_EMBED_MODEL</code> to also match by meaning.</>}
+        </p>
         {repos.data && peers === 0 && <p className="muted" style={{ margin: "10px 0 0" }}>Only one repo is indexed. Onboard the repos you want to borrow from on the Repos page.</p>}
       </div>
       <Err msg={err} />
