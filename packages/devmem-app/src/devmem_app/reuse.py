@@ -39,17 +39,25 @@ def _ext_imports(ix: Index, s: dict, code: str, internal: set[str]) -> list[str]
     return sorted(out)
 
 
-def _entry(ix: Index, s: dict, internal: set[str], code_lines: int) -> dict:
+def _specs(ix: Index) -> dict[str, str]:
+    from .docs import _norm, scan_deps
+    return {_norm(d["name"]): d["spec"] for d in scan_deps(ix.root)}
+
+
+def _entry(ix: Index, s: dict, internal: set[str], code_lines: int, specs: dict[str, str] | None = None) -> dict:
     code = ix.source(s)
     lines = code.splitlines()
     tables = sorted({e["dst"][6:] for e in ix.out.get(s["id"], []) if e["type"] in ("reads", "writes") and e["dst"].startswith("table:")})
     tests = [ix.symbols[e["src"]] for e in ix.inc.get(s["id"], []) if e["type"] == "tests" and e["src"] in ix.symbols]
     deps = [{"name": d["qualname"], "sig": d["sig"], "file": d["file"], "line": d["line"], "same_file": d["file"] == s["file"]}
             for d in ix.callees(s) if not d["is_test"] and d["id"] != s["id"]][:MAX_DEPS]
+    from .docs import _norm
+    ext = _ext_imports(ix, s, code, internal)
+    specs = _specs(ix) if specs is None else specs
     return {"repo": ix.data["repo"], "id": s["id"], "name": s["qualname"], "kind": s["kind"], "sig": s["sig"], "doc": s["doc"],
             "file": s["file"], "line": s["line"], "end_line": s["end_line"], "lang": ix.data["files"].get(s["file"], {}).get("lang", ""),
             "code": "\n".join(lines[:code_lines]) if code_lines else "", "truncated": len(lines) > code_lines > 0,
-            "deps": deps, "ext_imports": _ext_imports(ix, s, code, internal), "tables": tables,
+            "deps": deps, "ext_imports": ext, "ext_versions": {m: specs[_norm(m)] for m in ext if specs.get(_norm(m))}, "tables": tables,
             "tests": [{"name": t["qualname"], "file": t["file"], "line": t["line"]} for t in tests[:3]]}
 
 
@@ -60,8 +68,8 @@ def build_entries(ix: Index, per_peer: int | None = 150, code_lines: int = 60) -
              if s["kind"] in ("function", "class") and not s["is_test"] and not s["name"].startswith("_")
              and s["end_line"] - s["line"] >= 2]
     cands.sort(key=lambda s: (-(rank.get(s["id"], 0) * 1000 + (5 if s["doc"] else 0)), s["id"]))
-    internal = _internal_names(ix)
-    return [_entry(ix, s, internal, code_lines) for s in (cands[:per_peer] if per_peer else cands)]
+    internal, specs = _internal_names(ix), _specs(ix)
+    return [_entry(ix, s, internal, code_lines, specs) for s in (cands[:per_peer] if per_peer else cands)]
 
 
 def _etext(e: dict) -> str:
@@ -151,6 +159,8 @@ def write_catalog(name: str, root: Path, peers: dict[str, str | Path], per_peer:
 
 def live(need: str, target: str, repos: dict[str, str | Path], limit: int = 5, code_lines: int = 60, provider=None) -> list[dict]:
     """Search every other repo's current index (no catalog needed) and fit the best hits against `target`."""
+    from .docs import docs_dir
+    extra = [docs_dir()]
     tix = Index.load(Path(repos[target]))
     pool, ixs = [], {}
     for pname, ix in _peers(target, Path(repos[target]), repos):
@@ -160,5 +170,5 @@ def live(need: str, target: str, repos: dict[str, str | Path], limit: int = 5, c
     for score, e in rank(pool, need, limit, provider):
         ix = ixs[e["repo"]]
         full = _entry(ix, ix.symbols[e["id"]], _internal_names(ix), code_lines)
-        out.append({"score": score, "entry": full, "fit": core.fit(full, tix), "prompt": core.port_prompt(full, core.fit(full, tix), target)})
+        out.append({"score": score, "entry": full, "fit": (f := core.fit(full, tix, extra)), "prompt": core.port_prompt(full, f, target)})
     return out

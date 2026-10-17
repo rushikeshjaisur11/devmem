@@ -1,6 +1,8 @@
 """Knowledge publisher: index -> .devmem/knowledge/*, config/rules, AGENTS.md + Copilot managed blocks."""
 from __future__ import annotations
 
+import json
+
 import subprocess
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -76,7 +78,7 @@ steps:
 """
 
 AGENT_BLOCK = """## devmem (code knowledge)
-Start: `devmem recall "<task>"` (lessons, rules), `devmem reuse "<need>"` (code other repos built; hub: `.devmem/hub.txt`), then `.devmem/knowledge/map.md`.
+Start: `devmem recall "<task>"` (lessons, rules), `devmem reuse "<need>"` (code other repos built; hub: `.devmem/hub.txt`), `devmem docs "<need>"` (latest library docs; prefer them to older org code), then `.devmem/knowledge/map.md`.
 Do not read whole files to explore. CLI (`pip install devmem`):
 - `devmem find "<concept>"`, `show <symbol>`, `outline <file>`; `helpers` reusable code
 - `devmem impact <symbol|table|table.column>` before changing anything
@@ -218,6 +220,18 @@ def publish(root: str | Path, idx: dict, peers: dict | None = None) -> list[str]
         written.append(".devmem/hub.txt")
     elif hp.exists():
         hp.unlink()
+
+    # library freshness + offline docs for the libraries this repo uses
+    from . import docs as docsmod
+    lp = root / ".devmem/libs.json"
+    if lp.exists():
+        try:
+            _write(root, f"{k}/libraries.md", docsmod.render_libraries_md(json.loads(lp.read_text(encoding="utf-8"))), commit, written)
+        except ValueError:
+            pass
+    got = docsmod.copy_relevant(root)
+    if got:
+        written.append(".devmem/docs/")
 
     # no-touch.md: defaults + detected + repo-owned .devmem/no-touch.txt
     from devmem import notouch

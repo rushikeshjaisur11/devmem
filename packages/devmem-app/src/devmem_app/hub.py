@@ -150,8 +150,12 @@ def push(repos: dict[str, str | Path], per_repo: int = 400, summarize_with=None,
         src = hub_dir() / kind
         if src.is_dir() and any(src.iterdir()):
             shutil.copytree(src, d / kind, dirs_exist_ok=True)
+    from . import docs as docsmod
+    got = docsmod.export(d / "docs")
+    if got:
+        pass
     (d / "INDEX.md").write_text(_render_index(agent_hub.repos(d)), encoding="utf-8")
-    result = {"repos": written, "warnings": warnings, "committed": False, "pushed": False}
+    result = {"repos": written, "warnings": warnings, "docs": got, "committed": False, "pushed": False}
     if commit:
         _git(d, "add", "-A")
         if _git(d, "diff", "--cached", "--quiet").returncode:

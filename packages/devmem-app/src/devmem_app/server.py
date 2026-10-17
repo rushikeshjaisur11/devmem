@@ -30,6 +30,11 @@ UI_DIST = Path(__file__).parent / "ui_dist"
 ALLOWED_HOSTS = {"127.0.0.1", "localhost", "testserver"}
 
 
+def _is_plan(text: str) -> bool:
+    from . import intent
+    return bool(intent.STEPS.search(text) or intent.PLAN_HINT.search(text))
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="devmem", docs_url=None, redoc_url=None)
 
@@ -315,20 +320,45 @@ def create_app() -> FastAPI:
             out["column_reads"] = [r for r in lin["reads"] if r["col"].rsplit(".", 1)[0] == table]
         return out
 
-    # ---------- cross-repo reuse ----------
-    @app.get("/api/reuse")
-    def reuse_search(q: str, into: str, limit: int = 6):
-        from .reuse import live
-        repos = ws()["repos"]
-        if into not in repos:
-            raise HTTPException(404, f"unknown repo {into}")
-        if not (Path(repos[into]) / ".devmem/index.json").exists():
-            raise HTTPException(409, f"{into} is not indexed yet")
+    # ---------- offline library docs ----------
+    class DocAdd(BaseModel):
+        spec: str
+        name: str | None = None
+        follow: bool = True
+
+    @app.get("/api/docs")
+    def docs_list():
+        from . import docs as dm
+        return dm.list_libs()
+
+    @app.post("/api/docs")
+    def docs_add(body: DocAdd):
+        from . import docs as dm
         try:
-            prov = chat_mod.provider_from_env()
-        except Exception:
-            prov = None
-        return live(q, into, repos, max(1, min(limit, 15)), provider=prov)
+            m = dm.add(body.spec.strip(), body.name or None, body.follow)
+        except Exception as e:
+            raise HTTPException(422, f"could not fetch: {e}")
+        return {"name": m["name"], "version": m["version"], "pages": len(m["pages"]), "bytes": m["bytes"]}
+
+    @app.post("/api/docs/refresh")
+    def docs_refresh():
+        from . import docs as dm
+        return dm.refresh()
+
+    @app.delete("/api/docs/{name}")
+    def docs_remove(name: str):
+        from . import docs as dm
+        return {"ok": dm.remove(name)}
+
+    @app.post("/api/repos/{name}/libs")
+    def repo_libs(name: str):
+        from . import docs as dm
+        return dm.write_libs(root_of(name), True)
+
+    @app.get("/api/docs/search")
+    def docs_search(q: str, repo: str, limit: int = 5):
+        from devmem import docs as core_docs
+        return core_docs.search(root_of(repo), q, max(1, min(limit, 10)))
 
     # ---------- central knowledge hub ----------
     class HubSet(BaseModel):
@@ -584,6 +614,10 @@ def create_app() -> FastAPI:
         repos: list[str] | None = None
         llm: bool = False
         limit: int = 8
+        target: str | None = None        # repo the agent will work in (only needed for a new requirement with several repos)
+        force: str | None = None         # "ask" | "implement": the user's correction of the automatic decision
+        detail: str = "pointers"         # "code": also include source of existing solutions in an agent prompt
+        fetch_docs: bool = True
 
     @app.get("/api/chat/status")
     def chat_status():
@@ -591,15 +625,43 @@ def create_app() -> FastAPI:
 
     @app.post("/api/chat")
     def chat(body: Chat):
+        """One entry point: decides whether the message is a question or a new requirement (see intent.py) and answers accordingly.
+        Read-only either way: a requirement yields a prompt for another agent; nothing is written into any repo."""
+        from . import intent as intent_mod
+        from .implement import build
         allr = ws()["repos"]
         names = body.repos or list(allr)
         unknown = [n for n in names if n not in allr]
         if unknown:
             raise HTTPException(404, f"unknown repo {unknown[0]}")
+        verdict = intent_mod.classify(body.question)
+        if body.force in ("ask", "implement"):
+            verdict = {"intent": body.force, "reason": "you asked for this"}
+        if verdict["intent"] == "implement":
+            indexed = [n for n in allr if (Path(allr[n]) / ".devmem/index.json").exists()]
+            if not indexed:
+                raise HTTPException(409, "no indexed repo yet: onboard one on the Repos page")
+            target = body.target if body.target in indexed else None
+            if target is None:
+                cand = intent_mod.pick_target(body.question, [n for n in (body.repos or []) if n in indexed], indexed)
+                if len(cand) != 1:
+                    return {**verdict, "needs_repo": cand}
+                target = cand[0]
+            try:
+                prov = chat_mod.provider_from_env()
+            except Exception:
+                prov = None
+            plan = _is_plan(body.question)
+            try:
+                out = build(target, allr, "" if plan else body.question, body.question if plan else "",
+                            "code" if body.detail == "code" else "pointers", body.fetch_docs, prov)
+                return {**verdict, "target": target, **out}
+            except ValueError as e:
+                raise HTTPException(422, str(e))
         if body.llm and not chat_mod.llm_status()["configured"]:
             raise HTTPException(409, "no LLM configured: set DEVMEM_VERTEX_PROJECT (and pip install google-genai)")
         try:
-            return chat_mod.ask(body.question, {n: Path(allr[n]) for n in names}, min(max(body.limit, 1), 20), use_llm=body.llm)
+            return {**verdict, **chat_mod.ask(body.question, {n: Path(allr[n]) for n in names}, min(max(body.limit, 1), 20), use_llm=body.llm)}
         except ImportError as e:
             raise HTTPException(409, f"LLM client not installed: {e}")
 

@@ -192,6 +192,51 @@ def cmd_reuse(ix: Index, a) -> int:
     return 0
 
 
+def cmd_plan(ix: Index, a) -> int:
+    from pathlib import Path as _P
+    from . import plan
+    f = _P(a.file)
+    if not f.exists():
+        f = ix.root / f
+    if not f.exists():
+        print(f"plan file not found: {a.file}")
+        return 1
+    pl = plan.parse(f.read_text(encoding="utf-8"))
+    if not pl["steps"]:
+        print("no steps found: use `## Step 1: ...` headings, a numbered list, or `- [ ]` items")
+        return 1
+    if a.done:
+        plan.mark(ix.root, f, a.done, a.note or "")
+        print(plan.status(ix.root, f, pl))
+    elif a.status or (not a.step and not a.all):
+        print(plan.status(ix.root, f, pl))
+    else:
+        steps = [s["n"] for s in pl["steps"]] if a.all else [a.step]
+        for n in steps:
+            print(plan.brief(ix, pl, n, a.code) + ("\n" + "-" * 60 + "\n" if len(steps) > 1 else ""))
+    return 0
+
+
+def cmd_docs(ix: Index, a) -> int:
+    from . import docs
+    libs = docs.libraries(ix.root)
+    if a.list or not a.query:
+        if not libs:
+            print("no library docs here: run `devmem-app docs add ...` then `devmem-app publish` (or sync the hub)")
+            return 0
+        for m in libs:
+            age = docs.age_days(m)
+            stale = f"  STALE ({age} days old: treat with care)" if age is not None and age > docs.STALE_DAYS else ""
+            print(f"{m['name']} {m.get('version', '')}  fetched {m.get('fetched', '?')}  {len(m.get('pages', []))} pages  <- {m.get('source', '')}{stale}")
+        return 0
+    hits = docs.search(ix.root, a.query, a.limit, a.lib)
+    for h in hits:
+        print(docs.render(h, a.chars) + "\n")
+    if not hits:
+        print("no matching documentation offline" + ("" if libs else " (none installed)") + ": say so in the PR rather than guessing an API")
+    return 0
+
+
 def cmd_hub(ix: Index, a) -> int:
     from . import hub
     s = hub.spec(ix.root)
@@ -293,6 +338,14 @@ def main(argv=None) -> int:
     s.add_argument("--lines", type=int, default=40, help="source lines to print per hit")
     s.add_argument("--prompt", action="store_true", help="also print a ready-to-use porting instruction")
     s.set_defaults(fn=cmd_reuse)
+    s = sub.add_parser("plan", help="execute a human-written plan step by step: brief for a step, mark progress")
+    s.add_argument("file", help="plan markdown file"); s.add_argument("--step", type=int, help="print the brief for this step")
+    s.add_argument("--all", action="store_true", help="briefs for every step"); s.add_argument("--status", action="store_true")
+    s.add_argument("--done", type=int, help="mark this step done"); s.add_argument("--note", help="with --done: what was done / deviations")
+    s.add_argument("--code", action="store_true", help="include source of the org solutions"); s.set_defaults(fn=cmd_plan)
+    s = sub.add_parser("docs", help="search the offline library documentation (latest versions, put there by devmem-app docs add)")
+    s.add_argument("query", nargs="?"); s.add_argument("--lib", help="only this library"); s.add_argument("--list", action="store_true")
+    s.add_argument("-n", "--limit", type=int, default=4); s.add_argument("--chars", type=int, default=1100); s.set_defaults(fn=cmd_docs)
     s = sub.add_parser("hub", help="central knowledge repo of all onboarded repos: sync | status | repos | show <repo>")
     s.add_argument("action", choices=["sync", "status", "repos", "show"]); s.add_argument("repo", nargs="?")
     s.add_argument("--chars", type=int, default=6000); s.set_defaults(fn=cmd_hub)

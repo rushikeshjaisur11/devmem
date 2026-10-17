@@ -254,12 +254,26 @@ def extractive(hits: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _doc_hits(question: str, start: int) -> list[dict]:
+    """Library docs from the docs store (devmem-app docs add) as extra sources, so answers can cite the current API."""
+    from devmem import docs as core_docs
+
+    from .docs import docs_dir
+    out = []
+    for h in [h for h in core_docs.search(None, question, 3, extra=[docs_dir()]) if h["cover"] >= 0.34 and h["score"] >= 0.5][:2]:
+        out.append({"n": start + len(out), "repo": h["lib"], "kind": "doc", "ref": h["url"], "path": h["url"], "line": 0,
+                    "title": f"{h['lib']} {h['version']}: {h['heading'] or h['title']}".replace("  ", " "), "snippet": h["text"][:900],
+                    "score": h["score"], "pointer": f"{h['lib']} docs {h['url']} (fetched {h['fetched']})"})
+    return out
+
+
 def ask(question: str, repos: dict[str, Path], limit: int = 8, use_llm: bool = False, provider: Provider | None = None) -> dict:
     question = question.strip()
     if not question:
         return {"answer": "Ask a question about your repos.", "hits": [], "mode": "none"}
     prov = provider if provider is not None else (provider_from_env() if use_llm else None)
     hits = retrieve(question, repos, limit, prov)
+    hits += _doc_hits(question, len(hits) + 1)
     if prov is None or not hits:
         return {"answer": extractive(hits), "hits": hits, "mode": "retrieval"}
     try:

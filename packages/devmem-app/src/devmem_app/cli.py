@@ -71,6 +71,16 @@ def main(argv=None) -> int:
     s.add_argument("--summarize", action="store_true", help="have the configured LLM (Vertex) describe each function so offline search matches by meaning")
     s.add_argument("--prune", action="store_true", help="remove repos from the hub that are no longer onboarded")
     s.add_argument("--per-repo", type=int, default=400)
+    s = sub.add_parser("docs", help="library docs for offline agents: add <llms.txt|url|pypi:pkg|npm:pkg> | list | refresh [name..] | remove <name>")
+    s.add_argument("action", choices=["add", "list", "refresh", "remove"]); s.add_argument("args", nargs="*")
+    s.add_argument("--name"); s.add_argument("--no-follow", action="store_true", help="llms.txt: do not fetch the pages it links to")
+    s.add_argument("--max-pages", type=int, default=40)
+    s = sub.add_parser("libs", help="what a repo depends on vs the latest releases (needs internet); feeds knowledge/libraries.md on publish")
+    s.add_argument("repo", help="onboarded repo name"); s.add_argument("--offline", action="store_true")
+    s = sub.add_parser("prompt", help="build a prompt for another agent from a requirement or your plan (read-only; nothing is written to any repo)")
+    s.add_argument("--into", required=True, help="repo the agent will work in"); s.add_argument("--need", help="the requirement, in words")
+    s.add_argument("--plan", help="markdown plan file you wrote"); s.add_argument("--code", action="store_true", help="include source of existing solutions")
+    s.add_argument("--no-fetch", action="store_true", help="do not fetch the plan's Docs: sources")
     s = sub.add_parser("clones", help="token-level duplicate code across all onboarded repos")
     a = p.parse_args(argv)
 
@@ -161,6 +171,39 @@ def main(argv=None) -> int:
         if not a.no_open:
             threading.Timer(1.0, lambda: webbrowser.open(f"http://127.0.0.1:{a.port}")).start()
         uvicorn.run("devmem_app.server:app", host="127.0.0.1", port=a.port, log_level="warning")
+    elif a.cmd == "prompt":
+        from .implement import build
+        repos = _ws()["repos"]
+        if a.into not in repos:
+            sys.exit(f"unknown repo {a.into}")
+        if not a.need and not a.plan:
+            sys.exit("give --need \"...\" or --plan file.md")
+        r = build(a.into, repos, a.need or "", Path(a.plan).read_text(encoding="utf-8") if a.plan else "", "code" if a.code else "pointers", not a.no_fetch)
+        print(r["prompt"])
+        print(f"--- ~{r['tokens']} tokens; {r['counts']['org_solutions']} existing solution(s), {r['counts']['modernize']} modernize note(s), {r['counts']['doc_excerpts']} doc excerpt(s)", file=sys.stderr)
+    elif a.cmd == "docs":
+        from . import docs as dm
+        if a.action == "add":
+            if not a.args:
+                sys.exit("usage: devmem-app docs add <llms.txt-url | page-url | pypi:pkg | npm:pkg>")
+            for spec in a.args:
+                m = dm.add(spec, a.name if len(a.args) == 1 else None, not a.no_follow, a.max_pages)
+                print(f"{m['name']} {m['version']}: {len(m['pages'])} pages, {m['bytes'] // 1024} KB")
+        elif a.action == "list":
+            for m in dm.list_libs():
+                print(f"{m['name']} {m['version'] or ''}  fetched {m['fetched']} ({m['age_days']}d)  {m['pages']} pages  <- {m['source']}")
+        elif a.action == "refresh":
+            for k, v in dm.refresh(a.args or None).items():
+                print(f"{k}: {v}")
+        else:
+            print("removed" if a.args and dm.remove(a.args[0]) else "not found")
+    elif a.cmd == "libs":
+        from . import docs as dm
+        repos = _ws()["repos"]
+        if a.repo not in repos:
+            sys.exit(f"unknown repo {a.repo}")
+        for r in dm.write_libs(Path(repos[a.repo]), not a.offline):
+            print(f"{r['name']} ({r['eco']}) {r['spec'] or '-'} -> latest {r['latest'] or '?'}  [{r['behind']}]  docs:{'yes' if r['docs'] else 'no'}")
     elif a.cmd == "hub":
         from . import hub as hubmod
         if a.action == "set":
