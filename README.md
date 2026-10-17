@@ -21,13 +21,48 @@ Cross-repo code knowledge for coding agents (Devin primary, Copilot). Plan: the 
 - [x] 16. SCIP: `devmem-app index <repo> --scip` (needs Node; runs scip-python / scip-typescript) or `--scip-file x.scip`; precise edges upgrade structural ones and replace ambiguous guesses; cached per file hash in `.devmem/scip-edges.json`
 - [x] 17. Graphify cross-check (`devmem-app index --graphify`), tightened name resolution (edge precision 0.81 -> 0.92 on psf/requests; see docs/ACCURACY.md), `scripts/accuracy.py`
 - [x] 18. Plugin for Devin (and Claude Code / Copilot / Cursor): `plugins/devmem` with three skills and a bundled wheel; install steps in docs/INSTALL.md
-- [ ] Not yet: Graphify + scip-python as extra edge sources, SQLite/FTS5 store, eslint/knip (JS/TS) hygiene
+- [ ] Not yet: SQLite/FTS5 store (index is JSON)
+
+## Installation
+
+### Requirements
+- Python 3.10+ and git
+- Optional: Node.js 18+ (for `--scip`, and eslint/knip/`tsc` checks on JS/TS repos)
+- Optional: Graphify (`pip install graphifyy`) for `--graphify`
+
+### 1. Get the code and install
+    git clone https://github.com/rushikeshjaisur11/devmem.git
+    cd devmem
+    python -m venv .venv && source .venv/bin/activate    # Windows: .venv\Scripts\activate
+    pip install -e packages/devmem -e "packages/devmem-app[all,test]"
+
+Extras for `devmem-app`:
+
+| Extra | Adds |
+|---|---|
+| `hygiene` | ruff, vulture, radon, deptry, bandit, sqlfluff (used by `devmem-app hygiene`) |
+| `js` | tree-sitter parsers for JS/TS |
+| `all` | `hygiene` + `js` |
+| `test` | pytest, httpx |
+
+Using uv instead: `uv sync` (add `--all-extras` for the optional tools).
+
+The agent-side `devmem` CLI only needs PyYAML and makes no network calls, so it can be installed alone on an agent
+machine: `pip install -e packages/devmem`.
+
+### 2. Verify
+    devmem --help && devmem-app --help
+    pytest            # 92 tests; hygiene/JS tests need the `all` extra
+
+### 3. Onboard a repo
+    devmem-app add /path/to/repo      # onboard + index -> <repo>/.devmem/index.json
+    devmem-app publish /path/to/repo --commit
+    devmem-app ui                     # web UI (prebuilt; only run `cd ui && npm install && npm run build` to modify it)
+
+To wire it into Devin, Claude Code, Copilot or Cursor see [docs/INSTALL.md](docs/INSTALL.md).
 
 ## Use
-    uv sync   # or: pip install -e packages/devmem -e packages/devmem-app
-    devmem-app add /path/to/repo      # onboard + index -> <repo>/.devmem/index.json
     cd /path/to/repo && devmem find "retry logic" && devmem impact retry
-    pytest
 
 ## Notes
 - Python >= 3.10 (plan said 3.11+; relaxed so it runs on the current machine). CLI uses argparse instead of Typer to keep the pip install tiny.
