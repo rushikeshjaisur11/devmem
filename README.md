@@ -64,6 +64,12 @@ machine: `pip install -e packages/devmem`.
 The built UI ships inside the package, so Node is not needed to use it. Pages: Repos, Explorer, Impact, Graph, Lineage,
 Hygiene, Memory, Metrics, Share, Chat. Light/dark follows your OS; the sidebar button overrides it.
 
+- **Onboard** a repo from a local path or a git URL (https, ssh or `git@host:path`; cloned into `~/.devmem/clones/<name>` with your
+  machine's git credentials, never prompting). Switch its branch from the Repos table; devmem checks it out and re-indexes, and refuses
+  if tracked files have uncommitted changes.
+- **Graph**: overview of modules, calls and shared tables; search any symbol to see who calls it, what it calls and its tests. Filter by
+  node/edge kind or repo, highlight by name, pick a layout, zoom, and export a PNG.
+
 To change the UI (React + Vite, source in `ui/`):
 
     cd ui && npm ci

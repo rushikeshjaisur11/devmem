@@ -163,3 +163,36 @@ def test_devin_upload_endpoint(api):
     body = json.dumps([{"id": "d1", "created_at": "2026-02-01T00:00:00Z", "acus": 4}])
     assert api.post("/api/metrics/devin", content=body, headers=H).json()["new"] == 1
     assert api.post("/api/metrics/devin", content="42", headers=H).status_code == 422
+
+
+def test_switch_branch(api):
+    import subprocess
+    d = api.repos["py_app"]
+    g = lambda *a: subprocess.run(["git", "-C", str(d), *a], check=True, capture_output=True, text=True)
+    g("init", "-q", "-b", "main"); g("add", "-A"); g("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init")
+    g("checkout", "-qb", "feature")
+    (d / "app/extra.py").write_text("def only_on_feature():\n    return 1\n")
+    g("add", "-A"); g("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "feat")
+    b = api.get("/api/repos/py_app/branches").json()
+    assert b["current"] == "feature" and set(b["branches"]) == {"main", "feature"} and b["dirty"] == []
+    assert api.post("/api/repos/py_app/branch", json={"branch": "nope"}, headers=H).status_code == 400
+    r = api.post("/api/repos/py_app/branch", json={"branch": "main"}, headers=H)
+    assert r.status_code == 200 and r.json()["branch"] == "main"
+    assert not (d / "app/extra.py").exists()
+    (d / "app/client.py").write_text((d / "app/client.py").read_text() + "\n# edit\n")
+    assert api.post("/api/repos/py_app/branch", json={"branch": "feature"}, headers=H).status_code == 409
+
+
+def test_add_repo_by_git_url(api, tmp_path):
+    import subprocess
+    src = tmp_path / "origin"
+    shutil.copytree(FIX / "py_app", src)
+    g = lambda *a: subprocess.run(["git", "-C", str(src), *a], check=True, capture_output=True)
+    g("init", "-q", "-b", "main"); g("add", "-A"); g("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "i")
+    g("branch", "dev")
+    for bad in ("-oProxyCommand=x", "ext::sh -c id", "/etc/passwd", "file:///x"):
+        assert api.post("/api/repos", json={"url": bad}, headers=H).status_code == 400
+    assert api.post("/api/repos", json={}, headers=H).status_code == 400
+    # file:// is deliberately not accepted, so exercise the clone path through the https/ssh validator with a bad host
+    r = api.post("/api/repos", json={"url": "https://127.0.0.1:9/none.git", "name": "ghost"}, headers=H)
+    assert r.status_code == 422 and "git failed" in r.json()["detail"]

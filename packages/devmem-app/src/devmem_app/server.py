@@ -2,7 +2,9 @@
 X-Devmem header and Host must be localhost (blocks drive-by browser requests and DNS rebinding)."""
 
 import json
+import os
 import re
+import subprocess
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -20,7 +22,7 @@ from . import hygiene as hyg
 from . import metrics as metrics_mod
 from . import lineage as lin_mod
 from . import memory as am
-from .indexer import git_head, index_repo
+from .indexer import _git, git_branch, git_branches, git_dirty, git_head, index_repo
 from .paths import devmem_home
 from .publisher import _module_of, commit_branch, publish
 
@@ -88,7 +90,7 @@ def create_app() -> FastAPI:
             langs = Counter(f["lang"] for f in idx["files"].values() if f["lang"] != "other")
             d.update({"indexed": True, "symbols": sum(1 for s in idx["symbols"] if s["kind"] != "module"),
                       "files": len(idx["files"]), "edges": len(idx["edges"]), "commit": idx.get("commit"),
-                      "head": head, "stale": bool(head and idx.get("commit") != head), "langs": dict(langs),
+                      "head": head, "branch": git_branch(root), "stale": bool(head and idx.get("commit") != head), "langs": dict(langs),
                       "knowledge_problems": problems, "generated": idx.get("generated")})
             hp = root / ".devmem/hygiene.json"
             if hp.exists():
@@ -98,8 +100,36 @@ def create_app() -> FastAPI:
 
     # ---------- repos ----------
     class AddRepo(BaseModel):
-        path: str
+        path: str | None = None      # local clone
+        url: str | None = None       # or a git URL to clone into ~/.devmem/clones/<name>
+        branch: str | None = None
         name: str | None = None
+
+    URL_OK = re.compile(r"^(https?://|ssh://|git://|git@[\w.-]+:)[^\s]+$")
+
+    def clone_url(url: str, name: str | None, branch: str | None) -> tuple[str, Path]:
+        url = url.strip()
+        if not URL_OK.match(url):   # also rejects `-flag` and `ext::` transports
+            raise HTTPException(400, "use an https://, ssh:// or git@host:path URL")
+        if branch and not re.fullmatch(r"[\w./-]+", branch) or (branch or "").startswith("-"):
+            raise HTTPException(400, "bad branch name")
+        name = name or re.sub(r"\.git$", "", url.rstrip("/").split("/")[-1].split(":")[-1]) or "repo"
+        if not re.fullmatch(r"[\w.-]+", name):
+            raise HTTPException(400, "bad repo name")
+        dest = devmem_home() / "clones" / name
+        env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}   # fail instead of hanging on a credential prompt
+        try:
+            if (dest / ".git").exists():
+                r = subprocess.run(["git", "-C", str(dest), "fetch", "--all", "--prune"], capture_output=True, text=True, env=env, timeout=600)
+            else:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                cmd = ["git", "clone", *(["--branch", branch] if branch else []), "--", url, str(dest)]
+                r = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=900)
+        except (subprocess.TimeoutExpired, OSError) as e:
+            raise HTTPException(422, f"git: {e}")
+        if r.returncode:
+            raise HTTPException(422, "git failed: " + (r.stderr or r.stdout).strip()[-300:])
+        return name, dest
 
     @app.get("/api/repos")
     def list_repos():
@@ -107,10 +137,22 @@ def create_app() -> FastAPI:
 
     @app.post("/api/repos")
     def add_repo(body: AddRepo):
-        root = Path(body.path).expanduser().resolve()
-        if not root.is_dir():
-            raise HTTPException(400, "not a directory")
-        name = body.name or root.name
+        if body.url:
+            name, root = clone_url(body.url, body.name, body.branch)
+            if body.branch and git_branch(root) != body.branch:
+                if body.branch in git_branches(root):
+                    r = _git(root, "checkout", body.branch, "--")
+                    if r.returncode:
+                        raise HTTPException(422, (r.stderr or r.stdout).strip()[-300:])
+                else:
+                    raise HTTPException(400, f"unknown branch {body.branch}")
+        elif body.path:
+            root = Path(body.path).expanduser().resolve()
+            if not root.is_dir():
+                raise HTTPException(400, "not a directory")
+            name = body.name or root.name
+        else:
+            raise HTTPException(400, "give a local path or a git URL")
         w = ws(); w["repos"][name] = str(root); save_ws(w)
         index_repo(root, name)
         return repo_summary(name, str(root))
@@ -124,6 +166,30 @@ def create_app() -> FastAPI:
     @app.post("/api/repos/{name}/index")
     def reindex(name: str):
         root = root_of(name)
+        idx = index_repo(root, name)
+        return {**repo_summary(name, str(root)), "stats": idx["stats"]}
+
+    @app.get("/api/repos/{name}/branches")
+    def branches(name: str):
+        root = root_of(name)
+        return {"current": git_branch(root), "branches": git_branches(root), "dirty": git_dirty(root)}
+
+    class Branch(BaseModel):
+        branch: str
+
+    @app.post("/api/repos/{name}/branch")
+    def switch_branch(name: str, body: Branch):
+        """git checkout <branch> in the clone, then re-index it. Refuses when tracked files have uncommitted changes."""
+        root = root_of(name)
+        if body.branch not in git_branches(root):
+            raise HTTPException(400, f"unknown branch {body.branch}")
+        dirty = git_dirty(root)
+        if dirty:
+            raise HTTPException(409, "uncommitted changes would be affected; commit or stash first: " + ", ".join(dirty[:5]))
+        if body.branch != git_branch(root):
+            r = _git(root, "checkout", body.branch, "--")
+            if r.returncode:
+                raise HTTPException(422, (r.stderr or r.stdout).strip()[-300:])
         idx = index_repo(root, name)
         return {**repo_summary(name, str(root)), "stats": idx["stats"]}
 
