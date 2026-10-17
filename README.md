@@ -59,6 +59,16 @@ machine: `pip install -e packages/devmem`.
     devmem-app publish /path/to/repo --commit
     devmem-app ui                     # web UI (prebuilt; only run `cd ui && npm install && npm run build` to modify it)
 
+### 4. Improve accuracy (optional)
+Structural edges alone are about 92% precise (see [docs/ACCURACY.md](docs/ACCURACY.md)). Layer in independent sources:
+
+    pip install graphifyy                                 # tree-sitter call graph, no LLM or key
+    devmem-app index /path/to/repo --graphify             # drops unconfirmed ambiguous edges, adds missed ones
+    devmem-app index /path/to/repo --scip                 # type-resolved edges (needs Node; downloads scip-python / scip-typescript via npx)
+    python scripts/accuracy.py <repo> <index.scip> <graphify-out/graph.json>   # measure on your own repo
+
+The flags combine, and results are cached per file hash so re-indexing stays incremental.
+
 To wire it into Devin, Claude Code, Copilot or Cursor see [docs/INSTALL.md](docs/INSTALL.md).
 
 ## Use

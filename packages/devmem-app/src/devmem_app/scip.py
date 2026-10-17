@@ -155,7 +155,7 @@ def run_indexer(root: Path, idx: dict, timeout: int = 900) -> tuple[list[Path], 
     out, msgs = [], []
     jobs = []
     if "python" in langs:
-        jobs.append(("scip-python", ["@sourcegraph/scip-python", "index", "--project-name", idx.get("repo", root.name)]))
+        jobs.append(("scip-python", ["@sourcegraph/scip-python", "index", "--project-name", idx.get("repo", root.name), "--project-version", "0"]))
     if langs & {"ts", "js"} and ((root / "tsconfig.json").exists() or (root / "package.json").exists()):
         jobs.append(("scip-typescript", ["@sourcegraph/scip-typescript", "index"] + ([] if (root / "tsconfig.json").exists() else ["--infer-tsconfig"])))
     if not npx:
@@ -171,7 +171,10 @@ def run_indexer(root: Path, idx: dict, timeout: int = 900) -> tuple[list[Path], 
         if dest.exists() and dest.stat().st_size > 60:
             out.append(dest)
         else:
-            msgs.append(f"{name} failed: {(r.stderr or r.stdout).strip().splitlines()[-1][:160] if (r.stderr or r.stdout).strip() else 'no output'}")
+            text = (r.stderr or r.stdout).strip()
+            lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+            why = next((ln for ln in lines if "error" in ln.lower()), lines[-1] if lines else "no output")
+            msgs.append(f"{name} failed: {why[:160]}")
     return out, msgs
 
 
