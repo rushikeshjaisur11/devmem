@@ -103,9 +103,13 @@ def merge(idx: dict, g_edges: list[dict], covered: set[str]) -> dict:
     return {"edges": len(g_edges), "upgraded": upgraded, "dropped_ambiguous": dropped, "added": len(added)}
 
 
+CODE_LANGS = {"python", "js", "ts"}
+
+
 def build_cache(root: Path, idx: dict, graph_file: Path) -> dict:
     edges, covered = edges_from(idx, json.loads(Path(graph_file).read_text(encoding="utf-8")))
-    cache = {"edges": edges, "covered": sorted(covered), "hashes": {p: idx["files"][p]["hash"] for p in covered if p in idx["files"]}}
+    cache = {"edges": edges, "covered": sorted(covered), "hashes": {p: idx["files"][p]["hash"] for p in covered if p in idx["files"]},
+             "seen": {p: r["hash"] for p, r in idx["files"].items() if r["lang"] in CODE_LANGS}}
     p = root / CACHE
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(cache), encoding="utf-8")

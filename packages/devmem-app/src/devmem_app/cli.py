@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
 from devmem.index import Index
 
-from .indexer import index_repo
+from .indexer import AccuracyError, index_repo
 from .paths import devmem_home
 
 
@@ -28,13 +29,13 @@ def _save(ws: dict):
     w.write_text(json.dumps(ws, indent=1))
 
 
-def main(argv=None) -> int:
+def _main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="devmem-app")
+    p.add_argument("--fast", action="store_true", help="skip SCIP and Graphify (lower accuracy, recorded in the index); same as DEVMEM_ACCURACY=fast")
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("add", help="onboard a repo (local clone path)"); s.add_argument("path"); s.add_argument("--name")
     s = sub.add_parser("index", help="(re)index a path, or all onboarded repos"); s.add_argument("path", nargs="?")
-    s.add_argument("--scip", action="store_true", help="also run scip-python/scip-typescript (needs Node) for type-resolved edges")
-    s.add_argument("--graphify", action="store_true", help="also run `graphify update` (pip install graphifyy) and cross-check edges")
+    s.add_argument("--force-tools", action="store_true", help="re-run SCIP and Graphify even if their cache is current (they run automatically when files changed)")
     s.add_argument("--graphify-file", help="import an existing graphify-out/graph.json")
     s.add_argument("--scip-file", action="append", help="import a prebuilt index.scip instead of running the indexers")
     s = sub.add_parser("find", help="search across all onboarded repos"); s.add_argument("query")
@@ -84,17 +85,20 @@ def main(argv=None) -> int:
     s = sub.add_parser("clones", help="token-level duplicate code across all onboarded repos")
     a = p.parse_args(argv)
 
+    if a.fast:
+        os.environ["DEVMEM_ACCURACY"] = "fast"
     if a.cmd == "add":
         root = Path(a.path).resolve()
+        idx = index_repo(root, a.name)          # register only after a full-accuracy index succeeded
         ws = _ws()
         ws["repos"][a.name or root.name] = str(root)
         _save(ws)
-        idx = index_repo(root, a.name)
         print(f"onboarded {a.name or root.name}: {len(idx['symbols'])} symbols, {len(idx['edges'])} edges {idx['stats']}")
     elif a.cmd == "index":
         targets = {Path(a.path).name: a.path} if a.path else _ws()["repos"]
         for name, path in targets.items():
-            idx = index_repo(path, name, scip=a.scip_file or a.scip, graphify=a.graphify_file or a.graphify)
+            idx = index_repo(path, name, scip=a.scip_file or (True if a.force_tools else None),
+                             graphify=a.graphify_file or (True if a.force_tools else None))
             print(f"{name}: {len(idx['symbols'])} symbols, {len(idx['edges'])} edges {idx['stats']}")
     elif a.cmd == "publish":
         from .publisher import commit_branch, publish
@@ -269,6 +273,13 @@ def main(argv=None) -> int:
             for score, sym in ix.find(a.query, 5):
                 print(f"[{name}] {sym['file']}:{sym['line']}  {sym['qualname']}  ({score:.1f})")
     return 0
+
+
+def main(argv=None) -> int:
+    try:
+        return _main(argv)
+    except AccuracyError as e:
+        sys.exit(f"devmem-app: accuracy requirement not met: {e}")
 
 
 if __name__ == "__main__":

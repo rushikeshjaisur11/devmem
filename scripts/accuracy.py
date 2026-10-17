@@ -3,7 +3,7 @@ from collections import Counter
 from devmem_app import scip
 from devmem_app.indexer import index_repo
 root, scipf, gj = sys.argv[1:4]
-idx = index_repo(root, "x", write=False)
+idx = index_repo(root, "x", write=False, accuracy="fast")   # structural-only baseline
 syms = {s["id"]: s for s in idx["symbols"]}
 docs = scip.parse(pathlib.Path(scipf).read_bytes())
 oracle, covered = scip.edges_from(idx, docs)

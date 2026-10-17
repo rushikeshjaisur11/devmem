@@ -80,7 +80,7 @@ export default function Repos(_: any) {
                   <td className="num">{r.symbols ?? "-"}</td><td className="num">{r.files ?? "-"}</td>
                   <td><BranchPicker repo={r} disabled={!!busy} onSwitch={(b) => confirm(`Check out ${b} in ${r.path} and re-index it?`) ? act("b" + r.name, () => api.post(`/api/repos/${r.name}/branch`, { branch: b }), (x) => `${r.name}: now on ${x.branch}, ${x.symbols} symbols (parsed ${x.stats.parsed}, reused ${x.stats.reused})`) : reload()} /></td>
                   <td>{r.langs ? Object.entries(r.langs).map(([l, n]) => `${l} ${n}`).join(", ") : "-"}</td>
-                  <td>{!r.indexed ? <Badge kind="bad">not indexed</Badge> : r.stale ? <Badge kind="warn">stale: HEAD moved</Badge> : <Badge kind="good">fresh</Badge>}</td>
+                  <td>{!r.indexed ? <Badge kind="bad">not indexed</Badge> : r.stale ? <Badge kind="warn">stale: HEAD moved</Badge> : <Badge kind="good">fresh</Badge>}{r.indexed && r.accuracy === "fast" && <> <Badge kind="bad">reduced accuracy</Badge></>}</td>
                   <td>{!r.indexed ? "-" : r.knowledge_problems.length === 0 ? <Badge kind="good">published</Badge> :
                     r.knowledge_problems[0] === "not published" ? <Badge>not published</Badge> :
                     <Badge kind="warn"><span title={r.knowledge_problems.join("\n")}>{r.knowledge_problems.length} issue(s)</span></Badge>}</td>

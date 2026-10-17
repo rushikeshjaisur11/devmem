@@ -22,7 +22,8 @@ from . import hygiene as hyg
 from . import metrics as metrics_mod
 from . import lineage as lin_mod
 from . import memory as am
-from .indexer import _git, git_branch, git_branches, git_dirty, git_head, index_repo
+from .indexer import AccuracyError, _git, git_branch, git_branches, git_dirty, git_head
+from .indexer import index_repo as _index_repo
 from .paths import devmem_home
 from .publisher import _module_of, commit_branch, publish
 
@@ -46,6 +47,12 @@ def create_app() -> FastAPI:
         if request.method in ("POST", "PUT", "DELETE") and request.headers.get("x-devmem") != "1":
             return JSONResponse({"detail": "missing X-Devmem header"}, status_code=403)
         return await call_next(request)
+
+    def index_repo(root, name):
+        try:
+            return _index_repo(root, name)
+        except AccuracyError as e:     # surfaced as an error in the UI instead of quietly indexing with less accuracy
+            raise HTTPException(422, f"accuracy requirement not met: {e}")
 
     # ---------- state ----------
     def ws() -> dict:
@@ -96,7 +103,7 @@ def create_app() -> FastAPI:
             d.update({"indexed": True, "symbols": sum(1 for s in idx["symbols"] if s["kind"] != "module"),
                       "files": len(idx["files"]), "edges": len(idx["edges"]), "commit": idx.get("commit"),
                       "head": head, "branch": git_branch(root), "stale": bool(head and idx.get("commit") != head), "langs": dict(langs),
-                      "knowledge_problems": problems, "generated": idx.get("generated")})
+                      "knowledge_problems": problems, "generated": idx.get("generated"), "accuracy": (idx.get("stats") or {}).get("accuracy")})
             hp = root / ".devmem/hygiene.json"
             if hp.exists():
                 d["hygiene"] = json.loads(hp.read_text()).get("counts", {})
@@ -158,8 +165,8 @@ def create_app() -> FastAPI:
             name = body.name or root.name
         else:
             raise HTTPException(400, "give a local path or a git URL")
+        index_repo(root, name)                      # register only after a full-accuracy index succeeded
         w = ws(); w["repos"][name] = str(root); save_ws(w)
-        index_repo(root, name)
         return repo_summary(name, str(root))
 
     @app.delete("/api/repos/{name}")

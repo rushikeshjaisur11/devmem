@@ -22,8 +22,8 @@ What this says:
   `send`, `close`, ...) only resolve to a class in the caller's file or a file it imports. Precision rose to 92% for
   a 1-point recall cost.
 - Where devmem and Graphify agree the edge is right 99% of the time. Where only devmem has it, it is right two times
-  in three. With `--graphify`, unconfirmed *ambiguous* edges from files Graphify covered are dropped.
-- With `--scip` the oracle itself is merged in (edges become `precise`), so those numbers are 1.0 by construction.
+  in three. With Graphify (always on), unconfirmed *ambiguous* edges from files Graphify covered are dropped.
+- With SCIP (always on) the oracle itself is merged in (edges become `precise`), so those numbers are 1.0 by construction.
 - "Recall" is a lower bound: SCIP also reports references that are not calls (type annotations, base classes), which
   devmem does not model as edges. The remaining misses on requests are mostly those.
 - Dynamic dispatch, decorators, and callbacks passed by name stay invisible to static tools, including SCIP.
@@ -34,6 +34,6 @@ rule to match SCIP's term symbols. Re-run the script on your own repos before tr
 
 ## What the pipeline does with these results
 
-`structural` (import/name resolved) -> optional Graphify cross-check (upgrade confirmed ambiguous, drop unconfirmed
-ambiguous, add Graphify-only edges) -> optional SCIP (precise edges win; unconfirmed ambiguous edges dropped).
+`structural` (import/name resolved) -> Graphify cross-check (upgrade confirmed ambiguous, drop unconfirmed
+ambiguous, add Graphify-only edges) -> SCIP (precise edges win; unconfirmed ambiguous edges dropped).
 `devmem impact` prints each hop-1 edge with its confidence, and the skill tells agents to verify `ambiguous` ones.

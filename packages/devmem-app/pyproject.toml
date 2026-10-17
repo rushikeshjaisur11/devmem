@@ -3,13 +3,17 @@ name = "devmem-app"
 version = "0.1.0"
 description = "Indexer, graph and (later) publisher/UI for devmem."
 requires-python = ">=3.10"
-dependencies = ["devmem", "sqlglot>=25", "fastapi>=0.110", "uvicorn>=0.29"]
+dependencies = [
+  "devmem",
+  "sqlglot>=25", "fastapi>=0.110", "uvicorn>=0.29",
+  # accuracy is not optional: these are always installed and always used
+  "graphifyy",                                                              # tree-sitter call graph, cross-checks our edges
+  "tree-sitter>=0.22", "tree-sitter-javascript>=0.21", "tree-sitter-typescript>=0.21",   # JS/TS parsing
+  "ruff", "vulture", "radon", "deptry", "bandit", "sqlfluff",               # hygiene reports
+]
 
 [project.optional-dependencies]
 test = ["httpx", "pytest"]
-hygiene = ["ruff", "vulture", "radon", "deptry", "bandit", "sqlfluff"]
-all = ["devmem-app[js,hygiene]"]
-js = ["tree-sitter>=0.22", "tree-sitter-javascript>=0.21", "tree-sitter-typescript>=0.21"]
 
 [project.scripts]
 devmem-app = "devmem_app.cli:main"
