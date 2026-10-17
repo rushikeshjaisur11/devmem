@@ -57,9 +57,97 @@ machine: `pip install -e packages/devmem`.
 ### 3. Onboard a repo
     devmem-app add /path/to/repo      # onboard + index -> <repo>/.devmem/index.json
     devmem-app publish /path/to/repo --commit
-    devmem-app ui                     # web UI (prebuilt; only run `cd ui && npm install && npm run build` to modify it)
 
-### 4. Improve accuracy (optional)
+### 4. Run the web UI
+    devmem-app ui                      # http://127.0.0.1:8765, opens your browser (--port N, --no-open)
+
+The built UI ships inside the package, so Node is not needed to use it. Pages: Repos, Explorer, Reuse, Impact, Graph, Lineage,
+Hygiene, Memory, Metrics, Share, Chat. Light/dark follows your OS; the sidebar button overrides it.
+
+- **Onboard** a repo from a local path or a git URL (https, ssh or `git@host:path`; cloned into `~/.devmem/clones/<name>` with your
+  machine's git credentials, never prompting). Switch its branch from the Repos table; devmem checks it out and re-indexes, and refuses
+  if tracked files have uncommitted changes.
+- **Graph**: overview of modules, calls and shared tables; search any symbol to see who calls it, what it calls and its tests. Filter by
+  node/edge kind or repo, highlight by name, pick a layout, zoom, and export a PNG.
+
+To change the UI (React + Vite, source in `ui/`):
+
+    cd ui && npm ci
+    devmem-app ui --no-open            # terminal 1: API on :8765
+    npm run dev                        # terminal 2: hot-reload UI on :5173, proxies /api to :8765
+    npm run build                      # writes packages/devmem-app/src/devmem_app/ui_dist (commit it)
+
+### 5. Cross-repo reuse
+Onboard the repos you want to borrow from, then ask for what you need:
+
+    devmem-app reuse "retry a failing call with backoff" --into my-service --prompt
+    # or just describe it in Chat (the UI) and it works out you want an agent prompt
+
+Each hit shows the source, its tests, and an *effort to reuse* rating for the target repo: packages the target doesn't use yet, name
+clashes, helpers to copy along, tables it touches, language mismatch, and similar code the target already has.
+
+**How agents see it (Devin, Claude Code, Copilot):** agents only read what is committed in the repo they work in, so
+`devmem-app publish <repo>` writes `.devmem/reuse-catalog.json` (the best ~150 public functions/classes of every *other* onboarded
+repo, source trimmed to 60 lines, file capped at 1.5 MB). The plugin's skill then runs `devmem reuse "<need>"` and `devmem recall`
+offline against it. Re-publish after the source repos change; it is a snapshot. It copies code from your other repos into this one, so
+only onboard repos that are fine to share with each other.
+
+#### Central knowledge hub (recommended for teams and Devin)
+Instead of copying code from every repo into every other repo, keep everything in one git repo that agents read:
+
+    devmem-app hub set git@github.com:acme/devmem-hub.git     # an empty repo you own; or the Knowledge hub page
+    devmem-app hub push --push                                 # all onboarded repos -> catalog/, repos/<name>/, lessons/, INDEX.md
+
+`devmem-app publish` then writes `.devmem/hub.txt` (the URL) into each repo. In a session the skill runs `devmem hub sync` (a shallow
+clone into `~/.cache/devmem`, never prompting for credentials) and `devmem reuse` / `devmem hub repos` / `devmem hub show <repo>` read it.
+Or skip the file and set `DEVMEM_HUB=<url>` in the agent's environment. The agent needs git read access to the hub; if it has none or is
+offline, `devmem reuse` quietly falls back to the catalog committed in the repo. A local-folder hub works for you on your machine but
+agents cannot reach it, so it is not written to `hub.txt`.
+
+#### Matching by meaning (optional)
+Keyword search misses a need phrased unlike the code. With Vertex configured (`pip install google-genai`, `DEVMEM_VERTEX_PROJECT`,
+`DEVMEM_VERTEX_EMBED_MODEL`), `devmem-app reuse` and Chat blend embedding similarity into the ranking (cached on disk).
+Agents run offline and cannot embed a query, so for them add `--summarize` to `hub push`: the LLM writes a one-sentence description
+and related search words per function, stored in the catalog, which the offline keyword search then matches. Only code snippets of the
+functions being summarised go to Vertex, and results are cached by code hash.
+
+### 6. Current library docs for agents without internet
+Agents trained on your org's code copy its older patterns and miss what libraries now provide. Fetch current docs where there is
+internet; they travel as files:
+
+    devmem-app docs add https://docs.pydantic.dev/latest/llms.txt   # llms.txt (follows its links), a docs page, pypi:<pkg> or npm:<pkg>
+    devmem-app docs refresh                                          # re-fetch everything; list shows version, date, STALE after 120 days
+    devmem-app libs my-service                                       # declared vs latest version of every dependency
+    devmem-app publish my-service                                    # copies docs of the libraries it uses into .devmem/docs (+ libraries.md)
+
+`devmem-app hub push` also puts all docs in the hub's `docs/`. Agents run `devmem docs "<need>"` (offline BM25 with stemming; shows source
+URL, version and fetch date) and are told to follow it over older code. Name a library after its package (`pydantic`) so it is matched to
+repos that depend on it; `--name` overrides. The **Library docs** page does the same from the UI, and Chat cites these docs when you ask about a library.
+
+`devmem reuse` also *modernizes*: when an org solution is found it checks it against the docs on file and prints
+`MODERNIZE: ... hand-rolls this: pydantic 2.14 documents a built-in "..."` (or `written against X ==1.0, docs are for 2.3`).
+
+### 7. Chat: ask your repos, or get a prompt for the agent that will build something new
+devmem never runs or changes your code; it only prepares knowledge so other agents spend fewer tokens. The **Chat** page is one box
+that decides what you mean (no modes to pick; a small link under each answer lets you correct a wrong guess):
+
+- **A question** ("where do we retry failed requests?", "how does X work?") is answered from the indexed repos, their lessons and rules,
+  and the current library docs on file, with citations.
+- **Something new to build, or a plan you wrote** ("add retry with backoff to the export job", or `## Step N:` headings / a numbered list /
+  `- [ ]` items with optional `Docs:` and `Constraints:` lines) becomes a compact **prompt for another agent** (Devin, Claude Code, ...):
+  the rules of engagement (plan > current docs > org code > preferences; minimal diff; stop and report instead of guessing), then per
+  step the current library docs to follow, the organisation's existing solution in other repos (with `MODERNIZE` notes when a library
+  now provides it built in, or the code is written against an older release), what the target repo already has, and protected paths.
+  The prompt shows its token estimate and has a copy button. If several repos are onboarded and the message does not name one, Chat asks
+  which repo the agent will work in.
+
+It is read-only: nothing is written into any repo. (Plan `Docs:` lines are downloaded into the app's own docs store, not into repos.)
+Without the UI: `devmem-app prompt --into my-service --need "add retry with backoff"` or `--plan plan.md`.
+
+For agents that have a plan *file* in their repo, the `devmem-plan` skill and `devmem plan <file> --step N | --done N | --status` give
+the same per-step briefs from the committed knowledge and keep progress so a stopped session resumes.
+
+### 8. Improve accuracy (optional)
 Structural edges alone are about 92% precise (see [docs/ACCURACY.md](docs/ACCURACY.md)). Layer in independent sources:
 
     pip install graphifyy                                 # tree-sitter call graph, no LLM or key

@@ -1,6 +1,8 @@
 """Knowledge publisher: index -> .devmem/knowledge/*, config/rules, AGENTS.md + Copilot managed blocks."""
 from __future__ import annotations
 
+import json
+
 import subprocess
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -76,7 +78,7 @@ steps:
 """
 
 AGENT_BLOCK = """## devmem (code knowledge)
-Start: `devmem recall "<task>"` (lessons, rules, code solved elsewhere), then `.devmem/knowledge/map.md`.
+Start: `devmem recall "<task>"` (lessons, rules), `devmem reuse "<need>"` (code other repos built; hub: `.devmem/hub.txt`), `devmem docs "<need>"` (latest library docs; prefer them to older org code), then `.devmem/knowledge/map.md`.
 Do not read whole files to explore. CLI (`pip install devmem`):
 - `devmem find "<concept>"`, `show <symbol>`, `outline <file>`; `helpers` reusable code
 - `devmem impact <symbol|table|table.column>` before changing anything
@@ -203,6 +205,33 @@ def publish(root: str | Path, idx: dict, peers: dict | None = None) -> list[str]
         entries = memmod.build_cross_repo(idx["repo"], root, peers)
         if entries:
             _write(root, f"{k}/cross-repo.md", memmod.render_cross_repo_md(entries), commit, written)
+        from . import reuse as reusemod
+        if reusemod.write_catalog(idx["repo"], root, peers):
+            written.append(".devmem/reuse-catalog.json")
+    hub_url = None
+    try:
+        from . import hub as hubmod2
+        hub_url = hubmod2.configured_url()
+    except Exception:
+        pass
+    hp = root / ".devmem/hub.txt"
+    if hub_url:
+        hp.write_text("# central knowledge hub (git): `devmem hub sync` pulls it, `devmem reuse` searches it\n" + hub_url + "\n", encoding="utf-8")
+        written.append(".devmem/hub.txt")
+    elif hp.exists():
+        hp.unlink()
+
+    # library freshness + offline docs for the libraries this repo uses
+    from . import docs as docsmod
+    lp = root / ".devmem/libs.json"
+    if lp.exists():
+        try:
+            _write(root, f"{k}/libraries.md", docsmod.render_libraries_md(json.loads(lp.read_text(encoding="utf-8"))), commit, written)
+        except ValueError:
+            pass
+    got = docsmod.copy_relevant(root)
+    if got:
+        written.append(".devmem/docs/")
 
     # no-touch.md: defaults + detected + repo-owned .devmem/no-touch.txt
     from devmem import notouch

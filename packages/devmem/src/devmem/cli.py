@@ -160,7 +160,116 @@ def cmd_hygiene(ix: Index, a) -> int:
 
 def cmd_recall(ix: Index, a) -> int:
     from . import memory
-    print(memory.format_recall(memory.recall(ix, a.task, a.files, a.limit)))
+    r = memory.recall(ix, a.task, a.files, a.limit)
+    from . import reuse
+    hits = [h for h in reuse.reuse(ix, a.task, limit=2) if h["score"] >= 0.5]
+    if hits:   # catalog search is far better than the keyword pointers; show it instead
+        r["cross_repo"] = []
+    print(memory.format_recall(r))
+    if hits:
+        print("ALSO SOLVED IN OTHER REPOS (`devmem reuse \"<need>\"` for source and how to adapt)")
+        for h in hits:
+            e = h["entry"]
+            print(f" {e['repo']}:{e['file']}:{e['line']}  {e['sig'] or e['name']}  [effort to reuse: {h['fit']['effort']}]")
+    return 0
+
+
+def cmd_reuse(ix: Index, a) -> int:
+    from . import reuse
+    entries, note = reuse.all_entries(ix.root)
+    if note:
+        print(f"[{note}]")
+    if not entries:
+        print("no reuse catalog or hub: onboard the other repos in devmem-app, then `devmem-app publish` this one (or set up a hub)")
+        return 0
+    hits = reuse.reuse(ix, a.need, entries, limit=a.limit)
+    for h in hits:
+        print(reuse.render_card(h["score"], h["entry"], h["fit"], a.lines) + "\n")
+        if a.prompt:
+            print(reuse.port_prompt(h["entry"], h["fit"], ix.data["repo"]) + "\n")
+    if not hits:
+        print("nothing in other repos matches; write it fresh")
+    return 0
+
+
+def cmd_plan(ix: Index, a) -> int:
+    from pathlib import Path as _P
+    from . import plan
+    f = _P(a.file)
+    if not f.exists():
+        f = ix.root / f
+    if not f.exists():
+        print(f"plan file not found: {a.file}")
+        return 1
+    pl = plan.parse(f.read_text(encoding="utf-8"))
+    if not pl["steps"]:
+        print("no steps found: use `## Step 1: ...` headings, a numbered list, or `- [ ]` items")
+        return 1
+    if a.done:
+        plan.mark(ix.root, f, a.done, a.note or "")
+        print(plan.status(ix.root, f, pl))
+    elif a.status or (not a.step and not a.all):
+        print(plan.status(ix.root, f, pl))
+    else:
+        steps = [s["n"] for s in pl["steps"]] if a.all else [a.step]
+        for n in steps:
+            print(plan.brief(ix, pl, n, a.code) + ("\n" + "-" * 60 + "\n" if len(steps) > 1 else ""))
+    return 0
+
+
+def cmd_docs(ix: Index, a) -> int:
+    from . import docs
+    libs = docs.libraries(ix.root)
+    if a.list or not a.query:
+        if not libs:
+            print("no library docs here: run `devmem-app docs add ...` then `devmem-app publish` (or sync the hub)")
+            return 0
+        for m in libs:
+            age = docs.age_days(m)
+            stale = f"  STALE ({age} days old: treat with care)" if age is not None and age > docs.STALE_DAYS else ""
+            print(f"{m['name']} {m.get('version', '')}  fetched {m.get('fetched', '?')}  {len(m.get('pages', []))} pages  <- {m.get('source', '')}{stale}")
+        return 0
+    hits = docs.search(ix.root, a.query, a.limit, a.lib)
+    for h in hits:
+        print(docs.render(h, a.chars) + "\n")
+    if not hits:
+        print("no matching documentation offline" + ("" if libs else " (none installed)") + ": say so in the PR rather than guessing an API")
+    return 0
+
+
+def cmd_hub(ix: Index, a) -> int:
+    from . import hub
+    s = hub.spec(ix.root)
+    if not s:
+        print("no hub configured (.devmem/hub.txt or DEVMEM_HUB): this repo only has its own committed catalog")
+        return 0
+    if a.action == "sync":
+        d, note = hub.sync(s)
+        print(note + (f": {d}" if d else ""))
+        return 0 if d else 1
+    d, note = hub.resolve(ix.root, auto_sync=a.action != "status")
+    if note:
+        print(f"[{note}]")
+    if not d:
+        print(f"hub {s}: not available here (run `devmem hub sync`; needs git access to it)")
+        return 1
+    if a.action == "status":
+        ag = hub.age(d)
+        print(f"hub {s}\n  at {d}" + (f"\n  synced {int(ag // 3600)}h ago" if ag is not None else ""))
+    if a.action in ("status", "repos"):
+        for m in hub.repos(d):
+            print(f"  {m['name']}: {m.get('symbols', '?')} symbols, {', '.join(m.get('langs', {})) or '-'}"
+                  + (f"  [{m['origin']}]" if m.get("origin") else "") + (f"  @{m['branch']}" if m.get("branch") else ""))
+        print(f"  {len(hub.entries(d))} reusable symbols in catalog")
+    elif a.action == "show":
+        name = a.repo or ""
+        for f in ("overview.md", "map.md"):
+            p = d / "repos" / name / f
+            if p.exists():
+                print(p.read_text(encoding="utf-8")[: a.chars])
+                return 0
+        print(f"no knowledge for {name!r} in the hub; `devmem hub repos` lists what is there")
+        return 1
     return 0
 
 
@@ -224,6 +333,22 @@ def main(argv=None) -> int:
     s = sub.add_parser("recall", help="lessons, rules and cross-repo pointers for a task")
     s.add_argument("task"); s.add_argument("--files", nargs="*"); s.add_argument("-n", "--limit", type=int, default=3)
     s.set_defaults(fn=cmd_recall)
+    s = sub.add_parser("reuse", help="code other onboarded repos already built for a need, with how much work it is to adapt here")
+    s.add_argument("need"); s.add_argument("-n", "--limit", type=int, default=3)
+    s.add_argument("--lines", type=int, default=40, help="source lines to print per hit")
+    s.add_argument("--prompt", action="store_true", help="also print a ready-to-use porting instruction")
+    s.set_defaults(fn=cmd_reuse)
+    s = sub.add_parser("plan", help="execute a human-written plan step by step: brief for a step, mark progress")
+    s.add_argument("file", help="plan markdown file"); s.add_argument("--step", type=int, help="print the brief for this step")
+    s.add_argument("--all", action="store_true", help="briefs for every step"); s.add_argument("--status", action="store_true")
+    s.add_argument("--done", type=int, help="mark this step done"); s.add_argument("--note", help="with --done: what was done / deviations")
+    s.add_argument("--code", action="store_true", help="include source of the org solutions"); s.set_defaults(fn=cmd_plan)
+    s = sub.add_parser("docs", help="search the offline library documentation (latest versions, put there by devmem-app docs add)")
+    s.add_argument("query", nargs="?"); s.add_argument("--lib", help="only this library"); s.add_argument("--list", action="store_true")
+    s.add_argument("-n", "--limit", type=int, default=4); s.add_argument("--chars", type=int, default=1100); s.set_defaults(fn=cmd_docs)
+    s = sub.add_parser("hub", help="central knowledge repo of all onboarded repos: sync | status | repos | show <repo>")
+    s.add_argument("action", choices=["sync", "status", "repos", "show"]); s.add_argument("repo", nargs="?")
+    s.add_argument("--chars", type=int, default=6000); s.set_defaults(fn=cmd_hub)
     s = sub.add_parser("remember", help="save a lesson (problem + fix) as a file for your PR")
     s.add_argument("title"); s.add_argument("--problem"); s.add_argument("--fix")
     s.add_argument("--tag", action="append"); s.add_argument("--ref", action="append", help="path#symbol")

@@ -39,6 +39,30 @@ def git_head(root: Path) -> str | None:
         return None
 
 
+def _git(root: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True)
+
+
+def git_branch(root: Path) -> str | None:
+    """Current branch name, or None for a detached HEAD / non-git folder."""
+    r = _git(root, "symbolic-ref", "--short", "-q", "HEAD")
+    return r.stdout.strip() or None if r.returncode == 0 else None
+
+
+def git_branches(root: Path) -> list[str]:
+    """Local branches plus remote-only ones (shown without the remote prefix; checkout creates a tracking branch)."""
+    local = _git(root, "for-each-ref", "--format=%(refname:short)", "refs/heads").stdout.split()
+    remote = [b.split("/", 1)[1] for b in _git(root, "for-each-ref", "--format=%(refname:short)", "refs/remotes").stdout.split()
+              if "/" in b and not b.endswith("/HEAD")]
+    return sorted(set(local) | set(remote))
+
+
+def git_dirty(root: Path) -> list[str]:
+    """Tracked files with uncommitted changes (devmem's own .devmem/ output is ignored)."""
+    out = _git(root, "status", "--porcelain", "--untracked-files=no").stdout.splitlines()
+    return [ln[3:] for ln in out if not ln[3:].startswith(".devmem/")]
+
+
 def _hash(b: bytes) -> str:
     return hashlib.sha1(b).hexdigest()
 
