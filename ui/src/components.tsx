@@ -30,7 +30,9 @@ export function RepoSelect({ value, onChange, repos, indexedOnly = true }: { val
 
 export const Err = ({ msg }: { msg: string }) => (msg ? <div className="err" role="alert">{msg}</div> : null);
 export const Badge = ({ kind = "", children }: { kind?: string; children: any }) => <span className={`badge ${kind}`}>{children}</span>;
-export const Empty = ({ children }: { children: any }) => <p className="muted">{children}</p>;
+export const Empty = ({ children }: { children: any }) => (
+  <div className="empty"><div className="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 4h16v12H5.2L4 17.2z"/><path d="M8 9h8M8 12h5"/></svg></div>{children}</div>
+);
 
 /* ---------- graph ---------- */
 function cssVar(n: string) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
@@ -42,7 +44,9 @@ export function CyGraph({ elements, layout = "cose", onSelect, height }: { eleme
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
     const f = () => setTheme((t) => t + 1);
     mq.addEventListener("change", f);
-    return () => mq.removeEventListener("change", f);
+    const mo = new MutationObserver(f);
+    mo.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    return () => { mq.removeEventListener("change", f); mo.disconnect(); };
   }, []);
   useEffect(() => {
     if (!ref.current) return;
@@ -57,7 +61,7 @@ export function CyGraph({ elements, layout = "cose", onSelect, height }: { eleme
       layout: { name: layout, animate: false, padding: 30, nodeDimensionsIncludeLabels: true, nodeRepulsion: () => 40000, idealEdgeLength: () => 90, nestingFactor: 1.5, componentSpacing: 80, nodeOverlap: 30, numIter: 2500 } as any,
       wheelSensitivity: 0.3,
       style: [
-        { selector: "node", style: { label: "data(label)", "font-size": 11, color: text, "background-color": surface, "border-width": 1, "border-color": line, "text-valign": "center", "text-halign": "center", shape: "round-rectangle", width: "label", height: "label", padding: "7px" } as any },
+        { selector: "node", style: { label: "data(label)", "font-size": 13, "font-weight": 500, color: text, "background-color": surface, "border-width": 1, "border-color": line, "text-valign": "center", "text-halign": "center", shape: "round-rectangle", width: "label", height: "label", padding: "9px" } as any },
         { selector: "node[kind = 'repo']", style: { "background-opacity": 0, "text-valign": "top", "font-weight": "bold", "border-color": text2, "border-width": 1.5, "border-style": "dashed", padding: "18px", width: "auto", height: "auto", shape: "rectangle" } as any },
         { selector: "node[kind = 'table']", style: { shape: "diamond", "background-color": warn, color: "#000", padding: "12px" } as any },
         { selector: "node[kind = 'job']", style: { "background-color": surface, "border-color": accent } as any },

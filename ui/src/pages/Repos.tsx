@@ -50,7 +50,7 @@ export default function Repos(_: any) {
                     <Badge kind="warn"><span title={r.knowledge_problems.join("\n")}>{r.knowledge_problems.length} issue(s)</span></Badge>}</td>
                   <td>{r.hygiene ? Object.entries(r.hygiene).map(([k, v]) => `${k} ${v}`).join(" · ") : <span className="muted">not run</span>}</td>
                   <td>
-                    <div className="row" style={{ justifyContent: "flex-end" }}>
+                    <div className="row actions">
                       <button disabled={!!busy} onClick={() => act("i" + r.name, () => api.post(`/api/repos/${r.name}/index`), (x) => `${r.name}: parsed ${x.stats.parsed}, reused ${x.stats.reused}`)}>{busy === "i" + r.name ? "…" : "Re-index"}</button>
                       <button disabled={!!busy || !r.indexed} onClick={() => act("p" + r.name, () => api.post(`/api/repos/${r.name}/publish`, { commit }), (x) => `${r.name}: wrote ${x.written.length} files${x.branch ? ` on branch ${x.branch}` : ""}`)}>{busy === "p" + r.name ? "…" : "Publish"}</button>
                       <button disabled={!!busy || !r.indexed} onClick={() => act("h" + r.name, () => api.post(`/api/repos/${r.name}/hygiene`), (x) => `${r.name} hygiene: ${JSON.stringify(x.counts)}`)}>{busy === "h" + r.name ? "Running…" : "Hygiene"}</button>

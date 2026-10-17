@@ -57,9 +57,21 @@ machine: `pip install -e packages/devmem`.
 ### 3. Onboard a repo
     devmem-app add /path/to/repo      # onboard + index -> <repo>/.devmem/index.json
     devmem-app publish /path/to/repo --commit
-    devmem-app ui                     # web UI (prebuilt; only run `cd ui && npm install && npm run build` to modify it)
 
-### 4. Improve accuracy (optional)
+### 4. Run the web UI
+    devmem-app ui                      # http://127.0.0.1:8765, opens your browser (--port N, --no-open)
+
+The built UI ships inside the package, so Node is not needed to use it. Pages: Repos, Explorer, Impact, Graph, Lineage,
+Hygiene, Memory, Metrics, Share, Chat. Light/dark follows your OS; the sidebar button overrides it.
+
+To change the UI (React + Vite, source in `ui/`):
+
+    cd ui && npm ci
+    devmem-app ui --no-open            # terminal 1: API on :8765
+    npm run dev                        # terminal 2: hot-reload UI on :5173, proxies /api to :8765
+    npm run build                      # writes packages/devmem-app/src/devmem_app/ui_dist (commit it)
+
+### 5. Improve accuracy (optional)
 Structural edges alone are about 92% precise (see [docs/ACCURACY.md](docs/ACCURACY.md)). Layer in independent sources:
 
     pip install graphifyy                                 # tree-sitter call graph, no LLM or key
