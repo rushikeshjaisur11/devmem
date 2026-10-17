@@ -74,7 +74,7 @@ def test_incremental(py_repo):
     assert first["stats"]["reused"] == 0
     (py_repo / "app" / "retry.py").write_text("def retry(fn):\n    return fn()\n")
     second = index_repo(py_repo)
-    assert second["stats"] == {"parsed": 1, "reused": first["stats"]["parsed"] - 1}
+    assert {k: second["stats"][k] for k in ("parsed", "reused")} == {"parsed": 1, "reused": first["stats"]["parsed"] - 1}
 
 
 def test_tables(spark_repo):

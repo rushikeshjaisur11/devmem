@@ -10,9 +10,8 @@ devmem has two halves:
 ## One-time per repo (your machine)
 
 ```
-pip install -e packages/devmem -e packages/devmem-app        # add [js] for TypeScript
+pip install -e packages/devmem -e packages/devmem-app        # everything accuracy depends on is a hard dependency; also needs Node.js 18+
 devmem-app add <path-to-repo>
-devmem-app index <repo> --scip --graphify                    # optional: precise + cross-checked edges (Node / graphifyy)
 devmem-app publish <repo> --commit                           # then push the devmem/knowledge-sync branch and merge it
 ```
 
@@ -43,8 +42,10 @@ They read `AGENTS.md` / `.github/copilot-instructions.md`, which `devmem-app pub
 managed block, under 300 tokens). Install the CLI where the agent runs: `pip install plugins/devmem/skills/devmem/vendor/devmem-*.whl`.
 The skills are plain `SKILL.md` files; copy `plugins/devmem/skills/` into `.github/skills/` (Copilot) or your tool's skills folder.
 
-## Graphify
+## Accuracy tools
 
-`pip install graphifyy`, then `devmem-app index <repo> --graphify` runs `graphify update .` (no LLM, no key) and
-cross-checks edges. Or import an existing `graphify-out/graph.json` with `--graphify-file`. See `docs/ACCURACY.md`.
-Graphify's own Devin skill (`graphify install --platform devin`) is separate and can be used alongside this.
+SCIP (type-resolved edges via `npx @sourcegraph/scip-python` / `scip-typescript`), Graphify (`graphifyy`, an independent tree-sitter call
+graph) and tree-sitter (JS/TS parsing) are not optional: `devmem-app add` / `index` / `publish` run them automatically whenever files
+changed (cached per file hash) and stop with an error if one is missing or fails. Node.js 18+ and network access are needed the first
+time (npx downloads the SCIP indexers). `--fast` or `DEVMEM_ACCURACY=fast` skips them for CI/dev; the index records it and the UI shows
+"reduced accuracy". See `docs/ACCURACY.md` for measurements.

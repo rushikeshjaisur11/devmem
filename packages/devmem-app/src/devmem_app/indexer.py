@@ -31,6 +31,28 @@ COLUMN_FUNCS = {"select", "withColumn", "col", "groupBy", "groupby", "orderBy", 
 PARSER_VERSION = 4  # bump when per-file records gain fields (forces re-parse of cached files)
 
 
+class AccuracyError(RuntimeError):
+    """A tool that accuracy depends on (SCIP, Graphify, tree-sitter) is missing or failed. Indexing stops instead of quietly
+    producing a less accurate index; DEVMEM_ACCURACY=fast (or --fast) is the explicit, recorded opt-out."""
+
+
+def accuracy_mode(explicit: str | None = None) -> str:
+    return (explicit or os.environ.get("DEVMEM_ACCURACY") or "strict").strip().lower()
+
+
+def stale_files(root: Path, cache_rel: str, idx: dict, langs: set[str]) -> list[str]:
+    """Files of `langs` that a cached tool run (.devmem/<cache>) has not seen in their current content."""
+    seen: dict[str, str] = {}
+    p = root / cache_rel
+    if p.exists():
+        try:
+            c = json.loads(p.read_text(encoding="utf-8"))
+            seen = {**c.get("hashes", {}), **c.get("seen", {})}
+        except Exception:
+            pass
+    return [f for f, r in idx["files"].items() if r["lang"] in langs and seen.get(f) != r["hash"]]
+
+
 def git_head(root: Path) -> str | None:
     try:
         return subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True,
@@ -303,11 +325,14 @@ def parse_sql_file(src: str) -> dict:
 
 
 # ---------- driver ----------
-def index_repo(root: str | Path, name: str | None = None, write: bool = True, scip: bool | list = False,
-               graphify: bool | Path | str = False) -> dict:
-    """scip=True runs scip-python/scip-typescript; a list of .scip paths imports prebuilt indexes. Cached SCIP edges are
-    always merged while the files they cover are unchanged."""
+def index_repo(root: str | Path, name: str | None = None, write: bool = True, scip: bool | list | None = None,
+               graphify: bool | Path | str | None = None, accuracy: str | None = None) -> dict:
+    """Accuracy is not optional. By default (accuracy "strict", or DEVMEM_ACCURACY unset) SCIP type-resolved edges and the Graphify
+    cross-check run whenever files they have not seen changed (cached per file hash, so unchanged repos re-index instantly), and
+    a missing/failed tool or parser raises AccuracyError. accuracy="fast" skips them and records that in stats.
+    Explicit scip=True / graphify=True force a re-run; a list of .scip paths / a graph.json path imports prebuilt output."""
     root = Path(root).resolve()
+    strict = accuracy_mode(accuracy) != "fast"
     prev = {}
     p = root / INDEX_PATH
     if p.exists():
@@ -348,7 +373,9 @@ def index_repo(root: str | Path, name: str | None = None, write: bool = True, sc
             except Exception:
                 rec, syms = {"lang": lang, "imports": [], "tables": [], "calls": []}, []
         elif lang in ("js", "ts"):
-            stats["js_skipped"] = stats.get("js_skipped", 0) + 1  # pip install devmem-app[js]
+            if strict:
+                raise AccuracyError("tree-sitter is not installed, so JS/TS cannot be parsed accurately: pip install -e packages/devmem-app")
+            stats["js_skipped"] = stats.get("js_skipped", 0) + 1
             rec, syms = {"lang": lang, "imports": [], "tables": [], "calls": []}, []
         else:
             rec, syms = {"lang": lang, "imports": [], "tables": [], "calls": []}, []
@@ -359,23 +386,37 @@ def index_repo(root: str | Path, name: str | None = None, write: bool = True, sc
         stats["parsed"] += 1
 
     idx["edges"] = graph.build_edges(idx)
-    if scip:
-        files, msgs = ([Path(f) for f in scip], []) if isinstance(scip, list) else scip_mod.run_indexer(root, idx)
+    present = {f["lang"] for f in idx["files"].values()}
+    if isinstance(scip, list):
+        scip_mod.build_cache(root, idx, [Path(f) for f in scip])
+    elif scip is True or (scip is None and strict and scip_mod.applicable(root, idx)
+                          and stale_files(root, scip_mod.CACHE, idx, scip_mod.applicable(root, idx))):
+        files, msgs = scip_mod.run_indexer(root, idx)
         if files:
             scip_mod.build_cache(root, idx, files)
         stats["scip_messages"] = msgs
-    if graphify:
-        gf, msg = (Path(graphify), "") if not isinstance(graphify, bool) else graphify_mod.run_graphify(root)
+        if msgs and strict:
+            raise AccuracyError("SCIP (type-resolved edges) failed: " + "; ".join(msgs) + ". Needs Node.js 18+ and network on first run "
+                                "(npx fetches scip-python / scip-typescript). Fix it, or index with --fast to accept lower accuracy.")
+    if graphify is not None and graphify is not False and graphify is not True:
+        graphify_mod.build_cache(root, idx, Path(graphify))
+    elif graphify is True or (graphify is None and strict and present & graphify_mod.CODE_LANGS
+                              and stale_files(root, graphify_mod.CACHE, idx, graphify_mod.CODE_LANGS)):
+        gf, msg = graphify_mod.run_graphify(root)
         if gf:
             graphify_mod.build_cache(root, idx, gf)
         elif msg:
             stats["graphify_message"] = msg
+            if strict:
+                raise AccuracyError(f"Graphify cross-check failed: {msg}. It is installed with devmem-app (pip install -e packages/devmem-app); "
+                                    "index with --fast to accept lower accuracy.")
     gs = graphify_mod.apply_cache(root, idx)       # structural second opinion first, then SCIP (type-resolved) wins
     if gs:
         stats["graphify"] = gs
     sc = scip_mod.apply_cache(root, idx)
     if sc:
         stats["scip"] = sc
+    stats["accuracy"] = "full" if strict else "fast"
     idx["stats"] = stats
     if write:
         p.parent.mkdir(parents=True, exist_ok=True)

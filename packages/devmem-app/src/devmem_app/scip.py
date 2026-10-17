@@ -178,13 +178,24 @@ def run_indexer(root: Path, idx: dict, timeout: int = 900) -> tuple[list[Path], 
     return out, msgs
 
 
+def applicable(root: Path, idx: dict) -> set[str]:
+    """Languages SCIP can index in this repo (mirrors the jobs run_indexer starts)."""
+    langs = {f["lang"] for f in idx["files"].values()}
+    out = {"python"} & langs
+    if langs & {"ts", "js"} and ((root / "tsconfig.json").exists() or (root / "package.json").exists()):
+        out |= {"ts", "js"} & langs
+    return out
+
+
 def build_cache(root: Path, idx: dict, scip_files: list[Path]) -> dict:
     edges, covered = [], set()
     for f in scip_files:
         e, c = edges_from(idx, parse(Path(f).read_bytes()))
         edges += e; covered |= c
     hashes = {p: idx["files"][p]["hash"] for p in covered if p in idx["files"]}
-    cache = {"edges": edges, "covered": sorted(covered), "hashes": hashes}
+    langs = applicable(root, idx)
+    seen = {p: r["hash"] for p, r in idx["files"].items() if r["lang"] in langs}   # files this run looked at, covered or not
+    cache = {"edges": edges, "covered": sorted(covered), "hashes": hashes, "seen": seen}
     p = root / CACHE
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(cache), encoding="utf-8")
