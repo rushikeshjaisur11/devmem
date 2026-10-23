@@ -15,6 +15,7 @@ import subprocess
 from pathlib import Path
 
 from devmem.ignore import Ignore
+from devmem.index import Index, write_db
 from devmem.schema import INDEX_PATH, new_index
 
 from . import graph, jsparse
@@ -421,4 +422,5 @@ def index_repo(root: str | Path, name: str | None = None, write: bool = True, sc
     if write:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(json.dumps(idx, indent=1, sort_keys=True), encoding="utf-8")
+        write_db(Index(idx, root))
     return idx

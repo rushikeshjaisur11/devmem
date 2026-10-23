@@ -11,7 +11,7 @@ devmem has two halves:
 
 ```
 pip install -e packages/devmem -e packages/devmem-app        # everything accuracy depends on is a hard dependency; also needs Node.js 18+
-devmem-app add <path-to-repo>
+devmem-app add <path-to-repo-or-git-url>
 devmem-app publish <repo> --commit                           # then push the devmem/knowledge-sync branch and merge it
 ```
 

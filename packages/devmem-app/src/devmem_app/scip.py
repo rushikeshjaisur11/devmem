@@ -6,6 +6,7 @@ file SCIP covered but did not confirm is dropped (SCIP saw the real target). Str
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -162,12 +163,31 @@ def run_indexer(root: Path, idx: dict, timeout: int = 900) -> tuple[list[Path], 
         return [], ["npx not found: install Node.js, or pass an existing index with --scip-file"]
     for name, args in jobs:
         dest = Path(tempfile.mkdtemp(prefix="devmem-scip-")) / f"{name}.scip"
+        preload_dir = None
         try:
+            env = None
+            if os.name == "nt":
+                preload_dir = tempfile.TemporaryDirectory(prefix="devmem-scip-node-")
+                preload = Path(preload_dir.name) / "scip-windows-path.cjs"
+                # scip-python builds a regex from path.sep without escaping Windows backslashes.
+                preload.write_text(
+                    "const path = require('node:path');\n"
+                    "if ((process.argv[1] || '').toLowerCase().includes('scip-python')) path.sep += path.sep;\n",
+                    encoding="utf-8",
+                )
+                options = os.environ.get("NODE_OPTIONS", "").strip()
+                env = {
+                    **os.environ,
+                    "NODE_OPTIONS": f'{options} --require="{preload.as_posix()}"'.strip(),
+                }
             r = subprocess.run([npx, "--yes", *args, "--output", str(dest)], cwd=str(root), capture_output=True, text=True,
-                               errors="replace", timeout=timeout)
+                               errors="replace", timeout=timeout, env=env, check=False)
         except (subprocess.TimeoutExpired, OSError) as e:
             msgs.append(f"{name}: {e}")
             continue
+        finally:
+            if preload_dir is not None:
+                preload_dir.cleanup()
         if dest.exists() and dest.stat().st_size > 60:
             out.append(dest)
         else:

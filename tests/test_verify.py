@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from devmem import check as chk
 from devmem.index import Index
+from devmem.knowledge import FILE_BUDGET, est_tokens
 from devmem_app import commands, publisher
 from devmem_app.indexer import index_repo
 
@@ -66,6 +67,24 @@ def test_publish_writes_commands_and_tests_md(repo):
     assert "python -m pytest -q" in cm and "| yes |" in cm
     tm = (repo / ".devmem/knowledge/tests.md").read_text()
     assert "`app/retry.py` <-" in tm and "tests/test_service.py::test_load_user" in tm
+
+
+def test_render_tests_md_stays_within_knowledge_budget(monkeypatch, tmp_path):
+    symbols = [
+        {"id": f"src/{i}.py#run", "file": f"src/{i}.py", "kind": "function", "is_test": False}
+        for i in range(25)
+    ]
+    idx = {"repo": "large", "symbols": symbols, "edges": [], "files": {}}
+    test_names = [f"test_{i}_" + "x" * 2000 for i in range(10)]
+    monkeypatch.setattr(Index, "tests_for_files", lambda self, paths: {"tests/test_long.py": test_names})
+
+    body = commands.render_tests_md(idx, [])
+    written = []
+    publisher._write(tmp_path, ".devmem/knowledge/tests.md", body, None, written)
+    published = (tmp_path / ".devmem/knowledge/tests.md").read_text()
+
+    assert est_tokens(published) <= FILE_BUDGET
+    assert "additional test-map entries omitted" in published
 
 
 def test_check_ok_and_failure_summary(repo, capsys):

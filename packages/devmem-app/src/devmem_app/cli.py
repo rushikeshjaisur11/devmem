@@ -4,6 +4,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -12,6 +14,8 @@ from devmem.index import Index
 from .indexer import AccuracyError, index_repo
 from .paths import devmem_home
 
+
+_GIT_URL = re.compile(r"^(https?://|ssh://|git://|git@[\w.-]+:)[^\s]+$")
 
 
 def _workspace() -> Path:
@@ -33,7 +37,7 @@ def _main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="devmem-app")
     p.add_argument("--fast", action="store_true", help="skip SCIP and Graphify (lower accuracy, recorded in the index); same as DEVMEM_ACCURACY=fast")
     sub = p.add_subparsers(dest="cmd", required=True)
-    s = sub.add_parser("add", help="onboard a repo (local clone path)"); s.add_argument("path"); s.add_argument("--name")
+    s = sub.add_parser("add", help="onboard a repo (local path or Git URL)"); s.add_argument("path"); s.add_argument("--name")
     s = sub.add_parser("index", help="(re)index a path, or all onboarded repos"); s.add_argument("path", nargs="?")
     s.add_argument("--force-tools", action="store_true", help="re-run SCIP and Graphify even if their cache is current (they run automatically when files changed)")
     s.add_argument("--graphify-file", help="import an existing graphify-out/graph.json")
@@ -88,12 +92,40 @@ def _main(argv=None) -> int:
     if a.fast:
         os.environ["DEVMEM_ACCURACY"] = "fast"
     if a.cmd == "add":
-        root = Path(a.path).resolve()
-        idx = index_repo(root, a.name)          # register only after a full-accuracy index succeeded
+        spec = a.path.strip()
+        is_url = "://" in spec or spec.startswith("git@")
+        if is_url:
+            if not _GIT_URL.match(spec):
+                sys.exit("devmem-app: use an https://, ssh://, git:// or git@host:path Git URL")
+            name = a.name or re.sub(r"\.git$", "", spec.rstrip("/").split("/")[-1].split(":")[-1]) or "repo"
+            if not re.fullmatch(r"[\w.-]+", name) or name in (".", ".."):
+                sys.exit("devmem-app: bad repo name")
+            root = devmem_home() / "clones" / name
+            env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+            try:
+                if (root / ".git").exists():
+                    result = subprocess.run(
+                        ["git", "-C", str(root), "fetch", "--all", "--prune"],
+                        capture_output=True, text=True, env=env, timeout=600,
+                    )
+                else:
+                    root.parent.mkdir(parents=True, exist_ok=True)
+                    result = subprocess.run(
+                        ["git", "clone", "--", spec, str(root)],
+                        capture_output=True, text=True, env=env, timeout=900,
+                    )
+            except (subprocess.TimeoutExpired, OSError) as e:
+                sys.exit(f"devmem-app: git: {e}")
+            if result.returncode:
+                sys.exit("devmem-app: git failed: " + (result.stderr or result.stdout).strip()[-300:])
+        else:
+            root = Path(spec).expanduser().resolve()
+            name = a.name or root.name
+        idx = index_repo(root, name)          # register only after a full-accuracy index succeeded
         ws = _ws()
-        ws["repos"][a.name or root.name] = str(root)
+        ws["repos"][name] = str(root)
         _save(ws)
-        print(f"onboarded {a.name or root.name}: {len(idx['symbols'])} symbols, {len(idx['edges'])} edges {idx['stats']}")
+        print(f"onboarded {name}: {len(idx['symbols'])} symbols, {len(idx['edges'])} edges {idx['stats']}")
     elif a.cmd == "index":
         targets = {Path(a.path).name: a.path} if a.path else _ws()["repos"]
         for name, path in targets.items():

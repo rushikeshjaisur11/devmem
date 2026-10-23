@@ -16,6 +16,7 @@ import datetime as _dt
 
 INDEX_VERSION = 1
 INDEX_PATH = ".devmem/index.json"
+DB_PATH = ".devmem/index.db"  # derived FTS5 cache of index.json; rebuilt when index.json changes
 IGNORE_FILE = ".devmemignore"
 
 CONF_PRECISE = "precise"        # type-resolved (SCIP, later)

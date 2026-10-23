@@ -1,7 +1,9 @@
-import json
+import os
 import shutil
+import subprocess
 from pathlib import Path
 
+import pytest
 from devmem_app import indexer, scip
 
 FIX = Path(__file__).parent.parent / "fixtures"
@@ -79,3 +81,29 @@ def test_run_indexer_without_node(monkeypatch, tmp_path):
     monkeypatch.setattr(scip.shutil, "which", lambda n: None)
     files, msgs = scip.run_indexer(tmp_path, {"files": {"a.py": {"lang": "python"}}})
     assert files == [] and "npx not found" in msgs[0]
+
+
+def test_run_indexer_patches_windows_scip_python_path_regex(monkeypatch, tmp_path):
+    if os.name != "nt":
+        pytest.skip("SCIP Python's path separator bug only affects Windows")
+    monkeypatch.setenv("NODE_OPTIONS", "--max-old-space-size=1024")
+    monkeypatch.setattr(scip.shutil, "which", lambda n: "npx")
+    captured = {}
+
+    def run(args, **kwargs):
+        captured["env"] = kwargs["env"]
+        options = kwargs["env"]["NODE_OPTIONS"]
+        preload = Path(options.split('--require="', 1)[1].split('"', 1)[0])
+        captured["preload"] = preload
+        captured["source"] = preload.read_text(encoding="utf-8")
+        Path(args[args.index("--output") + 1]).write_bytes(b"x" * 61)
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(scip.subprocess, "run", run)
+
+    files, messages = scip.run_indexer(tmp_path, {"files": {"a.py": {"lang": "python"}}})
+
+    assert files and messages == []
+    assert captured["env"]["NODE_OPTIONS"].startswith("--max-old-space-size=1024 ")
+    assert "process.argv[1]" in captured["source"] and "path.sep += path.sep" in captured["source"]
+    assert not captured["preload"].exists()

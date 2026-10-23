@@ -11,13 +11,18 @@ import time
 TIMEOUT = 600
 
 
+def _quote(s: str) -> str:
+    """Quote one shell argument for the shell `run_cmd` uses (cmd.exe has no single quotes)."""
+    return subprocess.list2cmdline([s]) if sys.platform == "win32" else shlex.quote(s)
+
+
 def _fix_python(cmd: str) -> str:
     """Leading `python`/`python3` runs with the interpreter devmem itself runs in (override: DEVMEM_PYTHON)."""
     import os
     parts = cmd.split(None, 1)
     if parts and parts[0] in ("python", "python3"):
         py = os.environ.get("DEVMEM_PYTHON") or sys.executable
-        return shlex.quote(py) + (" " + parts[1] if len(parts) > 1 else "")
+        return _quote(py) + (" " + parts[1] if len(parts) > 1 else "")
     return cmd
 
 
@@ -32,7 +37,7 @@ def run_cmd(cmd: str, cwd, timeout: int = TIMEOUT) -> dict:
 
 
 def quote_all(items) -> str:
-    return " ".join(shlex.quote(i) for i in items)
+    return " ".join(_quote(i) for i in items)
 
 
 def summarize(kind: str, out: str, limit: int = 15) -> list[str]:
