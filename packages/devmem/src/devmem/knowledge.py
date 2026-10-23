@@ -9,7 +9,7 @@ HEADER_RE = re.compile(r"<!-- devmem: commit=(\S+) generated=(\S+) tokens=(\d+) 
 KNOWLEDGE_DIR = ".devmem/knowledge"
 AGENTS_INDEX_BUDGET = 300
 MAP_BUDGET = 1500
-FILE_BUDGET = 2500
+FILE_BUDGET = 25000
 
 
 def est_tokens(text: str) -> int:

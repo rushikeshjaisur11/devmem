@@ -12,6 +12,9 @@ dependencies = [
   "ruff", "vulture", "radon", "deptry", "bandit", "sqlfluff",               # hygiene reports
 ]
 
+[tool.uv.sources]
+devmem = { workspace = true }
+
 [project.optional-dependencies]
 test = ["httpx", "pytest"]
 

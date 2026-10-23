@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
+import zlib
 from collections import defaultdict, deque
 from pathlib import Path
 
 from .jsresolve import is_js
 from .jsresolve import resolve as js_resolve
-from .schema import INDEX_PATH, MAX_HOPS, UTILITY_CALLER_CAP
+from .schema import DB_PATH, INDEX_PATH, MAX_HOPS, UTILITY_CALLER_CAP
 
 
 def find_repo_root(start: Path | None = None) -> Path:
@@ -22,6 +24,7 @@ def find_repo_root(start: Path | None = None) -> Path:
 class Index:
     def __init__(self, data: dict, root: Path):
         self.data, self.root = data, root
+        self._fts: sqlite3.Connection | None = None
         self.symbols = {s["id"]: s for s in data["symbols"]}
         self.cochange: dict[str, list[tuple[str, int]]] = defaultdict(list)
         hp = Path(root) / ".devmem/history.json"
@@ -61,20 +64,21 @@ class Index:
         q = _tokens(query)
         if not q:
             return []
-        scored = []
-        for s in self.symbols.values():
-            if s["kind"] == "module":
-                continue
-            name_t, doc_t, path_t = _tokens(s["qualname"]), _tokens(s["doc"]), _tokens(s["file"])
-            score = 3.0 * len(q & name_t) + 1.0 * len(q & doc_t) + 0.5 * len(q & path_t)
-            if query.lower() in s["qualname"].lower():
-                score += 2
-            if s["is_test"]:
-                score *= 0.5
-            if score > 0:
-                scored.append((score, s))
+        scored = [(sc, s) for s in map(self.symbols.get, self._candidates(q, query, limit)) if (sc := _score(q, query, s)) > 0]
         scored.sort(key=lambda x: (-x[0], x[1]["file"], x[1]["line"]))
         return scored[:limit]
+
+    def _candidates(self, q: set[str], query: str, limit: int) -> list[str]:
+        """Ids of symbols sharing a token with the query (best bm25 first) or containing it in the qualname.
+        Capped at max(CANDIDATE_CAP, 10 * limit) per source: exact unless a query matches more symbols than that."""
+        if self._fts is None:
+            self._fts = _open_fts(self)
+        cap = max(CANDIDATE_CAP, 10 * limit)
+        match = " OR ".join(f'"{t}"' for t in sorted(q))
+        ranked = self._fts.execute(  # column weights mirror _score: name 3, doc 1, path 0.5 (bm25 is lower = better)
+            "SELECT id FROM sym WHERE sym MATCH ? ORDER BY bm25(sym, 0, 3, 1, 0.5) LIMIT ?", (match, cap)).fetchall()
+        substr = self._fts.execute("SELECT id FROM qual WHERE instr(q, ?) > 0 LIMIT ?", (query.lower(), cap)).fetchall()
+        return list(dict.fromkeys(r[0] for r in ranked + substr))
 
     def source(self, s: dict) -> str:
         lines = (self.root / s["file"]).read_text(encoding="utf-8", errors="replace").splitlines()
@@ -213,3 +217,58 @@ class Index:
 def _tokens(text: str) -> set[str]:
     text = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", text)
     return {t.lower() for t in re.split(r"[^A-Za-z0-9]+", text) if len(t) > 1}
+
+
+def _score(q: set[str], query: str, s: dict) -> float:
+    score = 3.0 * len(q & _tokens(s["qualname"])) + 1.0 * len(q & _tokens(s["doc"])) + 0.5 * len(q & _tokens(s["file"]))
+    if query.lower() in s["qualname"].lower():
+        score += 2
+    return score * 0.5 if s["is_test"] else score
+
+
+CANDIDATE_CAP = 300
+
+
+def _rebuild_fts(db: sqlite3.Connection, ix: "Index") -> None:
+    """`sym` = FTS5 over camel/snake-split tokens; `qual` = plain table (an FTS column is too slow to substring-scan)."""
+    db.execute("DROP TABLE IF EXISTS sym")
+    db.execute("DROP TABLE IF EXISTS qual")
+    db.execute("CREATE VIRTUAL TABLE sym USING fts5(id UNINDEXED, name, doc, path)")
+    db.execute("CREATE TABLE qual(id TEXT, q TEXT)")
+    for s in ix.symbols.values():
+        if s["kind"] != "module":
+            db.execute("INSERT INTO sym VALUES (?,?,?,?)",
+                       (s["id"], *(" ".join(sorted(_tokens(s[k]))) for k in ("qualname", "doc", "file"))))
+            db.execute("INSERT INTO qual VALUES (?,?)", (s["id"], s["qualname"].lower()))
+
+
+def _stamp(src: Path) -> int:
+    st = src.stat()
+    return zlib.crc32(f"{st.st_size}:{st.st_mtime_ns}".encode()) & 0x7FFFFFFF  # fits PRAGMA user_version
+
+
+def write_db(ix: "Index") -> None:
+    """Cache the search tables in `.devmem/index.db`, derived from index.json and never committed.
+    Called by the indexer after it writes index.json; readers never write (prompt building is read-only)."""
+    db = sqlite3.connect(ix.root / DB_PATH)
+    with db:
+        _rebuild_fts(db, ix)
+        db.execute(f"PRAGMA user_version = {_stamp(ix.root / INDEX_PATH)}")
+    db.close()
+    (ix.root / ".devmem/.gitignore").write_text("index.db*\n", encoding="utf-8")
+
+
+def _open_fts(ix: "Index") -> sqlite3.Connection:
+    """The cached db when it matches index.json, else an in-memory build (read-only; no file is created)."""
+    src, cache = ix.root / INDEX_PATH, ix.root / DB_PATH
+    if src.exists() and cache.exists():
+        db = sqlite3.connect(f"file:{cache.as_posix()}?mode=ro", uri=True)
+        try:
+            if db.execute("PRAGMA user_version").fetchone()[0] == _stamp(src):
+                return db
+        except sqlite3.DatabaseError:
+            pass
+        db.close()
+    db = sqlite3.connect(":memory:")
+    _rebuild_fts(db, ix)
+    return db

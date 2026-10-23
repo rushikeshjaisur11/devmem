@@ -7,6 +7,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from devmem.check import COMMANDS_PATH, FLAKY_PATH, load_commands
+from devmem.knowledge import FILE_BUDGET
 from devmem.runner import quote_all, run_cmd
 
 
@@ -152,6 +153,7 @@ def render_commands_md(cmds: dict) -> str:
 def render_tests_md(idx: dict, flaky: list[str], max_files: int = 25) -> str:
     """Source file -> tests that reach it (direct calls plus callers' tests, via impact)."""
     from devmem.index import Index
+
     ix = Index(idx, Path("."))
     src_files = sorted({s["file"] for s in idx["symbols"] if s["kind"] != "module" and not s["is_test"]})
     by_src = {}
@@ -162,13 +164,29 @@ def render_tests_md(idx: dict, flaky: list[str], max_files: int = 25) -> str:
     lines = ["# Test map", "Source file -> tests that reach it (direct and through callers). "
              "`devmem tests-for <files>` prints the exact command.", ""]
     ranked = sorted(by_src.items(), key=lambda kv: (-len(kv[1]), kv[0]))
-    for f, ts in sorted(ranked[:max_files]):
-        lines.append(f"- `{f}` <- " + ", ".join(f"`{t}`" for t in ts[:4]) + (f" (+{len(ts) - 4} more)" if len(ts) > 4 else ""))
-    if len(ranked) > max_files:
-        lines.append(f"- ... {len(ranked) - max_files} more source files")
+    candidates = [
+        f"- `{f}` <- " + ", ".join(f"`{t}`" for t in ts[:4]) + (f" (+{len(ts) - 4} more)" if len(ts) > 4 else "")
+        for f, ts in sorted(ranked[:max_files])
+    ]
+    omitted = max(0, len(ranked) - max_files)
     untested = [f for f in src_files if f not in by_src]
     if untested:
-        lines += ["", "No test reaches: " + ", ".join(f"`{f}`" for f in untested[:15]) + (" ..." if len(untested) > 15 else "")]
+        candidates += ["", "No test reaches: " + ", ".join(f"`{f}`" for f in untested[:15]) + (" ..." if len(untested) > 15 else "")]
     if flaky:
-        lines += ["", "## Known flaky (failures here are not caused by your change)"] + [f"- `{t}`" for t in flaky]
+        candidates += ["", "## Known flaky (failures here are not caused by your change)"] + [f"- `{t}`" for t in flaky]
+
+    # Leave room for the generated freshness header that publisher._write prepends.
+    max_chars = FILE_BUDGET * 4 - 256
+    for line in candidates:
+        if len("\n".join(lines + [line])) <= max_chars:
+            lines.append(line)
+        elif line:
+            omitted += 1
+    if omitted:
+        note = f"\n- {omitted} additional test-map entries omitted; use `devmem tests-for <files>` for exact results."
+        while len("\n".join(lines)) + len(note) > max_chars and len(lines) > 3:
+            lines.pop()
+            omitted += 1
+            note = f"\n- {omitted} additional test-map entries omitted; use `devmem tests-for <files>` for exact results."
+        lines.append(note.lstrip("\n"))
     return "\n".join(lines)

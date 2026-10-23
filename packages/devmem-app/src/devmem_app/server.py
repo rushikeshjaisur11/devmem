@@ -224,7 +224,10 @@ def create_app() -> FastAPI:
         root = root_of(name)
         idx = index_repo(root, name)
         h = hyg.run_hygiene(root, idx, name)
-        publish(root, idx, ws()["repos"])
+        try:
+            publish(root, idx, ws()["repos"])
+        except RuntimeError as e:
+            raise HTTPException(422, str(e))
         return {"counts": h["counts"], "tools": h["tools"]}
 
     # ---------- explorer ----------

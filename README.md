@@ -26,7 +26,7 @@ Everything accuracy depends on is a hard dependency (see below). Agents only nee
 
 ## Quick start
 ```
-devmem-app add /path/to/repo               # or paste a git URL on the Repos page; indexes with full accuracy
+devmem-app add /path/to/repo               # or a Git URL; clones into ~/.devmem/clones/<name>
 devmem-app publish /path/to/repo --commit  # writes .devmem/ + AGENTS.md on branch devmem/knowledge-sync; you push and merge it
 devmem-app ui                              # http://127.0.0.1:8765 (Repos, Explorer, Impact, Graph, Lineage, Hygiene, Memory, Chat, ...)
 cd /path/to/repo && devmem find "retry logic" && devmem impact retry
@@ -73,4 +73,5 @@ it is recorded in the index and shown as "reduced accuracy" in the UI. Measured 
 ## Notes
 - Index and caches are JSON under `<repo>/.devmem/`; app state (workspace, docs store, hub clone, clones) is under `~/.devmem` (`DEVMEM_HOME`).
 - Branch switching and git-URL cloning on the Repos page run `git checkout` / `git clone` in your clones; they refuse on uncommitted changes.
-- Not built yet: SQLite/FTS5 store (the index is JSON).
+- `index.json` stays the reviewed source of truth. `devmem-app index` also writes `.devmem/index.db`, a gitignored SQLite/FTS5 cache that
+  `devmem find` uses to pick candidates; if it is missing or stale, search builds the same tables in memory and writes nothing.

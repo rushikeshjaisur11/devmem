@@ -33,6 +33,6 @@ def test_bundled_wheel_matches_package_and_bootstrap_installs_it(tmp_path):
     ver = re.search(r'version = "([^"]+)"', (ROOT / "packages/devmem/pyproject.toml").read_text()).group(1)
     assert whl[0].name.startswith(f"devmem-{ver}-")
     names = zipfile.ZipFile(whl[0]).namelist()
-    cli_in_wheel = zipfile.ZipFile(whl[0]).read("devmem/cli.py").decode()
-    assert cli_in_wheel == (ROOT / "packages/devmem/src/devmem/cli.py").read_text(), "rebuild the wheel: pip wheel --no-deps packages/devmem -w plugins/devmem/skills/devmem/vendor"
+    cli_in_wheel = zipfile.ZipFile(whl[0]).read("devmem/cli.py").decode().replace("\r\n", "\n")
+    assert cli_in_wheel == (ROOT / "packages/devmem/src/devmem/cli.py").read_text(encoding="utf-8"), "rebuild the wheel: pip wheel --no-deps packages/devmem -w plugins/devmem/skills/devmem/vendor"
     assert any(n.endswith("entry_points.txt") for n in names)

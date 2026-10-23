@@ -49,6 +49,21 @@ def test_repos_listing_and_actions(api):
     assert api.get("/api/repos/nope/tree").status_code == 404
 
 
+def test_hygiene_returns_publish_errors_as_http_errors(api, monkeypatch):
+    import devmem_app.server as server
+
+    monkeypatch.setattr(server.hyg, "run_hygiene", lambda *args: {"counts": {}, "tools": {}})
+
+    def fail_publish(*args):
+        raise RuntimeError("knowledge budget exceeded")
+
+    monkeypatch.setattr(server, "publish", fail_publish)
+    response = api.post("/api/repos/py_app/hygiene", headers=H)
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "knowledge budget exceeded"
+
+
 def test_explorer(api):
     t = api.get("/api/repos/py_app/tree").json()
     app_dir = next(c for c in t["children"] if c["name"] == "app")
