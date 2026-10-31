@@ -76,7 +76,7 @@ def _main(argv=None) -> int:
     s.add_argument("--summarize", action="store_true", help="have the configured LLM (Vertex) describe each function so offline search matches by meaning")
     s.add_argument("--prune", action="store_true", help="remove repos from the hub that are no longer onboarded")
     s.add_argument("--per-repo", type=int, default=400)
-    s = sub.add_parser("docs", help="library docs for offline agents: add <llms.txt|url|pypi:pkg|npm:pkg> | list | refresh [name..] | remove <name>")
+    s = sub.add_parser("docs", help="library docs for offline agents: add <llms.txt|url|pypi:pkg|npm:pkg|local path> | list | refresh [name..] | remove <name>")
     s.add_argument("action", choices=["add", "list", "refresh", "remove"]); s.add_argument("args", nargs="*")
     s.add_argument("--name"); s.add_argument("--no-follow", action="store_true", help="llms.txt: do not fetch the pages it links to")
     s.add_argument("--max-pages", type=int, default=40)
@@ -221,7 +221,7 @@ def _main(argv=None) -> int:
         from . import docs as dm
         if a.action == "add":
             if not a.args:
-                sys.exit("usage: devmem-app docs add <llms.txt-url | page-url | pypi:pkg | npm:pkg>")
+                sys.exit("usage: devmem-app docs add <llms.txt-url | page-url | pypi:pkg | npm:pkg | local file or folder>")
             for spec in a.args:
                 m = dm.add(spec, a.name if len(a.args) == 1 else None, not a.no_follow, a.max_pages)
                 print(f"{m['name']} {m['version']}: {len(m['pages'])} pages, {m['bytes'] // 1024} KB")

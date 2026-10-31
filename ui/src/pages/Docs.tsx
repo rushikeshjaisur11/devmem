@@ -33,15 +33,15 @@ export default function Docs(_: any) {
       <div className="card">
         <h3>Add documentation</h3>
         <div className="row">
-          <input className="grow" placeholder="https://docs.example.dev/llms.txt  ·  a docs page URL  ·  pypi:pydantic  ·  npm:zod" value={spec} onChange={(e) => setSpec(e.target.value)} aria-label="Docs source" />
+          <input className="grow" placeholder="https://docs.example.dev/llms.txt, pypi:pydantic, npm:zod, or C:\docs\internal-guide" value={spec} onChange={(e) => setSpec(e.target.value)} aria-label="Docs source" />
           <label title="For llms.txt: also fetch the pages it links to"><input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} />Follow links</label>
-          <button className="primary" disabled={!spec.trim() || busy === "add"} onClick={() => run("add", () => api.post("/api/docs", { spec, follow }), (r) => `${r.name} ${r.version || ""}: ${r.pages} pages, ${Math.round(r.bytes / 1024)} KB`)}>{busy === "add" ? "Fetching…" : "Fetch docs"}</button>
+          <button className="primary" disabled={!spec.trim() || busy === "add"} onClick={() => run("add", () => api.post("/api/docs", { spec, follow }), (r) => `${r.name} ${r.version || ""}: ${r.pages} pages, ${Math.round(r.bytes / 1024)} KB`)}>{busy === "add" ? "Adding…" : "Add docs"}</button>
         </div>
-        <p className="muted" style={{ margin: "10px 0 0", fontSize: 12.5 }}>Prefer an <code>llms.txt</code> / <code>llms-full.txt</code> when the library publishes one (try <code>https://&lt;docs-site&gt;/llms.txt</code>). <code>pypi:</code> and <code>npm:</code> pull the package page and, if the project's docs site has an llms.txt, that too.</p>
+        <p className="muted" style={{ margin: "10px 0 0", fontSize: 12.5 }}>Prefer an <code>llms.txt</code> / <code>llms-full.txt</code> when the library publishes one (try <code>https://&lt;docs-site&gt;/llms.txt</code>). <code>pypi:</code> and <code>npm:</code> pull the package page and, if the project's docs site has an llms.txt, that too. A local file or folder (Markdown, text, reStructuredText or HTML) is copied in as-is; Refresh re-reads it from disk.</p>
       </div>
       <div className="card">
         <div className="row" style={{ justifyContent: "space-between" }}>
-          <h3 style={{ margin: 0 }}>Libraries on file · {list.length}</h3>
+          <h3 style={{ margin: 0 }}>Libraries on file ({list.length})</h3>
           <button disabled={busy === "refresh" || !list.length} onClick={() => run("refresh", () => api.post("/api/docs/refresh"), (r) => Object.entries(r).map(([k, v]) => `${k}: ${v}`).join(" · "))}>{busy === "refresh" ? "Refreshing…" : "Refresh all"}</button>
         </div>
         {!list.length ? <Empty>No docs yet. Add a library above.</Empty> : (

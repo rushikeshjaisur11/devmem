@@ -131,10 +131,15 @@ def _try(url: str) -> str | None:
 
 
 def add(spec: str, name: str | None = None, follow: bool = True, max_pages: int = 40, dest: Path | None = None) -> dict:
-    """spec: an llms.txt / llms-full.txt / web page URL, `pypi:<pkg>` or `npm:<pkg>`."""
+    """spec: an llms.txt / llms-full.txt / web page URL, `pypi:<pkg>`, `npm:<pkg>`, or a local file/folder of docs."""
     pages: list[tuple[str, str, str]] = []   # (title, url, markdown)
     version, kind = "", "url"
-    if spec.startswith("pypi:"):
+    local = Path(spec).expanduser() if not re.match(r"^(https?|pypi|npm):", spec) else None
+    if local and local.exists():
+        kind, spec = "local", str(local.resolve())
+        pages = _from_local(local.resolve(), max(max_pages, 200))   # a local folder is usually a whole docs tree; MAX_LIB still caps it
+        name = name or _slug(local.stem if local.is_file() else local.name)
+    elif spec.startswith("pypi:"):
         pkg = spec[5:].strip()
         info = json.loads(get(f"https://pypi.org/pypi/{urllib.parse.quote(pkg)}/json"))["info"]
         name, version, kind = name or _norm(pkg), info.get("version", ""), "pypi"
@@ -187,6 +192,21 @@ def add(spec: str, name: str | None = None, follow: bool = True, max_pages: int 
     if not pages:
         raise RuntimeError(f"nothing fetched from {spec}")
     return _save(name or _slug(spec), spec, kind, version, pages, follow, max_pages, dest)
+
+
+LOCAL_EXT = {".md", ".mdx", ".markdown", ".txt", ".rst", ".html", ".htm"}
+
+
+def _from_local(p: Path, max_pages: int) -> list[tuple[str, str, str]]:
+    """A docs file, or every docs file under a folder (sorted, hidden/vendored folders skipped). Re-read on refresh."""
+    files = [p] if p.is_file() else sorted(f for f in p.rglob("*") if f.is_file() and f.suffix.lower() in LOCAL_EXT
+                                           and not any(x.startswith(".") or x == "node_modules" for x in f.relative_to(p).parts))
+    pages = []
+    for f in files[:max_pages]:
+        text = f.read_text(encoding="utf-8", errors="replace")
+        t, md = _page(f.as_uri(), text)
+        pages.append((t or f.stem, f.as_uri(), md))
+    return pages
 
 
 def _from_llms(url: str, text: str, follow: bool, max_pages: int) -> list[tuple[str, str, str]]:

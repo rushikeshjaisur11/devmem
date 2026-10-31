@@ -7,7 +7,7 @@ const List = ({ title, items, repo, hint }: { title: string; items: any[]; repo:
   <div className="card"><h3>{title} <span className="muted">({items.length})</span></h3>{hint && <p className="muted" style={{ marginTop: 0 }}>{hint}</p>}
     {items.length ? <div className="list">{items.map((i) => {
       const id = typeof i === "string" ? i : i.id || i.job;
-      return <a key={id} className="mono" onClick={() => id.includes("#") && nav("explorer", { repo, symbol: id })}>{id}{i.conf ? <span className="muted"> [{i.conf}]</span> : null}</a>;
+      return <a key={id} className="mono" onClick={() => id.includes("#") && nav("impact", { repo, target: id })}>{id}{i.conf ? <span className="muted"> [{i.conf}]</span> : null}</a>;
     })}</div> : <span className="muted">none</span>}
   </div>
 );

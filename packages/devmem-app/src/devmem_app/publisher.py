@@ -77,15 +77,12 @@ steps:
     displayName: devmem diffcheck
 """
 
-AGENT_BLOCK = """## devmem (code knowledge)
-Start: `devmem recall "<task>"` (lessons, rules), `devmem reuse "<need>"` (code other repos built; hub: `.devmem/hub.txt`), `devmem docs "<need>"` (latest library docs; prefer them to older org code), then `.devmem/knowledge/map.md`.
-Do not read whole files to explore. CLI (`pip install devmem`):
-- `devmem find "<concept>"`, `show <symbol>`, `outline <file>`; `helpers` reusable code
-- `devmem impact <symbol|table|table.column>` before changing anything
-- `devmem check` lint/types/affected tests; `devmem diffcheck` before every commit (exception: `devmem-allow: <check> <reason>` in the PR)
-- Before the PR: `devmem report --base <default-branch> --task "<what>"` and commit `.devmem/metrics/`
-- Learned something non-obvious? `devmem remember "<title>" --problem .. --fix ..`; rate recalls: `devmem feedback <id> useful|useless`
-Rules: `.devmem/rules.md`, `knowledge/rules.md`. Minimal diffs: only what the task needs; no unrelated reformatting, new dependencies or signature changes. Details by topic: commands.md, hygiene.md, conventions.md, helpers.md, lineage.md, history.md, no-touch.md. Stale stamp => trust the code."""
+AGENT_BLOCK = """## devmem (code knowledge, saves tokens)
+1. `devmem recall "<task>"` once: lessons, rules, code other repos solved (`devmem reuse "<need>"`, `devmem docs "<need>"`).
+2. Locate with `devmem find "<concept>"`, `show <symbol>`, `outline <file>`; never read whole files to explore.
+3. `devmem impact <symbol|table.column>` before editing; change only what the task needs.
+4. `devmem check`, then `devmem diffcheck` before each commit.
+Follow `.devmem/rules.md`. More: `.devmem/knowledge/map.md` and topic files there, read only when relevant. Stale stamp: trust the code."""
 
 
 def _write(root: Path, rel: str, body: str, commit: str | None, written: list[str]):

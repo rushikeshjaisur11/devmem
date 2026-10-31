@@ -29,7 +29,6 @@ def api(tmp_path, monkeypatch):
 def test_security_guards(api):
     assert api.post("/api/repos", json={"path": "/tmp"}).status_code == 403                       # no header
     assert api.get("/api/repos", headers={"Host": "evil.example.com"}).status_code == 403          # DNS rebinding
-    assert api.get("/api/repos/py_app/file", params={"path": "../../etc/passwd"}).status_code == 404
     assert api.post("/api/repos", json={"path": "/definitely/not/here"}, headers=H).status_code == 400
 
 
@@ -46,7 +45,7 @@ def test_repos_listing_and_actions(api):
     assert api.post("/api/repos/py_app/index", headers=H).json()["stats"]["parsed"] == 0
     assert api.delete("/api/repos/consumer_app", headers=H).status_code == 200
     assert "consumer_app" not in {r["name"] for r in api.get("/api/repos").json()}
-    assert api.get("/api/repos/nope/tree").status_code == 404
+    assert api.get("/api/repos/nope/search", params={"q": "x"}).status_code == 404
 
 
 def test_hygiene_returns_publish_errors_as_http_errors(api, monkeypatch):
@@ -64,17 +63,9 @@ def test_hygiene_returns_publish_errors_as_http_errors(api, monkeypatch):
     assert response.json()["detail"] == "knowledge budget exceeded"
 
 
-def test_explorer(api):
-    t = api.get("/api/repos/py_app/tree").json()
-    app_dir = next(c for c in t["children"] if c["name"] == "app")
-    assert {"retry.py", "client.py", "service.py"} <= {c["name"] for c in app_dir["children"]}
-    f = api.get("/api/repos/py_app/file", params={"path": "app/retry.py"}).json()
-    assert "def retry" in f["text"] and f["symbols"][0]["name"] == "retry"
+def test_search(api):
     hits = api.get("/api/repos/py_app/search", params={"q": "retry"}).json()
     assert hits[0]["id"] == "app/retry.py#retry"
-    s = api.get("/api/repos/py_app/symbol", params={"id": "app/retry.py#retry"}).json()
-    assert {c["id"] for c in s["callers"] if c["type"] == "calls"} == {"app/client.py#ApiClient.get", "app/service.py#load_user"}
-    assert api.get("/api/repos/py_app/symbol", params={"id": "zzz"}).status_code == 404
 
 
 def test_impact_graph(api):
@@ -130,21 +121,6 @@ def test_memory_flow(api):
     api.post("/api/memory/sync", headers=H)
     assert api.get("/api/memory").json()["hub_rules"][0]["applies_to"] == "app/*.py"
     assert api.post("/api/memory/proposals/nope/reject", headers=H).status_code == 404
-
-
-def test_share_code_between_repos(api):
-    p = api.get("/api/share/preview", params={"repo": "conv_app", "file": "app/util.py", "symbol": "app/util.py#slug"}).json()
-    assert p["text"].startswith("def slug")
-    body = {"from_repo": "conv_app", "file": "app/util.py", "symbol": "app/util.py#slug", "to_repo": "py_app", "dest": "app/slug.py"}
-    r = api.post("/api/share", json=body, headers=H).json()
-    assert r["staged"] is False and r["origin"].startswith("conv_app:app/util.py#slug@")
-    text = (api.repos["py_app"] / "app/slug.py").read_text()
-    assert text.startswith("# devmem: copied from conv_app:app/util.py#slug@") and "def slug" in text
-    assert api.post("/api/share", json=body, headers=H).status_code == 409                      # no overwrite
-    assert api.post("/api/share", json={**body, "append": True}, headers=H).status_code == 200
-    assert (api.repos["py_app"] / "app/slug.py").read_text().count("def slug") == 2
-    bad = {**body, "dest": "../escape.py"}
-    assert api.post("/api/share", json=bad, headers=H).status_code == 400
 
 
 def test_chat_retrieval_and_llm(api, monkeypatch):
@@ -211,3 +187,15 @@ def test_add_repo_by_git_url(api, tmp_path):
     # file:// is deliberately not accepted, so exercise the clone path through the https/ssh validator with a bad host
     r = api.post("/api/repos", json={"url": "https://127.0.0.1:9/none.git", "name": "ghost"}, headers=H)
     assert r.status_code == 422 and "git failed" in r.json()["detail"]
+
+
+def test_rules_can_be_added_and_deleted_per_repo_and_globally(api):
+    r = api.post("/api/rules", json={"text": "Never call the payments API from tests", "applies_to": "tests/**", "repo": "py_app"}, headers=H)
+    assert r.status_code == 200
+    rid = r.json()["id"]
+    rules = api.get("/api/memory").json()["repos"]["py_app"]["rules"]
+    assert any(x["id"] == rid and x["applies_to"] == "tests/**" for x in rules)
+    assert api.delete(f"/api/rules/{rid}", params={"repo": "py_app"}, headers=H).json()["ok"]
+    assert api.post("/api/rules", json={"text": "Use UTC timestamps everywhere"}, headers=H).status_code == 200
+    assert [x["text"] for x in api.get("/api/memory").json()["hub_rules"]] == ["Use UTC timestamps everywhere"]
+    assert api.post("/api/rules", json={"text": "  "}, headers=H).status_code == 422

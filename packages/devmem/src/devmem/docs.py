@@ -123,3 +123,46 @@ def render(hit: dict, chars: int = 1100) -> str:
     where = f"{hit['lib']}{' ' + hit['version'] if hit['version'] else ''}"
     head = f"[{where}] {hit['heading'] or hit['title']}   {hit['url']}   (fetched {hit['fetched'] or '?'}; match {hit['score']:.2f})"
     return head + "\n" + "\n".join("  " + ln for ln in hit["text"][:chars].splitlines())
+
+
+def _pkg(module: str) -> str | None:
+    """Top-level package of an import: `a.b` -> `a`, `@scope/pkg/x` -> `@scope/pkg`, `pkg/sub` -> `pkg`; relative imports -> None."""
+    if not module or module.startswith((".", "/")):
+        return None
+    parts = module.split("/")
+    if module.startswith("@"):
+        return "/".join(parts[:2]) if len(parts) > 1 else None
+    return parts[0].split(".")[0]
+
+
+def _norm(s: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
+def for_code(ix, files: list[str], text: str = "", query: str = "", limit: int = 3) -> list[dict]:
+    """Latest docs for the libraries this code imports, with the best section for the names it uses from each.
+    `text`: the code being changed (only libraries whose imported names appear in it count); empty = every import of the files."""
+    used: dict[str, set[str]] = {}
+    for f in files:
+        for imp in ix.data["files"].get(f, {}).get("imports", []):
+            p = _pkg(imp.get("module") or "")
+            alias = imp.get("alias") or ""
+            if p and (not text or (alias and re.search(rf"\b{re.escape(alias)}\b", text))):
+                used.setdefault(_norm(p), set()).update(x for x in (alias, imp.get("name")) if x)
+    out = []
+    for man in libraries(ix.root):
+        src = str(man.get("source", ""))
+        key = next((k for k in (_norm(man["name"]), _norm(src.split(":", 1)[1]) if src.startswith(("pypi:", "npm:")) else "") if k in used), None)
+        if not key:
+            continue
+        names = " ".join(sorted(used[key]))
+        hits = search(ix.root, f"{query} {names}".strip(), 1, man["name"])
+        out.append({"lib": man["name"], "version": man.get("version", ""), "fetched": man.get("fetched", ""), "stale": (age_days(man) or 0) > STALE_DAYS,
+                    "names": names, "hit": hits[0] if hits else None})
+    return out[:limit]
+
+
+def render_pointer(d: dict) -> str:
+    where = f"{d['lib']}{' ' + d['version'] if d['version'] else ''} (fetched {d['fetched'] or '?'}{', STALE' if d['stale'] else ''})"
+    sec = f": {d['hit']['heading'] or d['hit']['title']}" if d["hit"] else ""
+    return f"{where}{sec}  -> devmem docs \"{d['names']}\" --lib {d['lib']}"

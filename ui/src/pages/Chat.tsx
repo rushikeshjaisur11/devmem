@@ -34,7 +34,8 @@ export default function Chat() {
     }
   }
   const open = (h: any) => h.kind === "doc" ? window.open(h.path, "_blank", "noopener") : h.kind === "lesson" || h.kind === "rule" ? nav("memory", { repo: h.repo })
-    : nav("explorer", { repo: h.repo, file: h.path, symbol: h.kind === "symbol" || h.kind === "test" ? h.ref : undefined });
+    : nav("impact", { repo: h.repo, target: h.ref });
+  const openable = (h: any) => ["doc", "lesson", "rule", "symbol", "test"].includes(h.kind);
 
   return (
     <>
@@ -112,7 +113,7 @@ export default function Chat() {
                 <div className="muted" style={{ marginBottom: 6 }}>{r.mode === "llm" ? `Answered by ${r.model}` : "Retrieval only"} · {r.hits.length} sources</div>
                 {r.hits.map((h: any) => (
                   <details key={h.n} open={r.cited?.includes(h.n)} style={{ marginBottom: 6 }}>
-                    <summary><span className="mono">[{h.n}]</span> <Badge>{h.kind}</Badge> {h.title} <a className="mono" href="#" onClick={(e) => { e.preventDefault(); open(h); }}>{h.pointer}</a></summary>
+                    <summary><span className="mono">[{h.n}]</span> <Badge>{h.kind}</Badge> {h.title} {openable(h) ? <a className="mono" href="#" onClick={(e) => { e.preventDefault(); open(h); }}>{h.pointer}</a> : <span className="mono">{h.pointer}</span>}</summary>
                     {h.snippet && <pre>{h.snippet}</pre>}
                   </details>
                 ))}

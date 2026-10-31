@@ -11,7 +11,7 @@ from pathlib import Path
 from devmem import lineage as agent_lineage
 from devmem import memory as m
 from devmem.index import Index
-from devmem.knowledge import check_knowledge
+from devmem.knowledge import AGENTS_INDEX_BUDGET, MAP_BUDGET, check_knowledge, est_tokens, managed_block, parse_header
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -83,14 +83,6 @@ def create_app() -> FastAPI:
             cache[name] = (mt, Index.load(root))
         return cache[name][1]
 
-    def safe_file(root: Path, rel: str) -> Path:
-        p = (root / rel).resolve()
-        try:
-            p.relative_to(root.resolve())
-        except ValueError:
-            raise HTTPException(400, "path outside repo")
-        return p
-
     def repo_summary(name: str, path: str) -> dict:
         root = Path(path)
         d = {"name": name, "path": path, "indexed": False}
@@ -107,7 +99,18 @@ def create_app() -> FastAPI:
             hp = root / ".devmem/hygiene.json"
             if hp.exists():
                 d["hygiene"] = json.loads(hp.read_text()).get("counts", {})
+            d["agent_tokens"] = agent_tokens(root)
         return d
+
+    def agent_tokens(root: Path) -> dict:
+        """What an agent pays to read the published knowledge: the AGENTS.md block every session, then each topic file on demand."""
+        ag = root / "AGENTS.md"
+        blk = managed_block(ag.read_text(encoding="utf-8")) if ag.exists() else None
+        files = {}
+        for f in sorted((root / ".devmem/knowledge").glob("*.md")):
+            h = parse_header(f.read_text(encoding="utf-8"))
+            files[f.name] = h["tokens"] if h else None
+        return {"always": est_tokens(blk) if blk else None, "always_budget": AGENTS_INDEX_BUDGET, "map_budget": MAP_BUDGET, "files": files}
 
 
     # ---------- repos ----------
@@ -231,58 +234,10 @@ def create_app() -> FastAPI:
         return {"counts": h["counts"], "tools": h["tools"]}
 
     # ---------- explorer ----------
-    @app.get("/api/repos/{name}/tree")
-    def tree(name: str):
-        ix = ix_of(name)
-        counts = Counter(s["file"] for s in ix.symbols.values() if s["kind"] != "module")
-        root: dict = {"name": name, "path": "", "type": "dir", "children": []}
-        for path in sorted(ix.data["files"]):
-            node = root
-            parts = path.split("/")
-            for i, part in enumerate(parts):
-                last = i == len(parts) - 1
-                p = "/".join(parts[: i + 1])
-                nxt = next((c for c in node["children"] if c["name"] == part), None)
-                if not nxt:
-                    nxt = {"name": part, "path": p, "type": "file" if last else "dir"}
-                    if last:
-                        nxt.update({"lang": ix.data["files"][path]["lang"], "symbols": counts.get(path, 0)})
-                    else:
-                        nxt["children"] = []
-                    node["children"].append(nxt)
-                node = nxt
-        return root
-
-    @app.get("/api/repos/{name}/file")
-    def file_view(name: str, path: str):
-        ix = ix_of(name)
-        root = root_of(name)
-        if path not in ix.data["files"]:
-            raise HTTPException(404, "file not indexed")
-        f = safe_file(root, path)
-        text = f.read_text(encoding="utf-8", errors="replace")
-        rec = ix.data["files"][path]
-        issues = []
-        hp = root / ".devmem/hygiene.json"
-        if hp.exists():
-            issues = [i for i in json.loads(hp.read_text())["issues"] if i["path"] == path]
-        return {"path": path, "lang": rec["lang"], "text": text, "symbols": ix.outline(path), "issues": issues,
-                "tables": rec.get("tables", [])}
-
     @app.get("/api/repos/{name}/search")
     def search(name: str, q: str, limit: int = 20):
         ix = ix_of(name)
         return [{**s, "score": round(sc, 1)} for sc, s in ix.find(q, limit)]
-
-    @app.get("/api/repos/{name}/symbol")
-    def symbol(name: str, id: str):
-        ix = ix_of(name)
-        s = ix.symbols.get(id)
-        if not s:
-            raise HTTPException(404, "unknown symbol")
-        callers = [{"id": e["src"], "type": e["type"], "conf": e["conf"]} for e in ix.inc.get(id, [])]
-        callees = [{"id": e["dst"], "type": e["type"], "conf": e["conf"]} for e in ix.out.get(id, [])]
-        return {"symbol": s, "source": ix.source(s), "callers": callers, "callees": callees}
 
     # ---------- impact / lineage ----------
     @app.get("/api/repos/{name}/impact")
@@ -618,6 +573,33 @@ def create_app() -> FastAPI:
             raise HTTPException(404, "no such proposal")
         return {"ok": True}
 
+    class RuleIn(BaseModel):
+        text: str
+        applies_to: str = "**"
+        severity: str = "rule"
+        repo: str | None = None          # None: global rule in the hub, synced into every repo
+
+    @app.post("/api/rules")
+    def add_rule(body: RuleIn):
+        text = body.text.strip()
+        if not text or body.severity not in ("rule", "advice"):
+            raise HTTPException(422, "a rule needs text, and severity 'rule' or 'advice'")
+        rid = m.slug(" ".join(text.split()[:6]))
+        if body.repo:
+            p = m.write_rule(root_of(body.repo), rid, text, body.applies_to or "**", "repo", body.severity)
+        else:
+            p = am._write_global_rule(rid, text, body.applies_to or "**", body.severity)
+        return {"id": p.stem}
+
+    @app.delete("/api/rules/{rid}")
+    def delete_rule(rid: str, repo: str | None = None):
+        d = root_of(repo) / m.RULES_DIR if repo else am.hub_dir() / "rules"
+        f = d / f"{rid}.md"
+        if not re.fullmatch(r"[a-z0-9-]+", rid) or not f.exists():
+            raise HTTPException(404, "no such rule (rules in .devmem/rules.md are edited in that file)")
+        f.unlink()
+        return {"ok": True}
+
     # ---------- chat ----------
     class Chat(BaseModel):
         question: str
@@ -674,55 +656,6 @@ def create_app() -> FastAPI:
             return {**verdict, **chat_mod.ask(body.question, {n: Path(allr[n]) for n in names}, min(max(body.limit, 1), 20), use_llm=body.llm)}
         except ImportError as e:
             raise HTTPException(409, f"LLM client not installed: {e}")
-
-    # ---------- share code between repos ----------
-    COMMENT = {".py": "#", ".sh": "#", ".yaml": "#", ".yml": "#", ".sql": "--", ".js": "//", ".ts": "//", ".tsx": "//"}
-
-    @app.get("/api/share/preview")
-    def share_preview(repo: str, file: str, symbol: str | None = None):
-        ix = ix_of(repo)
-        root = root_of(repo)
-        if file not in ix.data["files"]:
-            raise HTTPException(404, "file not indexed")
-        if symbol:
-            s = ix.symbols.get(symbol)
-            if not s or s["file"] != file:
-                raise HTTPException(404, "unknown symbol")
-            text = ix.source(s)
-        else:
-            text = safe_file(root, file).read_text(encoding="utf-8", errors="replace")
-        imports = [l for l in safe_file(root, file).read_text(encoding="utf-8", errors="replace").splitlines()
-                   if re.match(r"\s*(import|from)\s+\w", l)] if file.endswith(".py") else []
-        return {"text": text, "review_imports": imports}
-
-    class ShareCode(BaseModel):
-        from_repo: str
-        file: str
-        symbol: str | None = None
-        to_repo: str
-        dest: str
-        append: bool = False
-
-    @app.post("/api/share")
-    def share_code(body: ShareCode):
-        ix = ix_of(body.from_repo)
-        src_root, dst_root = root_of(body.from_repo), root_of(body.to_repo)
-        prev = share_preview(body.from_repo, body.file, body.symbol)
-        dest = safe_file(dst_root, body.dest)
-        if dest.exists() and not body.append:
-            raise HTTPException(409, "destination exists (use append to add to it)")
-        commit = (ix.data.get("commit") or "unknown")[:10]
-        ref = f"{body.from_repo}:{body.file}" + (f"#{ix.symbols[body.symbol]['qualname']}" if body.symbol else "") + f"@{commit}"
-        cm = COMMENT.get(Path(body.file).suffix)
-        header = f"{cm} devmem: copied from {ref}\n" if cm else ""
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        text = header + prev["text"].rstrip() + "\n"
-        if dest.exists():
-            dest.write_text(dest.read_text(encoding="utf-8").rstrip() + "\n\n\n" + text, encoding="utf-8")
-        else:
-            dest.write_text(text, encoding="utf-8")
-        return {"written": body.dest, "origin": ref, "review_imports": prev["review_imports"], "staged": False,
-                "note": "left unstaged for your review" + ("" if cm else "; no origin header for this file type")}
 
     # ---------- static UI ----------
     if UI_DIST.exists():

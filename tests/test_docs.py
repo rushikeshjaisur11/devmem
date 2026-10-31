@@ -252,3 +252,44 @@ def test_agent_side_plan_file_progress_still_works(tmp_path, capsys):
     finally:
         os.chdir(cwd)
     assert core_plan.parse("# t\nno steps here")["steps"] == []
+
+
+def test_local_docs_folder_is_stored_and_refreshable(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEVMEM_HOME", str(tmp_path / "home"))
+    from devmem_app import docs as dm
+    d = tmp_path / "Internal Guide"
+    (d / "api").mkdir(parents=True)
+    (d / "index.md").write_text("# Internal guide\nHow we call the billing service.", encoding="utf-8")
+    (d / "api" / "auth.md").write_text("# Auth\nTokens expire after 1h.", encoding="utf-8")
+    (d / "logo.png").write_bytes(b"\x89PNG")
+    (d / ".git").mkdir(); (d / ".git" / "x.md").write_text("ignored", encoding="utf-8")
+    m = dm.add(str(d))
+    assert m["name"] == "internal-guide" and m["kind"] == "local" and len(m["pages"]) == 2
+    (d / "api" / "auth.md").write_text("# Auth\nTokens expire after 2h.", encoding="utf-8")
+    assert "internal-guide" in dm.refresh()
+    stored = "".join(p.read_text(encoding="utf-8") for p in (tmp_path / "home").rglob("*auth*.md"))
+    assert "2h" in stored
+
+
+def test_changing_code_surfaces_docs_for_the_libraries_it_uses(tmp_path, monkeypatch, capsys):
+    from devmem_app.indexer import index_repo
+    repo = tmp_path / "svc"
+    (repo / "app").mkdir(parents=True)
+    (repo / "app" / "signup.py").write_text(
+        "import json\nfrom fancylib import validate_email\n\n\ndef signup(addr):\n    return validate_email(addr)\n\n\n"
+        "def dump(x):\n    return json.dumps(x)\n", encoding="utf-8")
+    lib = repo / ".devmem/docs/fancylib"
+    lib.mkdir(parents=True)
+    (lib / "01-email.md").write_text("# Validating email\nUse `validate_email(addr, check_deliverability=False)` since 3.0.\n\n"
+                                     "# Parsing dates\nUse parse_date.\n", encoding="utf-8")
+    (lib / "manifest.json").write_text(json.dumps({"name": "fancylib", "source": "pypi:fancylib", "version": "3.1", "fetched": "2026-10-30",
+                                                   "pages": [{"file": "01-email.md", "url": "https://fancylib.dev/email", "title": "Email"}]}), encoding="utf-8")
+    index_repo(repo)
+    monkeypatch.chdir(repo)
+    assert main(["show", "signup"]) == 0
+    out = capsys.readouterr().out
+    assert "# library docs for this code" in out and "fancylib 3.1" in out and "Validating email" in out
+    assert main(["show", "dump"]) == 0 and "library docs" not in capsys.readouterr().out      # json is stdlib, no docs
+    assert main(["recall", "change signup validation", "--files", "app/signup.py"]) == 0
+    assert "LIBRARY DOCS FOR THIS CODE" in capsys.readouterr().out
+    assert main(["docs", "--for", "app/signup.py"]) == 0 and "check_deliverability" in capsys.readouterr().out

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type cytoscape from "cytoscape";
 import { api, q } from "../api";
-import { CyGraph, EDGE_KINDS, Empty, Err, LAYOUT_LABELS, NODE_KINDS, RepoSelect, kindColor, useAsync, useRepos } from "../components";
+import { Empty, Err, RepoSelect, useAsync, useRepos } from "../components";
+import { CyGraph, EDGE_KINDS, LAYOUT_LABELS, NODE_KINDS, kindColor } from "../graph";
 import { nav } from "../route";
 
 const SearchIcon = () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>;
@@ -16,7 +17,7 @@ export default function Graph({ params }: { params: Record<string, string> }) {
   const [query, setQuery] = useState("");
   const [hide, setHide] = useState<string[]>([]);
   const [hideRepos, setHideRepos] = useState<string[]>([]);
-  const [edgeLabels, setEdgeLabels] = useState(true);
+  const [edgeLabels, setEdgeLabels] = useState(false);
   const [find, setFind] = useState("");
   const [hits, setHits] = useState<any[]>([]);
   const cyRef = useRef<cytoscape.Core | null>(null);
@@ -86,7 +87,7 @@ export default function Graph({ params }: { params: Record<string, string> }) {
 
       <div className="card" style={{ padding: "12px 16px" }}>
         <div className="chips">
-          <span className="muted" style={{ fontSize: 12, fontWeight: 600, marginRight: 4 }}>SHOW</span>
+          <span className="muted" style={{ fontSize: 13, fontWeight: 600, marginRight: 4 }}>Show</span>
           {Object.entries(counts.nk).map(([k, n]) => (
             <button key={k} className={`chip ${hide.includes(k) ? "off" : ""}`} onClick={() => toggle(hide, setHide, k)} aria-pressed={!hide.includes(k)}>
               <i style={{ background: kindColor(k) }} />{(NODE_KINDS[k] || { label: k }).label}<span className="n">{n}</span>
@@ -151,7 +152,6 @@ export default function Graph({ params }: { params: Record<string, string> }) {
               <div className="btns">
                 {symbolSel && <>
                   <button className="primary" onClick={() => setFocus(sel.id)}>Focus on this</button>
-                  <button onClick={() => nav("explorer", { repo, symbol: sel.id })}>Open in Explorer</button>
                   <button onClick={() => nav("impact", { repo, target: sel.id })}>Impact analysis</button>
                 </>}
                 {sel.kind === "table" && <button onClick={() => nav("lineage", { table: sel.label })}>Table lineage</button>}

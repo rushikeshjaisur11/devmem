@@ -7,10 +7,12 @@ files, and builds prompts for the agent that will do the work.
 - **Index** repos into a call/test/table graph (Python, JS/TS, SQL, Spark) with blast-radius analysis, test selection and lineage.
 - **Publish** `.devmem/` knowledge into each repo plus an `AGENTS.md` block; agents query it offline with the small `devmem` CLI.
 - **Cross-repo reuse**: find what other repos already built, rated by effort to adapt; share it through a central **hub** git repo.
-- **Library docs** (llms.txt, web pages, PyPI, npm) fetched where there is internet and shipped to agents that have none; reuse
+- **Library docs** (llms.txt, web pages, PyPI, npm, or a local docs folder) fetched where there is internet and shipped to agents that have none; reuse
   suggestions are checked against them and flagged `MODERNIZE` when code hand-rolls what a library now provides.
 - **Chat** (web UI): ask your repos, or describe something new / paste a plan and get a compact prompt for another agent.
-- **Guards**: `devmem diffcheck` blocks oversized, out-of-scope or test-weakening diffs; lessons and rules persist what was learned.
+- **Guards**: `devmem diffcheck` blocks oversized, out-of-scope or test-weakening diffs; lessons and rules (added by agents, or by you in the UI) persist what was learned.
+- **Token budget**: the `AGENTS.md` block is ~150 tokens; agent commands print capped output (`show` 80 lines, `impact` 12 items per
+  list) with a hint for the full version, and the skill tells agents how to keep tool output small.
 
 ## Requirements
 Python 3.10+, git, **Node.js 18+**, and network access the first time (npx downloads the SCIP indexers; docs are fetched from the web).
@@ -28,10 +30,55 @@ Everything accuracy depends on is a hard dependency (see below). Agents only nee
 ```
 devmem-app add /path/to/repo               # or a Git URL; clones into ~/.devmem/clones/<name>
 devmem-app publish /path/to/repo --commit  # writes .devmem/ + AGENTS.md on branch devmem/knowledge-sync; you push and merge it
-devmem-app ui                              # http://127.0.0.1:8765 (Repos, Explorer, Impact, Graph, Lineage, Hygiene, Memory, Chat, ...)
+devmem-app ui                              # http://127.0.0.1:8765 (Overview, Repos, Impact, Graph, Chat, ...; Ctrl+K to jump)
 cd /path/to/repo && devmem find "retry logic" && devmem impact retry
 ```
 The UI is prebuilt. To change it: `cd ui && npm ci && npm run dev` (proxies to `devmem-app ui --no-open`), then `npm run build`.
+
+## Usage guide
+A first session, end to end. Outputs below are real, from `fixtures/py_app`.
+
+**1. Onboard and publish (you, once per repo).** Open the UI (`devmem-app ui`), go to **Repos**, paste a local path or Git URL, press
+*Add and index*, then *Publish*. Or from the CLI:
+```
+devmem-app add C:\work\orders-etl
+devmem-app publish C:\work\orders-etl --commit   # writes .devmem/ + AGENTS.md on branch devmem/knowledge-sync
+```
+Push that branch and merge it. **Overview** now shows what agents load per session (~150 tokens) and what each knowledge file costs.
+
+**2. Give the agent the skill.** Install the plugin (`docs/INSTALL.md`). From then on the agent starts every task with `recall` and uses
+the commands below instead of opening files. A typical agent turn:
+```
+$ devmem find "retry"
+app/retry.py:5  function retry — Call fn, retrying on exception.
+
+$ devmem impact retry
+targets: app/retry.py#retry
+hop 1 (must check): app/client.py#ApiClient.get [structural], app/service.py#load_user [structural]
+hop 2 (contract check): app/service.py#main
+tests: tests/test_service.py#test_load_user
+files: app/client.py, app/retry.py, app/service.py
+
+$ devmem tests-for app/retry.py
+python -m pytest -q tests/test_service.py::test_load_user
+```
+Three short answers replace reading three files and the whole test suite. `show retry` prints the function body (first 80 lines,
+`--full` for more), and `impact` lists are capped at 12 items (`--all` for every one).
+
+**3. Teach it your rules.** In **Lessons & rules → Rules**, add a rule such as *"Never call the payments API from tests; use
+FakePayments"*, scope it to `tests/**`, and choose *Only this repo* or *Every repo (hub)*. Agents see targeted rules in `devmem recall`
+when they touch matching files; `**` rules apply to every task. Hub rules reach repos on *Sync hub*. Lessons work the same way: agents
+save them with `devmem remember` in their PRs, you edit or promote them here.
+
+**4. Add the docs your code depends on.** In **Library docs**, add `https://<docs-site>/llms.txt`, `pypi:pydantic`, `npm:zod`, or a
+local folder such as `C:\docs\internal-api`. Publish the repo again. Agents can search them offline (`devmem docs "validate an email"`), and whenever they `show` code that
+imports one of these libraries, the matching section of the latest docs is listed with it.
+
+**5. Hand work to an agent.** In **Chat**, describe a change ("add retry with backoff to the export job") or paste a plan. You get a
+compact prompt with the code your org already has, current library docs and the paths not to touch. Paste it into the agent.
+
+**6. Keep it fresh.** When a repo moves on, press *Re-index* (unchanged files are cached, so it takes seconds) and *Publish* again.
+Overview flags an index behind HEAD and any knowledge file over its token budget.
 
 ## Accuracy is not optional
 SCIP (type-resolved edges), Graphify (an independent tree-sitter call graph) and tree-sitter (JS/TS) always run: on `add`, `index` and
@@ -46,8 +93,10 @@ it is recorded in the index and shown as "reduced accuracy" in the UI. Measured 
 - **Hub (recommended with several repos)**: `devmem-app hub set git@github.com:acme/devmem-hub.git`, then `devmem-app hub push --push`.
   `publish` writes the URL to `.devmem/hub.txt` (or set `DEVMEM_HUB`); agents run `devmem hub sync` and `devmem reuse "<need>"`. With no
   hub or no access they fall back to the catalog committed in the repo. Agents need git read access to the hub.
-- **Library docs**: `devmem-app docs add https://docs.example.dev/llms.txt` (or a page URL, `pypi:<pkg>`, `npm:<pkg>`), `docs refresh`,
+- **Library docs**: `devmem-app docs add https://docs.example.dev/llms.txt` (or a page URL, `pypi:<pkg>`, `npm:<pkg>`, a local file or folder), `docs refresh`,
   `devmem-app libs <repo>` (declared vs latest versions). Docs ship via `hub push` and `publish`; agents search them with `devmem docs`.
+  When an agent opens code (`devmem show`, `recall`), devmem lists the latest docs section for each library that code imports, so
+  edits follow the current API rather than the older pattern in the file; `devmem docs --for <file|symbol>` prints those sections.
 - **Chat → agent prompt**: one box, no modes. A question gets a cited answer; a new requirement or a plan (`## Step N:` headings,
   numbered list or `- [ ]`, optional `Docs:` / `Constraints:` lines) becomes a prompt with the existing org solution, `MODERNIZE` notes,
   current docs, what the target repo already has and protected paths. Read-only: nothing is written to any repo.

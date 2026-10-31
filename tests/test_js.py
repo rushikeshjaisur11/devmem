@@ -86,3 +86,9 @@ def test_hygiene_js_without_node_modules(tmp_path):
     assert h["tools"]["knip"].startswith("unavailable") and h["tools"]["eslint"].startswith("skipped")
     md = hygiene.render_hygiene_md(h)
     assert "| eslint |" in md and "| knip |" in md
+
+
+def test_js_doc_starts_at_first_line_of_a_comment_block():
+    src = "// Retries a request with backoff.\n// Second line of detail.\nexport function retry() {}\n"
+    _, syms = jsparse.parse_js("src/r.js", src)
+    assert next(s for s in syms if s["name"] == "retry")["doc"] == "Retries a request with backoff."

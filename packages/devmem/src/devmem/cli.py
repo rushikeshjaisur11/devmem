@@ -7,8 +7,19 @@ import sys
 from .index import Index
 
 
+SHOW_LINES = 80     # default body lines for `show`; longer bodies end with a hint instead of flooding the context
+LIST_CAP = 12       # default items per impact list
+
+
 def _line(s: dict) -> str:
-    return f"{s['file']}:{s['line']}  {s['kind']} {s['qualname']}" + (f" — {s['doc']}" if s["doc"] else "")
+    return f"{s['file']}:{s['line']}  {s['kind']} {s['qualname']}" + (f" — {s['doc'][:100]}" if s["doc"] else "")
+
+
+def _capped(items: list[str], cap: int) -> str:
+    if not items:
+        return "-"
+    more = len(items) - cap if cap and len(items) > cap else 0
+    return ", ".join(items[:cap] if more else items) + (f" (+{more} more: --all)" if more else "")
 
 
 def cmd_find(ix: Index, a) -> int:
@@ -16,14 +27,14 @@ def cmd_find(ix: Index, a) -> int:
     for _, s in hits:
         print(_line(s))
     if not hits:
-        print("no matches")
+        print("no matches: try other or fewer words, or `devmem outline <file>`")
     return 0
 
 
 def cmd_show(ix: Index, a) -> int:
     syms = ix.resolve(a.symbol)
     if not syms:
-        print(f"symbol not found: {a.symbol}")
+        print(f"symbol not found: {a.symbol}; `devmem find \"<words>\"` lists ids (path#qualname)")
         return 1
     if len(syms) > 1:
         print("ambiguous, use one of:")
@@ -32,12 +43,24 @@ def cmd_show(ix: Index, a) -> int:
         return 1
     s = syms[0]
     print(f"# {s['file']}:{s['line']}-{s['end_line']}")
-    print(ix.source(s))
+    body = ix.source(s).splitlines()
+    if not a.full and len(body) > SHOW_LINES:
+        print("\n".join(body[:SHOW_LINES]))
+        print(f"... {len(body) - SHOW_LINES} more lines: `devmem show {s['id']} --full`, or read {s['file']} "
+              f"from line {s['line'] + SHOW_LINES}")
+    else:
+        print("\n".join(body))
     callees = ix.callees(s)
     if callees:
         print("\n# calls")
         for c in callees:
             print(f"{c['file']}:{c['line']}  {c['sig']}")
+    from . import docs
+    libs = docs.for_code(ix, [s["file"]], "\n".join(body), s["name"])
+    if libs:
+        print("\n# library docs for this code (latest on file: follow them over older patterns in the repo)")
+        for d in libs:
+            print(docs.render_pointer(d))
     return 0
 
 
@@ -65,12 +88,13 @@ def cmd_impact(ix: Index, a) -> int:
         print(f"{r['table']}\n  readers: {', '.join(r['readers']) or '-'}\n  writers: {', '.join(r['writers']) or '-'}")
         return 0
     print("targets: " + ", ".join(r["targets"]))
-    print("hop 1 (must check): " + (", ".join(f"{i['id']} [{i['conf']}]" for i in r["hop1"]) or "-"))
-    print("hop 2 (contract check): " + (", ".join(i["id"] for i in r["hop2"]) or "-"))
-    print("tests: " + (", ".join(r["tests"]) or "-"))
+    cap = 0 if a.all else LIST_CAP
+    print("hop 1 (must check): " + _capped([f"{i['id']} [{i['conf']}]" for i in r["hop1"]], cap))
+    print("hop 2 (contract check): " + _capped([i["id"] for i in r["hop2"]], cap))
+    print("tests: " + _capped(r["tests"], cap))
     for c in r["capped"]:
         print(f"capped: {c['symbol']} has {c['callers']} callers (widely used utility)")
-    print("files: " + ", ".join(r["files"]))
+    print("files: " + _capped(r["files"], cap))
     if r.get("cochange"):
         print("usually changes together with: " + ", ".join(r["cochange"]))
     return 0
@@ -171,6 +195,15 @@ def cmd_recall(ix: Index, a) -> int:
         for h in hits:
             e = h["entry"]
             print(f" {e['repo']}:{e['file']}:{e['line']}  {e['sig'] or e['name']}  [effort to reuse: {h['fit']['effort']}]")
+    from . import docs
+    files = list(dict.fromkeys((a.files or []) + [s["file"] for _, s in ix.find(a.task, 5)]))
+    libs = docs.for_code(ix, files, query=a.task)
+    if libs:
+        print("LIBRARY DOCS FOR THIS CODE (latest versions; use these APIs, not older patterns copied from the repo)")
+        for d in libs:
+            print(" " + docs.render_pointer(d))
+            if d["hit"]:
+                print("   " + " ".join(d["hit"]["text"].split())[:240])
     return 0
 
 
@@ -220,6 +253,15 @@ def cmd_plan(ix: Index, a) -> int:
 def cmd_docs(ix: Index, a) -> int:
     from . import docs
     libs = docs.libraries(ix.root)
+    if a.for_:
+        syms = ix.resolve(a.for_)
+        files, text = ([syms[0]["file"]], ix.source(syms[0])) if len(syms) == 1 else ([a.for_], "")
+        found = docs.for_code(ix, files, text, a.query or "")
+        for d in found:
+            print(docs.render(d["hit"], a.chars) + "\n" if d["hit"] else docs.render_pointer(d))
+        if not found:
+            print(f"no docs on file for the libraries {a.for_} uses (`devmem docs --list`); say so rather than guessing an API")
+        return 0
     if a.list or not a.query:
         if not libs:
             print("no library docs here: run `devmem-app docs add ...` then `devmem-app publish` (or sync the hub)")
@@ -311,17 +353,21 @@ def _version() -> str:
 
 
 def main(argv=None) -> int:
+    for stream in (sys.stdout, sys.stderr):   # agents read piped output; Windows defaults pipes to cp1252 and crashes on any non-ASCII
+        stream.reconfigure(encoding="utf-8", errors="replace")
     p = argparse.ArgumentParser(prog="devmem", description="Code knowledge for coding agents")
     p.add_argument("--version", action="version", version="devmem " + _version())
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("find", help="ranked path:line hits for a concept")
     s.add_argument("query"); s.add_argument("-n", "--limit", type=int, default=10); s.set_defaults(fn=cmd_find)
     s = sub.add_parser("show", help="one symbol's body + signatures of what it calls")
-    s.add_argument("symbol"); s.set_defaults(fn=cmd_show)
+    s.add_argument("symbol"); s.add_argument("--full", action="store_true", help=f"whole body (default: first {SHOW_LINES} lines)")
+    s.set_defaults(fn=cmd_show)
     s = sub.add_parser("outline", help="signatures and docstrings of a file")
     s.add_argument("file"); s.set_defaults(fn=cmd_outline)
     s = sub.add_parser("impact", help="callers, dependents, tests for a symbol or table")
-    s.add_argument("target"); s.set_defaults(fn=cmd_impact)
+    s.add_argument("target"); s.add_argument("--all", action="store_true", help=f"every item (default: {LIST_CAP} per list)")
+    s.set_defaults(fn=cmd_impact)
     s = sub.add_parser("helpers", help="reusable utilities already in the repo")
     s.add_argument("-n", "--limit", type=int, default=30); s.set_defaults(fn=cmd_helpers)
     for nm, fn, hp in (("tests-for", cmd_tests_for, "test command for tests affected by changed files"),
@@ -335,7 +381,7 @@ def main(argv=None) -> int:
     s.set_defaults(fn=cmd_recall)
     s = sub.add_parser("reuse", help="code other onboarded repos already built for a need, with how much work it is to adapt here")
     s.add_argument("need"); s.add_argument("-n", "--limit", type=int, default=3)
-    s.add_argument("--lines", type=int, default=40, help="source lines to print per hit")
+    s.add_argument("--lines", type=int, default=25, help="source lines to print per hit")
     s.add_argument("--prompt", action="store_true", help="also print a ready-to-use porting instruction")
     s.set_defaults(fn=cmd_reuse)
     s = sub.add_parser("plan", help="execute a human-written plan step by step: brief for a step, mark progress")
@@ -345,6 +391,7 @@ def main(argv=None) -> int:
     s.add_argument("--code", action="store_true", help="include source of the org solutions"); s.set_defaults(fn=cmd_plan)
     s = sub.add_parser("docs", help="search the offline library documentation (latest versions, put there by devmem-app docs add)")
     s.add_argument("query", nargs="?"); s.add_argument("--lib", help="only this library"); s.add_argument("--list", action="store_true")
+    s.add_argument("--for", dest="for_", metavar="FILE|SYMBOL", help="latest docs for the libraries this file or symbol uses")
     s.add_argument("-n", "--limit", type=int, default=4); s.add_argument("--chars", type=int, default=1100); s.set_defaults(fn=cmd_docs)
     s = sub.add_parser("hub", help="central knowledge repo of all onboarded repos: sync | status | repos | show <repo>")
     s.add_argument("action", choices=["sync", "status", "repos", "show"]); s.add_argument("repo", nargs="?")
