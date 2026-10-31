@@ -18,18 +18,19 @@ from devmem.ignore import Ignore
 from devmem.index import Index, write_db
 from devmem.schema import INDEX_PATH, new_index
 
-from . import graph, jsparse
+from . import graph, jsparse, treeparse
 from . import graphify as graphify_mod
 from . import scip as scip_mod
 
 SQL_START = re.compile(r"^\s*(select|insert|create|with|merge|update|delete)\b", re.I)
 LANGS = {".py": "python", ".sql": "sql", ".js": "js", ".jsx": "js", ".mjs": "js", ".cjs": "js", ".ts": "ts", ".tsx": "ts", ".mts": "ts", ".yaml": "yaml",
-         ".yml": "yaml", ".ipynb": "notebook", ".md": "markdown"}
+         ".yml": "yaml", ".ipynb": "notebook", ".md": "markdown",
+         ".go": "go", ".java": "java"}
 MAX_FILE_BYTES = 1_000_000
 MAX_SQL_STMTS, MAX_SQL_LEN = 60, 20_000
 COLUMN_FUNCS = {"select", "withColumn", "col", "groupBy", "groupby", "orderBy", "sort", "drop", "withColumnRenamed",
                 "sum", "avg", "max", "min", "count", "countDistinct", "first", "collect_list", "agg", "join"}
-PARSER_VERSION = 5  # bump when per-file records gain fields or parsing changes (forces re-parse of cached files)
+PARSER_VERSION = 6  # bump when per-file records gain fields or parsing changes (forces re-parse of cached files)
 
 
 class AccuracyError(RuntimeError):
@@ -371,6 +372,11 @@ def index_repo(root: str | Path, name: str | None = None, write: bool = True, sc
         elif lang in ("js", "ts") and js_ok:
             try:
                 rec, syms = jsparse.parse_js(rel, raw.decode("utf-8", "replace"))
+            except Exception:
+                rec, syms = {"lang": lang, "imports": [], "tables": [], "calls": []}, []
+        elif lang in ("go", "java"):
+            try:
+                rec, syms = treeparse.parse(rel, raw.decode("utf-8", "replace"), lang)
             except Exception:
                 rec, syms = {"lang": lang, "imports": [], "tables": [], "calls": []}, []
         elif lang in ("js", "ts"):

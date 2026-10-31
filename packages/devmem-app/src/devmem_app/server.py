@@ -10,6 +10,7 @@ from pathlib import Path
 
 from devmem import lineage as agent_lineage
 from devmem import memory as m
+from devmem import usage as agent_usage
 from devmem.index import Index
 from devmem.knowledge import AGENTS_INDEX_BUDGET, MAP_BUDGET, check_knowledge, est_tokens, managed_block, parse_header
 from fastapi import FastAPI, HTTPException, Request
@@ -100,6 +101,7 @@ def create_app() -> FastAPI:
             if hp.exists():
                 d["hygiene"] = json.loads(hp.read_text()).get("counts", {})
             d["agent_tokens"] = agent_tokens(root)
+            d["usage"] = agent_usage.summary(root)
         return d
 
     def agent_tokens(root: Path) -> dict:
@@ -251,7 +253,8 @@ def create_app() -> FastAPI:
         r = ix.impact(target)
         if "table" in r:
             return {"kind": "table", **r}
-        return {"kind": "symbol", **r}
+        ids = r["targets"] + [i["id"] for i in r["hop1"] + r["hop2"]] + r["tests"]
+        return {"kind": "symbol", **r, "lines": {i: ix.symbols[i]["line"] for i in ids if i in ix.symbols}}
 
     @app.get("/api/impact-column")
     def impact_column(column: str):

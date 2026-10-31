@@ -5,6 +5,8 @@ Where several sources give the same edge, the highest confidence wins.
 """
 from __future__ import annotations
 
+import re
+
 from devmem.jsresolve import resolve as _js_resolve
 from devmem.schema import CONF_AMBIGUOUS, CONF_STRUCTURAL
 
@@ -77,6 +79,42 @@ def _imported_files(files: dict, path: str, imports: list[dict]) -> set[str]:
     return out
 
 
+def _typed_edges(path, rec, by_id, by_name, by_file, add) -> None:
+    """Go and Java. Unqualified calls resolve within the file, then the same package (directory); `pkg.F()` / `Cls.m()` through
+    the file's imports; `obj.m()` to methods of that name (ambiguous when several). No global guess for unqualified names."""
+    pkg = path.rsplit("/", 1)[0] if "/" in path else ""
+    aliases = {i["alias"]: i for i in rec.get("imports", []) if i.get("alias")}
+    local = by_file.get(path, {})
+    same_pkg = lambda s: (s["file"].rsplit("/", 1)[0] if "/" in s["file"] else "") == pkg
+    for c in rec.get("calls", []):
+        src_id = f"{path}#{c['caller']}"
+        if src_id not in by_id:
+            continue
+        name, recv = c["name"], c["recv"]
+        if recv is None:
+            cls = c["caller"].rsplit(".", 1)[0] if "." in c["caller"] else None
+            cands = [local[f"{cls}.{name}"]] if cls and f"{cls}.{name}" in local else [s for q, s in local.items() if s["name"] == name]
+            if not cands:
+                cands = [s for s in by_name.get(name, []) if same_pkg(s) and (s["kind"] != "method" or s["qualname"] == f"{name}.{name}")]
+        elif recv in aliases and rec["lang"] == "go":                     # pkg.Func: functions in the imported package's directory
+            tail = aliases[recv]["module"].split("/")[-1]
+            cands = [s for s in by_name.get(name, []) if s["kind"] != "method" and s["file"].rsplit("/", 2)[-2:-1] == [tail]]
+        else:   # Cls.m() / Type.M(): methods of a class with that name win; else any method of that name
+            new = re.match(r"new\s+([\w.]+)", recv)                     # java: new Cls().m()
+            cls = (new.group(1) if new else recv).split(".")[-1]
+            cands = [s for s in by_name.get(name, []) if s["qualname"].split(".")[-2:-1] == [cls]]
+            if not cands and name not in BUILTIN_METHODS and name not in COMMON_METHODS:
+                cands = [s for s in by_name.get(name, []) if s["kind"] == "method"]
+            if len(cands) > 1:
+                cands = [s for s in cands if same_pkg(s)] or cands
+        if not cands or len(cands) > MAX_AMBIGUOUS:
+            continue
+        conf = CONF_AMBIGUOUS if len(cands) > 1 else CONF_STRUCTURAL
+        for d in cands:
+            if d["id"] != src_id:
+                add(src_id, d["id"], "tests" if by_id[src_id]["is_test"] else "calls", conf)
+
+
 def build_edges(idx: dict) -> list[dict]:
     files = idx["files"]
     by_id = {s["id"]: s for s in idx["symbols"]}
@@ -96,6 +134,9 @@ def build_edges(idx: dict) -> list[dict]:
             best[k] = conf
 
     for path, rec in files.items():
+        if rec.get("lang") in ("go", "java"):
+            _typed_edges(path, rec, by_id, by_name, by_file, add)
+            continue
         if rec.get("lang") in ("js", "ts"):
             imports = rec.get("imports", [])
             from_imp = {i["alias"]: i for i in imports if i["name"]}

@@ -293,3 +293,6 @@ def test_changing_code_surfaces_docs_for_the_libraries_it_uses(tmp_path, monkeyp
     assert main(["recall", "change signup validation", "--files", "app/signup.py"]) == 0
     assert "LIBRARY DOCS FOR THIS CODE" in capsys.readouterr().out
     assert main(["docs", "--for", "app/signup.py"]) == 0 and "check_deliverability" in capsys.readouterr().out
+    (repo / ".devmem/libs.json").write_text(json.dumps([{"eco": "pypi", "name": "fancylib", "spec": ">=2", "locked": "2.4.0"}]), encoding="utf-8")
+    assert main(["show", "signup"]) == 0
+    assert "docs describe 3.1 but this repo uses 2.4.0" in capsys.readouterr().out

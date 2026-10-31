@@ -77,7 +77,11 @@ export default function Overview(_: any) {
               <div><b>{n(r.edges)}</b><span>call, test and table edges</span></div>
               <div><b>{lessons(r.name)} lessons, {rules(r.name)} rules</b><span>agents recall them per task: <a href="#/memory">edit</a></span></div>
             </div>
-            <div><Footprint t={r.agent_tokens} /></div>
+            <div>
+              <Footprint t={r.agent_tokens} />
+              {r.usage?.calls > 0 ? <p className="budget" style={{ marginTop: 14 }}>Measured on this machine: <b>{n(r.usage.calls)} devmem queries</b> answered with <mark>{n(r.usage.out_tokens)} tokens</mark> instead of ~{n(r.usage.file_tokens)} tokens of the files they point to{r.usage.file_tokens > 0 && <> ({Math.floor((1 - r.usage.out_tokens / r.usage.file_tokens) * 100)}% less)</>}.</p>
+                : <p className="hint" style={{ marginTop: 14 }}>No agent queries logged here yet. Each <code>devmem</code> command or MCP call records its token cost in <code>.devmem/usage.jsonl</code>.</p>}
+            </div>
           </div>
         </section>
       ))}

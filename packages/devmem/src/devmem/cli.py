@@ -139,6 +139,9 @@ def cmd_report(ix, a) -> int:
     v = rec["violations"]
     print(f"recorded {path.relative_to(root).as_posix()}: {rec['files']} files, +{rec['added']}/-{rec['removed']}, "
           f"{len(v['blocked'])} blocked, {len(v['allowed'])} allowed. Commit it with the PR.")
+    u = rec["devmem"]
+    if u["calls"]:
+        print(f"devmem queries this run: {u['calls']}, {u['out_tokens']} tokens of answers instead of ~{u['file_tokens']} tokens of the files they point to")
     return 0
 
 
@@ -355,9 +358,14 @@ def _version() -> str:
 def main(argv=None) -> int:
     for stream in (sys.stdout, sys.stderr):   # agents read piped output; Windows defaults pipes to cp1252 and crashes on any non-ASCII
         stream.reconfigure(encoding="utf-8", errors="replace")
+    return run(argv)
+
+
+def run(argv=None, via: str = "cli") -> int:
+    """Parse and run one command. Read commands also log their token cost (see usage.py); `via` says who asked (cli | mcp)."""
     p = argparse.ArgumentParser(prog="devmem", description="Code knowledge for coding agents")
     p.add_argument("--version", action="version", version="devmem " + _version())
-    sub = p.add_subparsers(dest="cmd", required=True)
+    sub = p.add_subparsers(dest="command", required=True)
     s = sub.add_parser("find", help="ranked path:line hits for a concept")
     s.add_argument("query"); s.add_argument("-n", "--limit", type=int, default=10); s.set_defaults(fn=cmd_find)
     s = sub.add_parser("show", help="one symbol's body + signatures of what it calls")
@@ -416,8 +424,13 @@ def main(argv=None) -> int:
     s.add_argument("--base"); s.add_argument("--task"); s.add_argument("--tokens", type=int, help="tokens/ACUs the agent knows it used")
     s.add_argument("--recalls", type=int); s.add_argument("--rounds", type=int, help="review rounds so far")
     s.set_defaults(fn=cmd_report, nolog=True)
+    s = sub.add_parser("mcp", help="serve these commands as MCP tools over stdio (for agents that speak MCP)")
+    s.set_defaults(fn=None)
     a = p.parse_args(argv)
-    if a.cmd in ("diffcheck", "report"):
+    if a.command == "mcp":
+        from .mcp import serve
+        return serve()
+    if a.command in ("diffcheck", "report"):
         try:
             ix = Index.load()
         except FileNotFoundError:
@@ -428,7 +441,17 @@ def main(argv=None) -> int:
     except FileNotFoundError as e:
         print(e, file=sys.stderr)
         return 2
-    return a.fn(ix, a)
+    from . import usage
+    if a.command not in usage.LOGGED:
+        return a.fn(ix, a)
+    import contextlib
+    import io
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        code = a.fn(ix, a)
+    sys.stdout.write(buf.getvalue())
+    usage.record(ix, a.command, buf.getvalue(), via)
+    return code
 
 
 if __name__ == "__main__":

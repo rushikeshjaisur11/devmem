@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { api } from "../api";
-import { Badge, Empty, Err, LineChart, RepoSelect, useAsync, useRepos } from "../components";
+import { Badge, EditorLink, Empty, Err, LineChart, RepoSelect, editorHref, useAsync, useRepos } from "../components";
 
 /** What each tool measures, in the words a reader uses. */
 const KINDS: [string, string][] = [["ruff", "Lint"], ["vulture", "Dead code"], ["radon", "Complexity"], ["bandit", "Security"],
@@ -68,6 +68,7 @@ export default function Hygiene({ params }: { params: Record<string, string> }) 
               <div className="hy-file" key={f}>
                 <a className="mono" onClick={() => setFilter(f)} title="Show only this file">{f}</a>
                 <span className="muted">{n}</span>
+                <EditorLink href={editorHref(repos.data, repo, f)} />
                 <button className="quiet" onClick={() => copyPrompt(f, n)}>{copied === f ? "Copied" : "Copy fix prompt"}</button>
               </div>
             ))}
@@ -89,7 +90,7 @@ export default function Hygiene({ params }: { params: Record<string, string> }) 
           </div>
           {issues.length ? <table><thead><tr><th>Kind</th><th>Rule</th><th>Where</th><th>Message</th></tr></thead><tbody>
             {issues.slice(0, 200).map((i: any, k: number) => (
-              <tr key={k}><td><Badge kind={i.tool === "bandit" ? "bad" : ""}>{KIND[i.tool] || i.tool}</Badge></td><td className="mono">{i.code}</td><td className="mono">{i.path}:{i.line}</td><td>{i.msg}{i.corroborated ? <span className="muted"> (no callers in the graph either)</span> : null}</td></tr>
+              <tr key={k}><td><Badge kind={i.tool === "bandit" ? "bad" : ""}>{KIND[i.tool] || i.tool}</Badge></td><td className="mono">{i.code}</td><td className="mono">{i.path}:{i.line}<EditorLink href={editorHref(repos.data, repo, i.path, i.line)} /></td><td>{i.msg}{i.corroborated ? <span className="muted"> (no callers in the graph either)</span> : null}</td></tr>
             ))}
           </tbody></table> : <Empty>No findings match. <a onClick={() => { setTool(""); setFilter(""); }}>Clear the filters</a>.</Empty>}
           {issues.length > 200 && <p className="hint">Showing the first 200. Narrow with a kind or the filter.</p>}

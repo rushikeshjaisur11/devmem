@@ -255,7 +255,7 @@ def write_db(ix: "Index") -> None:
         _rebuild_fts(db, ix)
         db.execute(f"PRAGMA user_version = {_stamp(ix.root / INDEX_PATH)}")
     db.close()
-    (ix.root / ".devmem/.gitignore").write_text("index.db*\n", encoding="utf-8")
+    (ix.root / ".devmem/.gitignore").write_text("index.db*\nusage.jsonl\n", encoding="utf-8")
 
 
 def _open_fts(ix: "Index") -> sqlite3.Connection:

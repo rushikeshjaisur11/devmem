@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useRoute, nav } from "./route";
-import { ErrorBoundary, useRepos } from "./components";
+import { EDITORS, ErrorBoundary, getEditor, useRepos } from "./components";
 const Overview = lazy(() => import("./pages/Overview"));
 const Repos = lazy(() => import("./pages/Repos"));
 const Impact = lazy(() => import("./pages/Impact"));
@@ -90,6 +90,8 @@ export default function App() {
   const { page, params } = useRoute();
   const { dark, toggle } = useTheme();
   const [palette, setPalette] = useState(false);
+  const [editor, setEditor] = useState(getEditor);
+  const pickEditor = (v: string) => { try { localStorage.setItem("devmem-editor", v); } catch { /* private mode */ } setEditor(v); };
   useEffect(() => {
     const f = (e: KeyboardEvent) => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setPalette((p) => !p); } };
     window.addEventListener("keydown", f);
@@ -113,7 +115,9 @@ export default function App() {
           </div>
         ))}
         <div className="side-foot">
-          <span>v0.1</span>
+          <select value={editor} onChange={(e) => pickEditor(e.target.value)} aria-label="Open files in" title="Open files in">
+            {Object.entries(EDITORS).map(([k, [label]]) => <option key={k} value={k}>{k === "none" ? "Editor links off" : label}</option>)}
+          </select>
           <button className="icon-btn" onClick={toggle} aria-label={dark ? "Switch to light theme" : "Switch to dark theme"} title={dark ? "Light theme" : "Dark theme"}>
             {dark ? ic('<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>') : ic('<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>')}
           </button>
@@ -124,7 +128,7 @@ export default function App() {
           <span className="crumb">devmem / <b>{LABEL[page] || "Overview"}</b>{params.repo ? <> / {params.repo}</> : null}</span>
           <button className="kbtn" onClick={() => setPalette(true)} aria-label="Go to a page or repo">{ic('<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>')}Go to…<kbd>{mac ? "⌘" : "Ctrl"} K</kbd></button>
         </header>
-        <main><ErrorBoundary key={page + JSON.stringify(params)}><Suspense fallback={<p className="muted">Loading…</p>}><Page params={params} /></Suspense></ErrorBoundary></main>
+        <main><ErrorBoundary key={page + JSON.stringify(params) + editor}><Suspense fallback={<p className="muted">Loading…</p>}><Page params={params} /></Suspense></ErrorBoundary></main>
       </div>
       {palette && <Palette onClose={() => setPalette(false)} />}
     </div>

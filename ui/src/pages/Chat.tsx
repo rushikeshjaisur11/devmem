@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
-import { Badge, Err, useAsync, useRepos } from "../components";
+import { Badge, EditorLink, Err, editorHref, useAsync, useRepos } from "../components";
 import { nav } from "../route";
 
 interface Msg { q: string; res?: any; err?: string; busy?: boolean; target?: string; force?: "ask" | "implement" }
@@ -113,7 +113,7 @@ export default function Chat() {
                 <div className="muted" style={{ marginBottom: 6 }}>{r.mode === "llm" ? `Answered by ${r.model}` : "Retrieval only"} · {r.hits.length} sources</div>
                 {r.hits.map((h: any) => (
                   <details key={h.n} open={r.cited?.includes(h.n)} style={{ marginBottom: 6 }}>
-                    <summary><span className="mono">[{h.n}]</span> <Badge>{h.kind}</Badge> {h.title} {openable(h) ? <a className="mono" href="#" onClick={(e) => { e.preventDefault(); open(h); }}>{h.pointer}</a> : <span className="mono">{h.pointer}</span>}</summary>
+                    <summary><span className="mono">[{h.n}]</span> <Badge>{h.kind}</Badge> {h.title} {openable(h) ? <a className="mono" href="#" onClick={(e) => { e.preventDefault(); open(h); }}>{h.pointer}</a> : <span className="mono">{h.pointer}</span>}{h.kind !== "doc" && <EditorLink href={editorHref(repos.data, h.repo, h.path, h.line)} />}</summary>
                     {h.snippet && <pre>{h.snippet}</pre>}
                   </details>
                 ))}

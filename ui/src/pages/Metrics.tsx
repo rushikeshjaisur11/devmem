@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { api } from "../api";
-import { Badge, Bars, Empty, Err, LineChart, RepoSelect, useAsync, useRepos } from "../components";
+import { Badge, Bars, EditorLink, Empty, Err, LineChart, RepoSelect, editorHref, useAsync, useRepos } from "../components";
 
 const fmt = (v: any) => (v === null || v === undefined ? "–" : v);
 
@@ -31,8 +31,8 @@ function PrMetrics({ d, onUploaded }: { d: any; onUploaded: () => void }) {
       <div className="card"><h3>PR reports (devmem report)</h3>
         {d.runs.n === 0 ? <Empty>No reports yet. Agents run <span className="mono">devmem report</span> before opening a PR and commit .devmem/metrics/.</Empty> : <>
           <p className="muted" style={{ marginTop: 0 }}>{d.runs.n} reports, {d.runs.clean} clean. Median reported tokens: {fmt(d.runs.median_tokens)}. Most blocked checks: {Object.entries(d.runs.blocked_checks).map(([k, v]) => `${k} ×${v}`).join(", ") || "none"}.</p>
-          <table><thead><tr><th>When</th><th>Task</th><th className="num">Files</th><th className="num">+/-</th><th className="num">Tokens</th><th>Blocked</th></tr></thead><tbody>
-            {d.runs.recent.map((r: any) => <tr key={r.ts + r.head}><td>{r.ts.slice(0, 16)}</td><td>{r.task || "–"}</td><td className="num">{r.files}</td><td className="num">+{r.added}/-{r.removed}</td><td className="num">{fmt(r.tokens)}</td><td>{r.violations.blocked.join(", ") || "–"}</td></tr>)}
+          <table><thead><tr><th>When</th><th>Task</th><th className="num">Files</th><th className="num">+/-</th><th className="num">Tokens</th><th className="num" title="devmem answers / whole files they point to">devmem tokens</th><th>Blocked</th></tr></thead><tbody>
+            {d.runs.recent.map((r: any) => <tr key={r.ts + r.head}><td>{r.ts.slice(0, 16)}</td><td>{r.task || "–"}</td><td className="num">{r.files}</td><td className="num">+{r.added}/-{r.removed}</td><td className="num">{fmt(r.tokens)}</td><td className="num">{r.devmem?.calls ? `${fmt(r.devmem.out_tokens)} / ~${fmt(r.devmem.file_tokens)}` : "–"}</td><td>{r.violations.blocked.join(", ") || "–"}</td></tr>)}
           </tbody></table></>}
       </div>
       <div className="card"><h3>Devin sessions</h3>
@@ -66,7 +66,7 @@ export default function Metrics({ params }: { params: Record<string, string> }) 
         <div className="card"><h3>Hygiene findings over runs</h3><LineChart points={trend} label="Hygiene findings" /></div>
         <div className="card"><h3>Hotspots (change carefully)</h3>
           {d.hotspots.length ? <table><thead><tr><th>File</th><th className="num">Commits</th><th className="num">Bug fixes</th><th className="num">Authors</th><th>Last change</th></tr></thead><tbody>
-            {d.hotspots.map((h: any) => <tr key={h.file}><td className="mono">{h.file}</td><td className="num">{h.commits}</td><td className="num">{h.bugfix}</td><td className="num">{h.authors}</td><td>{h.last}</td></tr>)}
+            {d.hotspots.map((h: any) => <tr key={h.file}><td className="mono">{h.file}<EditorLink href={editorHref(repos.data, repo, h.file)} /></td><td className="num">{h.commits}</td><td className="num">{h.bugfix}</td><td className="num">{h.authors}</td><td>{h.last}</td></tr>)}
           </tbody></table> : <Empty>No hotspots yet: publish a repo that has git history.</Empty>}
         </div>
         <PrMetrics d={d.pr_metrics} onUploaded={m.reload} />

@@ -4,7 +4,7 @@ Code knowledge for AI coding agents (Devin, Claude Code, Copilot, Cursor), so th
 devmem **never runs or changes your code**: it indexes your repos, publishes compact knowledge files agents read instead of whole
 files, and builds prompts for the agent that will do the work.
 
-- **Index** repos into a call/test/table graph (Python, JS/TS, SQL, Spark) with blast-radius analysis, test selection and lineage.
+- **Index** repos into a call/test/table graph (Python, JS/TS, Go, Java, SQL, Spark) with blast-radius analysis, test selection and lineage.
 - **Publish** `.devmem/` knowledge into each repo plus an `AGENTS.md` block; agents query it offline with the small `devmem` CLI.
 - **Cross-repo reuse**: find what other repos already built, rated by effort to adapt; share it through a central **hub** git repo.
 - **Library docs** (llms.txt, web pages, PyPI, npm, or a local docs folder) fetched where there is internet and shipped to agents that have none; reuse
@@ -77,8 +77,13 @@ imports one of these libraries, the matching section of the latest docs is liste
 **5. Hand work to an agent.** In **Chat**, describe a change ("add retry with backoff to the export job") or paste a plan. You get a
 compact prompt with the code your org already has, current library docs and the paths not to touch. Paste it into the agent.
 
-**6. Keep it fresh.** When a repo moves on, press *Re-index* (unchanged files are cached, so it takes seconds) and *Publish* again.
-Overview flags an index behind HEAD and any knowledge file over its token budget.
+**6. Keep it fresh.** While `devmem-app ui` runs it re-indexes any repo whose HEAD moved (pull, merge, commit, branch switch); add
+`--publish` to republish too, or `--no-watch` to turn it off. Without the UI: `devmem-app watch` (or `watch --once` from cron or a git
+hook). Overview flags an index behind HEAD and any knowledge file over its token budget.
+
+**7. See what it saves.** Every `devmem` query (CLI or MCP) logs its size and the size of the files its answer points to in
+`.devmem/usage.jsonl` (gitignored). Overview shows the totals per repo; `devmem report` adds the numbers since the last report to the
+PR record, so Metrics shows them per PR. Both sides are estimated as characters / 4.
 
 ## Accuracy is not optional
 SCIP (type-resolved edges), Graphify (an independent tree-sitter call graph) and tree-sitter (JS/TS) always run: on `add`, `index` and
@@ -90,6 +95,13 @@ it is recorded in the index and shown as "reduced accuracy" in the UI. Measured 
 ## Using it with agents
 - **Devin / Claude Code / Copilot**: install the plugin (`docs/INSTALL.md`); its skills make agents run `devmem recall`, `reuse`, `docs`,
   `impact`, `check`, `diffcheck` instead of reading files. The wheel is bundled, so no PyPI access is needed.
+- **Any MCP client** (Claude Code, Cursor, VS Code, ...): `devmem mcp` serves the same commands as tools over stdio (`devmem_recall`,
+  `devmem_find`, `devmem_show`, `devmem_impact`, `devmem_docs`, ...), stdlib only. Add it to the repo's `.mcp.json`:
+  `{"mcpServers": {"devmem": {"command": "devmem", "args": ["mcp"]}}}` (set `DEVMEM_ROOT` if the client starts it elsewhere).
+- **Library versions**: docs default to the latest release; `pypi:<pkg>==<ver>` or `npm:<pkg>@<ver>` fetches a specific one for a repo
+  that cannot upgrade. Publish records the versions the repo declares and locks (`package-lock.json`, `uv.lock`, `poetry.lock`, `==`
+  pins), and agents are warned when the docs on file are another major version than the repo uses.
+- **Open in editor**: file and symbol references in the UI open in VS Code or Cursor (choose in the sidebar footer).
 - **Hub (recommended with several repos)**: `devmem-app hub set git@github.com:acme/devmem-hub.git`, then `devmem-app hub push --push`.
   `publish` writes the URL to `.devmem/hub.txt` (or set `DEVMEM_HUB`); agents run `devmem hub sync` and `devmem reuse "<need>"`. With no
   hub or no access they fall back to the catalog committed in the repo. Agents need git read access to the hub.
@@ -107,7 +119,7 @@ it is recorded in the index and shown as "reduced accuracy" in the UI. Measured 
 ## Commands
 | `devmem-app` (your machine) | |
 |---|---|
-| `add`, `index`, `publish`, `ui` | onboard, re-index, write knowledge into a repo, web UI |
+| `add`, `index`, `publish`, `ui`, `watch` | onboard, re-index, write knowledge into a repo, web UI, re-index when HEAD moves |
 | `reuse`, `prompt`, `ask`, `find` | cross-repo reuse, agent prompts, retrieval across repos |
 | `hub set/push/status`, `docs add/list/refresh/remove`, `libs` | central hub, library docs, dependency freshness |
 | `hygiene`, `clones`, `verify`, `flaky`, `impact-column`, `schema`, `memory`, `metrics` | lint/dead-code/complexity, duplicates, test commands, lineage, lessons, PR metrics |
@@ -115,6 +127,7 @@ it is recorded in the index and shown as "reduced accuracy" in the UI. Measured 
 | `devmem` (agents, offline) | |
 |---|---|
 | `find`, `show`, `outline`, `impact`, `helpers` | locate code and see blast radius instead of reading files |
+| `mcp` | the same commands as MCP tools over stdio |
 | `recall`, `remember`, `feedback` | lessons, rules and cross-repo pointers for a task |
 | `reuse`, `docs`, `hub`, `plan` | other repos' code, current library docs, the central hub, step-by-step plan briefs |
 | `tests-for`, `check`, `diffcheck`, `hygiene`, `report` | affected tests, lint/types, minimal-diff guard, PR metrics |

@@ -27,6 +27,20 @@ export function RepoSelect({ value, onChange, repos, indexedOnly = true }: { val
   );
 }
 
+/* ---------- open in editor ---------- */
+export const EDITORS: Record<string, [string, string]> = { vscode: ["VS Code", "vscode://file/"], cursor: ["Cursor", "cursor://file/"], none: ["Off", ""] };
+export const getEditor = () => { try { return localStorage.getItem("devmem-editor") || "vscode"; } catch { return "vscode"; } };
+/** Deep link that opens repo/file[:line] in the chosen editor; undefined when off or the repo path is unknown. */
+export function editorHref(repos: Json[] | null, repo: string, file: string, line?: number) {
+  const scheme = (EDITORS[getEditor()] || EDITORS.vscode)[1], root = repos?.find((r) => r.name === repo)?.path;
+  if (!scheme || !root || !file) return undefined;
+  return scheme + encodeURI(`${root}/${file}`.replace(/\\/g, "/")) + (line ? `:${line}` : "");
+}
+export const EditorLink = ({ href }: { href?: string }) => href ? (
+  <a className="edit-link" href={href} title={`Open in ${EDITORS[getEditor()][0]}`} aria-label={`Open in ${EDITORS[getEditor()][0]}`} onClick={(e) => e.stopPropagation()}>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" /></svg>
+  </a>) : null;
+
 export const Err = ({ msg }: { msg: string }) => (msg ? <div className="err" role="alert">{msg}</div> : null);
 export const Badge = ({ kind = "", children }: { kind?: string; children: any }) => <span className={`badge ${kind}`}>{children}</span>;
 export const Empty = ({ children }: { children: any }) => (

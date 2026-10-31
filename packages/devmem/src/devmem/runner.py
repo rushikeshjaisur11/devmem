@@ -13,7 +13,10 @@ TIMEOUT = 600
 
 def _quote(s: str) -> str:
     """Quote one shell argument for the shell `run_cmd` uses (cmd.exe has no single quotes)."""
-    return subprocess.list2cmdline([s]) if sys.platform == "win32" else shlex.quote(s)
+    if sys.platform != "win32":
+        return shlex.quote(s)
+    q = subprocess.list2cmdline([s])   # quotes only for spaces; cmd.exe also treats ^ & | < > ( ) as operators outside quotes
+    return f'"{q}"' if not q.startswith('"') and any(ch in s for ch in "^&|<>()") else q
 
 
 def _fix_python(cmd: str) -> str:

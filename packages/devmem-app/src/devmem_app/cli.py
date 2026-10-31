@@ -67,6 +67,11 @@ def _main(argv=None) -> int:
     s.add_argument("action", choices=["show", "ingest-devin"]); s.add_argument("arg", help="repo name (show) or JSON file (ingest-devin)")
     s = sub.add_parser("ui", help="start the local web app")
     s.add_argument("--port", type=int, default=8765); s.add_argument("--no-open", action="store_true")
+    s.add_argument("--no-watch", action="store_true", help="do not re-index repos whose HEAD moved while the app runs")
+    s.add_argument("--publish", action="store_true", help="watcher also publishes after re-indexing")
+    s = sub.add_parser("watch", help="re-index onboarded repos whenever their HEAD moves (pull, merge, commit, branch switch)")
+    s.add_argument("--interval", type=int, default=60, help="seconds between checks"); s.add_argument("--publish", action="store_true")
+    s.add_argument("--once", action="store_true", help="one pass, then exit (for cron or a git hook)")
     s = sub.add_parser("reuse", help="what other onboarded repos already built for a need, and the effort to adapt it into --into")
     s.add_argument("need"); s.add_argument("--into", required=True, help="target repo name"); s.add_argument("-n", "--limit", type=int, default=5)
     s.add_argument("--prompt", action="store_true"); s.add_argument("--json", action="store_true")
@@ -206,7 +211,17 @@ def _main(argv=None) -> int:
         import uvicorn
         if not a.no_open:
             threading.Timer(1.0, lambda: webbrowser.open(f"http://127.0.0.1:{a.port}")).start()
+        if not a.no_watch:
+            from . import watch
+            watch.start(lambda: _ws()["repos"], publish_too=a.publish)
         uvicorn.run("devmem_app.server:app", host="127.0.0.1", port=a.port, log_level="warning")
+    elif a.cmd == "watch":
+        from . import watch
+        if a.once:
+            watch.tick(_ws()["repos"], a.publish, {})
+        else:
+            print(f"watching {len(_ws()['repos'])} repos every {a.interval}s (Ctrl+C to stop)")
+            watch.run(lambda: _ws()["repos"], a.interval, a.publish)
     elif a.cmd == "prompt":
         from .implement import build
         repos = _ws()["repos"]

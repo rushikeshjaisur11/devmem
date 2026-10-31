@@ -3,6 +3,7 @@ import shutil
 from pathlib import Path
 
 from devmem import check as chk
+from devmem.runner import quote_all
 from devmem.index import Index
 from devmem_app import commands, hygiene, indexer, jsparse
 from devmem_app.publisher import publish
@@ -92,3 +93,22 @@ def test_js_doc_starts_at_first_line_of_a_comment_block():
     src = "// Retries a request with backoff.\n// Second line of detail.\nexport function retry() {}\n"
     _, syms = jsparse.parse_js("src/r.js", src)
     assert next(s for s in syms if s["name"] == "retry")["doc"] == "Retries a request with backoff."
+
+
+def test_go_and_java_symbols_edges_and_test_commands(tmp_path):
+    for app in ("go_app", "java_app"):
+        shutil.copytree(FIX / app, tmp_path / app)
+    gx = Index(indexer.index_repo(tmp_path / "go_app", "go_app"), tmp_path / "go_app")
+    assert {"retry/retry.go#Do", "svc/client.go#Client", "svc/client.go#Client.Get", "svc/client_test.go#TestLoadUser"} <= set(gx.symbols)
+    assert gx.symbols["retry/retry.go#Do"]["doc"] == "Do calls fn up to n times until it succeeds."
+    r = gx.impact("retry/retry.go#Do")
+    assert [h["id"] for h in r["hop1"]] == ["svc/client.go#Client.Get"] and "svc/client_test.go#TestLoadUser" in r["tests"]
+    ids, cmd = chk.tests_for(gx, ["retry/retry.go"])
+    assert cmd == "go test ./svc -run " + quote_all(["^(TestLoadUser)$"]) and "TestLoadUser" in ids[0]
+    jx = Index(indexer.index_repo(tmp_path / "java_app", "java_app"), tmp_path / "java_app")
+    run = "src/main/java/com/acme/Retry.java#Retry.run"
+    assert jx.symbols[run]["doc"] == "Runs the task up to n times."
+    r = jx.impact(run)
+    assert [h["id"] for h in r["hop1"]] == ["src/main/java/com/acme/UserService.java#UserService.load"]
+    assert "src/test/java/com/acme/UserServiceTest.java#UserServiceTest.loadsUser" in r["tests"]
+    assert chk.tests_for(jx, ["src/main/java/com/acme/Retry.java"])[1] == "mvn -q test -Dtest=UserServiceTest#loadsUser"

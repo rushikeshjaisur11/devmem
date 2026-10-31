@@ -1,5 +1,6 @@
 """`devmem report`: one JSON record per PR/run, committed with the PR so metrics reach the repo without any egress.
-Records diff size and diffcheck outcome; token use is whatever the agent reports (--tokens), never guessed."""
+Records diff size and diffcheck outcome. `tokens` is whatever the agent reports (--tokens), never guessed; `devmem` totals the
+devmem queries logged since the previous record (see usage.py)."""
 import json
 import os
 import time
@@ -19,10 +20,13 @@ def build_record(root: Path, base: str | None = None, task: str = "", tokens: in
         text += "\n" + dc._git(root, "log", f"{base}..HEAD", "--format=%B", check=False)
     blocked, allowed = dc.apply_allow(dc.run_checks(root, files, cfg, base), dc.allowances(text))
     head = dc._git(root, "rev-parse", "--short", "HEAD", check=False).strip()
+    from . import usage
+    prev = sorted((Path(root) / RUNS_DIR).glob("*.json"))
+    since = json.loads(prev[-1].read_text(encoding="utf-8"))["ts"] if prev else None
     return {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "head": head, "task": task[:200],
             "files": len(files), "added": sum(f.added for f in files), "removed": sum(f.removed for f in files),
             "violations": {"blocked": [x.check for x in blocked], "allowed": [x.check for x in allowed]},
-            "tokens": tokens, "recalls": recalls, "review_rounds": rounds}
+            "tokens": tokens, "recalls": recalls, "review_rounds": rounds, "devmem": usage.summary(root, since)}
 
 
 def write_record(root: Path, rec: dict) -> Path:

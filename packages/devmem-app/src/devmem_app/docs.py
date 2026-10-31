@@ -131,7 +131,8 @@ def _try(url: str) -> str | None:
 
 
 def add(spec: str, name: str | None = None, follow: bool = True, max_pages: int = 40, dest: Path | None = None) -> dict:
-    """spec: an llms.txt / llms-full.txt / web page URL, `pypi:<pkg>`, `npm:<pkg>`, or a local file/folder of docs."""
+    """spec: an llms.txt / llms-full.txt / web page URL, `pypi:<pkg>[==ver]`, `npm:<pkg>[@ver]`, or a local file/folder of docs.
+    Without a version the latest release is fetched; with one, that release (for a repo that cannot upgrade yet)."""
     pages: list[tuple[str, str, str]] = []   # (title, url, markdown)
     version, kind = "", "url"
     local = Path(spec).expanduser() if not re.match(r"^(https?|pypi|npm):", spec) else None
@@ -140,8 +141,8 @@ def add(spec: str, name: str | None = None, follow: bool = True, max_pages: int 
         pages = _from_local(local.resolve(), max(max_pages, 200))   # a local folder is usually a whole docs tree; MAX_LIB still caps it
         name = name or _slug(local.stem if local.is_file() else local.name)
     elif spec.startswith("pypi:"):
-        pkg = spec[5:].strip()
-        info = json.loads(get(f"https://pypi.org/pypi/{urllib.parse.quote(pkg)}/json"))["info"]
+        pkg, _, want = spec[5:].strip().partition("==")
+        info = json.loads(get(f"https://pypi.org/pypi/{urllib.parse.quote(pkg)}/{urllib.parse.quote(want) + '/' if want else ''}json"))["info"]
         name, version, kind = name or _norm(pkg), info.get("version", ""), "pypi"
         pages.append((f"{pkg} {version}: overview", f"https://pypi.org/project/{pkg}/", f"# {info.get('name')} {version}\n\n{info.get('summary') or ''}\n\n{info.get('description') or ''}"))
         urls = info.get("project_urls") or {}
@@ -158,9 +159,11 @@ def add(spec: str, name: str | None = None, follow: bool = True, max_pages: int 
             if spec_llms:
                 pages += _from_llms(spec_llms[0], spec_llms[1], follow, max_pages)
     elif spec.startswith("npm:"):
-        pkg = spec[4:].strip()
+        pkg, want = spec[4:].strip(), ""
+        if "@" in pkg[1:]:   # npm:zod@3.22.4, npm:@scope/pkg@1.0
+            pkg, want = pkg[0] + pkg[1:].split("@", 1)[0], pkg[1:].split("@", 1)[1]
         qp = urllib.parse.quote(pkg, safe="@")
-        meta = json.loads(get(f"https://registry.npmjs.org/{qp}/latest"))   # the full packument can be many MB; `latest` is small
+        meta = json.loads(get(f"https://registry.npmjs.org/{qp}/{urllib.parse.quote(want) if want else 'latest'}"))   # the full packument can be many MB
         version = meta.get("version", "")
         name, kind = name or _slug(pkg.lstrip("@")), "npm"
         readme = ""
@@ -351,15 +354,37 @@ def latest_version(eco: str, name: str) -> str | None:
 from devmem.reuse import version_behind as behind  # noqa: E402  (one implementation, shared with the agent side)
 
 
+def locked_versions(root: Path) -> dict[tuple[str, str], str]:
+    """Exact installed versions from lockfiles: package-lock.json, uv.lock / poetry.lock, and `==` pins in requirements."""
+    root, out = Path(root), {}
+    pl = root / "package-lock.json"
+    if pl.exists():
+        for k, v in (json.loads(pl.read_text(encoding="utf-8")).get("packages") or {}).items():
+            if k.startswith("node_modules/") and "/node_modules/" not in k and v.get("version"):
+                out[("npm", k[len("node_modules/"):].lower())] = v["version"]
+    for lock in ("uv.lock", "poetry.lock"):
+        f = root / lock
+        if f.exists():
+            for name, ver in re.findall(r'\[\[package\]\]\s*\nname\s*=\s*"([^"]+)"\s*\nversion\s*=\s*"([^"]+)"', f.read_text(encoding="utf-8")):
+                out[("pypi", _norm(name))] = ver
+    for d in scan_deps(root):
+        m = re.fullmatch(r"==([\w.]+)", d["spec"] or "")
+        if d["eco"] == "pypi" and m:
+            out.setdefault(("pypi", d["name"]), m.group(1))
+    return out
+
+
 def libs_report(root: Path, online: bool = True) -> list[dict]:
     deps = scan_deps(root)
+    locked = locked_versions(root)
     have = {_norm(l["name"]) for l in list_libs()}
     if online:
         with ThreadPoolExecutor(8) as ex:
             latest = list(ex.map(lambda d: latest_version(d["eco"], d["name"]), deps))
     else:
         latest = [None] * len(deps)
-    return [{**d, "latest": lt, "behind": behind(d["spec"], lt), "docs": _norm(d["name"]) in have} for d, lt in zip(deps, latest)]
+    return [{**d, "locked": locked.get((d["eco"], d["name"])), "latest": lt, "behind": behind(locked.get((d["eco"], d["name"])) or d["spec"], lt),
+             "docs": _norm(d["name"]) in have} for d, lt in zip(deps, latest)]
 
 
 def write_libs(root: Path, online: bool = True) -> list[dict]:

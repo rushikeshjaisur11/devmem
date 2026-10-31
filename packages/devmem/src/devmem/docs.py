@@ -149,6 +149,8 @@ def for_code(ix, files: list[str], text: str = "", query: str = "", limit: int =
             alias = imp.get("alias") or ""
             if p and (not text or (alias and re.search(rf"\b{re.escape(alias)}\b", text))):
                 used.setdefault(_norm(p), set()).update(x for x in (alias, imp.get("name")) if x)
+    lp = ix.root / ".devmem/libs.json"
+    repo_ver = {_norm(r["name"]): r.get("locked") or r.get("spec") or "" for r in (json.loads(lp.read_text(encoding="utf-8")) if lp.exists() else [])}
     out = []
     for man in libraries(ix.root):
         src = str(man.get("source", ""))
@@ -157,12 +159,20 @@ def for_code(ix, files: list[str], text: str = "", query: str = "", limit: int =
             continue
         names = " ".join(sorted(used[key]))
         hits = search(ix.root, f"{query} {names}".strip(), 1, man["name"])
+        uses = repo_ver.get(key) or repo_ver.get(_norm(man["name"])) or ""
         out.append({"lib": man["name"], "version": man.get("version", ""), "fetched": man.get("fetched", ""), "stale": (age_days(man) or 0) > STALE_DAYS,
-                    "names": names, "hit": hits[0] if hits else None})
+                    "names": names, "hit": hits[0] if hits else None, "repo_version": uses if _major(uses) not in (None, _major(man.get("version", ""))) else None})
     return out[:limit]
+
+
+def _major(v: str) -> int | None:
+    m = re.search(r"\d+", v or "")
+    return int(m.group()) if m else None
 
 
 def render_pointer(d: dict) -> str:
     where = f"{d['lib']}{' ' + d['version'] if d['version'] else ''} (fetched {d['fetched'] or '?'}{', STALE' if d['stale'] else ''})"
     sec = f": {d['hit']['heading'] or d['hit']['title']}" if d["hit"] else ""
-    return f"{where}{sec}  -> devmem docs \"{d['names']}\" --lib {d['lib']}"
+    warn = (f"\n   ! docs describe {d['version']} but this repo uses {d['repo_version']}: confirm the API exists in that version, "
+            f"or ask for pinned docs (devmem-app docs add <eco>:{d['lib']}=={d['repo_version']})") if d.get("repo_version") else ""
+    return f"{where}{sec}  -> devmem docs \"{d['names']}\" --lib {d['lib']}{warn}"

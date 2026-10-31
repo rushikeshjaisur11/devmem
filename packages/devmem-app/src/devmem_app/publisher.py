@@ -221,6 +221,8 @@ def publish(root: str | Path, idx: dict, peers: dict | None = None) -> list[str]
     # library freshness + offline docs for the libraries this repo uses
     from . import docs as docsmod
     lp = root / ".devmem/libs.json"
+    if not lp.exists():   # offline: declared + locked versions, so agents are warned when the docs on file are another major version
+        docsmod.write_libs(root, online=False)
     if lp.exists():
         try:
             _write(root, f"{k}/libraries.md", docsmod.render_libraries_md(json.loads(lp.read_text(encoding="utf-8"))), commit, written)

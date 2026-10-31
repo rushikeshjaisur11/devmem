@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, q } from "../api";
-import { Empty, Err, useAsync } from "../components";
+import { EditorLink, Empty, Err, editorHref, useAsync, useRepos } from "../components";
 import { CyGraph, EDGE_KINDS, kindColor } from "../graph";
 import { nav } from "../route";
 
@@ -9,6 +9,7 @@ const job = (j: any) => j.job.split("#")[1] || j.job;
 export default function Lineage({ params }: { params: Record<string, string> }) {
   const [table, setTable] = useState<string | null>(params.table ?? null);   // null: not chosen yet; "": all tables
   const [filter, setFilter] = useState("");
+  const repos = useRepos();
   const data = useAsync(() => api.get(`/api/lineage?${q({ table: table || undefined })}`), [table]);
   const tables: any[] = data.data?.tables || [];
   // the full map of many tables is unreadable at first sight: open on the busiest table
@@ -39,7 +40,7 @@ export default function Lineage({ params }: { params: Record<string, string> }) 
     return els;
   }, [JSON.stringify(tables), table]); // eslint-disable-line
   const shown = tables.filter((t) => !filter || t.name.toLowerCase().includes(filter.toLowerCase()));
-  const Jobs = ({ list }: { list: any[] }) => list.length ? <>{list.map((j: any) => <a key={j.repo + j.job} className="lin-job" onClick={() => nav("impact", { repo: j.repo, target: j.job })} title="Check impact of this job"><span className="tag">{j.repo}</span> <span className="mono">{job(j)}</span></a>)}</> : <span className="muted">none indexed</span>;
+  const Jobs = ({ list }: { list: any[] }) => list.length ? <>{list.map((j: any) => <div key={j.repo + j.job} className="lin-job"><a onClick={() => nav("impact", { repo: j.repo, target: j.job })} title="Check impact of this job"><span className="tag">{j.repo}</span> <span className="mono">{job(j)}</span></a><EditorLink href={editorHref(repos.data, j.repo, j.job.split("#")[0])} /></div>)}</> : <span className="muted">none indexed</span>;
 
   return (
     <>

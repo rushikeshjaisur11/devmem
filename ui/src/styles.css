@@ -158,7 +158,7 @@ td select { max-width: 150px; }
 
 /* ---------- code blocks, lists ---------- */
 .code { max-height: 74vh; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); padding: 8px 0; }
-.list a { display: block; padding: 4px 0; }
+.list > div { padding: 3px 0; }
 
 /* ---------- graph, stats, charts ---------- */
 .graph { height: 560px; border: 1px solid var(--line); border-radius: var(--radius); background: radial-gradient(circle at 1px 1px, var(--line-2) 1px, transparent 0) 0 0/22px 22px, var(--surface); }
@@ -271,7 +271,7 @@ button.quiet.danger { color: var(--bad); }
 .hy-tile em.up { color: var(--bad); } .hy-tile em.down { color: var(--good); }
 .hy-tile.on { border-color: var(--text); box-shadow: inset 0 -4px 0 var(--hl); }
 .hy-split { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 18px; }
-.hy-file { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.hy-file { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 12px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); }
 .hy-file:last-child { border-bottom: 0; }
 .hy-file a { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 1100px) { .hy-split { grid-template-columns: 1fr; } }
@@ -291,3 +291,9 @@ button.quiet.danger { color: var(--bad); }
 .lin-h { margin-top: 16px; }
 .lin-job { display: block; padding: 3px 0; }
 @media (max-width: 900px) { .lin, .lin-io { grid-template-columns: 1fr; } .lin-list { position: static; max-height: none; } }
+
+/* ---------- open in editor ---------- */
+.edit-link { display: inline-grid; place-items: center; width: 22px; height: 22px; margin-left: 6px; vertical-align: -5px; border-radius: 5px; color: var(--text-3); }
+.edit-link svg { width: 14px; height: 14px; }
+.edit-link:hover { color: var(--accent); background: var(--accent-soft); text-decoration: none; }
+.side-foot select { font-size: 12.5px; padding: 4px 26px 4px 8px; background-position: right 8px center; max-width: 110px; }

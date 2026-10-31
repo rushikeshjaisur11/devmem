@@ -29,10 +29,29 @@ def is_flaky(failed_line: str, flaky: list[str]) -> bool:
 def test_commands(ix: Index, paths: list[str]) -> tuple[list[str], list[str]]:
     """(selected test ids/files, ready-to-run commands): pytest ids for Python tests, test files for JS/TS runners."""
     sel = ix.tests_for_files(paths)
-    py = {f: q for f, q in sel.items() if not is_js(f)}
+    go = {f: q for f, q in sel.items() if f.endswith(".go")}
+    java = {f: q for f, q in sel.items() if f.endswith(".java")}
+    py = {f: q for f, q in sel.items() if not is_js(f) and f not in go and f not in java}
     js = sorted(f for f in sel if is_js(f))
     cmds = load_commands(ix.root)
     ids, out = [], []
+    by_dir: dict[str, set[str]] = {}
+    for f, quals in go.items():
+        by_dir.setdefault(f.rsplit("/", 1)[0] if "/" in f else ".", set()).update(q.split(".")[-1] for q in quals)
+    for d, names in sorted(by_dir.items()):
+        ids += [f"{d}:{n}" for n in sorted(names)]
+        out.append(f"go test ./{'' if d == '.' else d} -run " + quote_all([f"^({'|'.join(sorted(names))})$"]))
+    if java:
+        sel_j = {}
+        for quals in java.values():
+            for q in quals:
+                cls, _, m = q.rpartition(".")
+                sel_j.setdefault(cls.split(".")[0], []).append(m)
+        spec = ",".join(f"{c}#{'+'.join(sorted(ms))}" for c, ms in sorted(sel_j.items()))
+        ids += [f"{c}#{m}" for c, ms in sorted(sel_j.items()) for m in sorted(ms)]
+        gradle = next((g for g in ("gradlew", "build.gradle", "build.gradle.kts") if (ix.root / g).exists()), None)
+        out.append(f"{'./gradlew' if gradle == 'gradlew' else 'gradle'} test " + " ".join(f"--tests {quote_all([c + '.' + m])}" for c, ms in sorted(sel_j.items()) for m in sorted(ms))
+                   if gradle else "mvn -q test -Dtest=" + quote_all([spec]))
     if py:
         pids = Index.pytest_ids(py)
         tmpl = (cmds.get("test_one") or {}).get("cmd") or "python -m pytest -q {tests}"
