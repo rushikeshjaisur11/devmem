@@ -1,0 +1,13 @@
+{
+  "name": "devmem",
+  "version": "0.1.0",
+  "description": "Token-lean, minimal-diff coding: repo map, blast radius, targeted tests, diff guard, and lessons that carry across repos.",
+  "contextFileName": "AGENTS.md",
+  "mcpServers": {
+    "devmem": {
+      "command": "python3",
+      "args": ["${extensionPath}${/}skills${/}devmem${/}scripts${/}mcp_server.py"],
+      "cwd": "${workspacePath}"
+    }
+  }
+}

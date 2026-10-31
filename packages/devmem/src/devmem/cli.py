@@ -347,6 +347,31 @@ def cmd_feedback(ix: Index, a) -> int:
     return 0
 
 
+def cmd_connect(a) -> int:
+    from . import connect as cn
+    import subprocess
+    from pathlib import Path as _P
+    from .diffcheck import repo_root
+    try:
+        root = repo_root()
+    except subprocess.CalledProcessError:   # not a git repo: connect the current directory
+        root = _P.cwd()
+    cmd, args = (sys.executable, ["-m", "devmem.cli", "mcp"]) if a.local else (a.server_cmd, ["mcp"])
+    try:
+        res = cn.connect(root, a.agents or cn.AGENTS, cmd, args)
+    except ValueError as e:
+        print(e)
+        return 2
+    for r in res:
+        state = "updated" if r["changed"] else "already set" if not r["note"].startswith("user-level") else "manual"
+        print(f"{r['agent']:<9} {state:<11} {r['file']}  ({r['note']})")
+    if a.local:
+        print("note: --local wrote this machine's Python path; keep those files out of git")
+    if not (root / ".devmem/index.json").exists():
+        print("note: no .devmem/index.json yet: run `devmem-app publish <repo>` so the tools have data")
+    return 0
+
+
 def _version() -> str:
     try:
         from importlib.metadata import version
@@ -426,10 +451,17 @@ def run(argv=None, via: str = "cli") -> int:
     s.set_defaults(fn=cmd_report, nolog=True)
     s = sub.add_parser("mcp", help="serve these commands as MCP tools over stdio (for agents that speak MCP)")
     s.set_defaults(fn=None)
+    s = sub.add_parser("connect", help="register devmem with coding agents in this repo (MCP server + AGENTS.md)")
+    s.add_argument("agents", nargs="*", help="claude cursor vscode codex gemini kiro opencode aider windsurf (default: all)")
+    s.add_argument("--command", dest="server_cmd", default="devmem", help="how agents start devmem (default: devmem on PATH)")
+    s.add_argument("--local", action="store_true", help="use this Python's absolute path (works without PATH; do not commit)")
+    s.set_defaults(fn=None)
     a = p.parse_args(argv)
     if a.command == "mcp":
         from .mcp import serve
         return serve()
+    if a.command == "connect":
+        return cmd_connect(a)
     if a.command in ("diffcheck", "report"):
         try:
             ix = Index.load()

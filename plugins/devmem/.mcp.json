@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "devmem": {
+      "command": "python3",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/skills/devmem/scripts/mcp_server.py"],
+      "env": {"DEVMEM_ROOT": "${CLAUDE_PROJECT_DIR}"}
+    }
+  }
+}

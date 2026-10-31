@@ -92,8 +92,9 @@ def handle(msg: dict) -> dict | None:
 
 
 def serve() -> int:
-    if os.environ.get("DEVMEM_ROOT"):
-        os.chdir(os.environ["DEVMEM_ROOT"])
+    root = os.environ.get("DEVMEM_ROOT", "")
+    if root and os.path.isdir(root):   # a host that does not expand ${...} passes the literal; then the cwd it chose stands
+        os.chdir(root)
     out = sys.stdout
     for line in sys.stdin:
         if not line.strip():

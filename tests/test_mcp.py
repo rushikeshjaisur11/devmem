@@ -57,3 +57,29 @@ def test_report_folds_in_devmem_usage_since_the_last_record(tmp_path, monkeypatc
     assert "devmem queries this run: 2" in capsys.readouterr().out
     rec = json.loads(next((repo / ".devmem/metrics/runs").glob("*.json")).read_text(encoding="utf-8"))
     assert rec["devmem"]["calls"] == 2 and rec["devmem"]["file_tokens"] > rec["devmem"]["out_tokens"] > 0
+
+
+def test_plugin_launcher_runs_from_the_bundled_wheel_alone(tmp_path):
+    """No devmem installed (-S: no site-packages): the launcher imports the vendored wheel and serves tools."""
+    repo = _repo(tmp_path)
+    launcher = Path(__file__).parent.parent / "plugins/devmem/skills/devmem/scripts/mcp_server.py"
+    msg = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "devmem_find", "arguments": {"query": "retry"}}}
+    p = subprocess.run([sys.executable, "-S", str(launcher)], cwd=repo, input=json.dumps(msg) + "\n",
+                       capture_output=True, text=True, encoding="utf-8", timeout=60)
+    assert "app/retry.py:5" in json.loads(p.stdout)["result"]["content"][0]["text"], p.stderr
+
+
+def test_connect_registers_every_agent_and_keeps_existing_config(tmp_path, monkeypatch, capsys):
+    from devmem.cli import main
+    (tmp_path / ".vscode").mkdir()
+    (tmp_path / ".vscode/mcp.json").write_text('{"servers": {"github": {"type": "http", "url": "u"}}}', encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    assert main(["connect"]) == 0
+    out = capsys.readouterr().out
+    assert "windsurf" in out and "manual" in out and "no .devmem/index.json" in out
+    vs = json.loads((tmp_path / ".vscode/mcp.json").read_text(encoding="utf-8"))["servers"]
+    assert set(vs) == {"github", "devmem"} and vs["devmem"] == {"type": "stdio", "command": "devmem", "args": ["mcp"]}
+    assert '[mcp_servers.devmem]' in (tmp_path / ".codex/config.toml").read_text(encoding="utf-8")
+    assert main(["connect", "cursor", "--local"]) == 0
+    assert json.loads((tmp_path / ".cursor/mcp.json").read_text(encoding="utf-8"))["mcpServers"]["devmem"]["args"] == ["-m", "devmem.cli", "mcp"]
+    assert main(["connect", "notanagent"]) == 2
