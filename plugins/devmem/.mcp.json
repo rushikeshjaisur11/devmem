@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "devmem": {
-      "command": "python3",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/skills/devmem/scripts/mcp_server.py"],
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/skills/devmem/scripts/mcp_launch.mjs"],
       "env": {"DEVMEM_ROOT": "${CLAUDE_PROJECT_DIR}"}
     }
   }

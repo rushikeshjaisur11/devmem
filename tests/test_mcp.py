@@ -1,13 +1,16 @@
 """`devmem mcp` over a real stdio pipe, and the usage log that feeds `devmem report`."""
 import json
+import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 from devmem_app.indexer import index_repo
 
 FIX = Path(__file__).parent.parent / "fixtures"
+SCRIPTS = Path(__file__).parent.parent / "plugins/devmem/skills/devmem/scripts"
 
 
 def _repo(tmp_path):
@@ -59,14 +62,41 @@ def test_report_folds_in_devmem_usage_since_the_last_record(tmp_path, monkeypatc
     assert rec["devmem"]["calls"] == 2 and rec["devmem"]["file_tokens"] > rec["devmem"]["out_tokens"] > 0
 
 
-def test_plugin_launcher_runs_from_the_bundled_wheel_alone(tmp_path):
-    """No devmem installed (-S: no site-packages): the launcher imports the vendored wheel and serves tools."""
+def test_plugin_server_runs_from_bundled_wheel_and_pyyaml_alone(tmp_path):
+    """No site-packages at all (-S): the server imports the vendored wheel and pure-Python PyYAML; recall needs yaml."""
     repo = _repo(tmp_path)
-    launcher = Path(__file__).parent.parent / "plugins/devmem/skills/devmem/scripts/mcp_server.py"
-    msg = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "devmem_find", "arguments": {"query": "retry"}}}
-    p = subprocess.run([sys.executable, "-S", str(launcher)], cwd=repo, input=json.dumps(msg) + "\n",
+    msgs = [{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "devmem_find", "arguments": {"query": "retry"}}},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "devmem_recall", "arguments": {"task": "retry the user loader"}}}]
+    p = subprocess.run([sys.executable, "-S", str(SCRIPTS / "mcp_server.py")], cwd=repo, input="".join(json.dumps(m) + "\n" for m in msgs),
                        capture_output=True, text=True, encoding="utf-8", timeout=60)
-    assert "app/retry.py:5" in json.loads(p.stdout)["result"]["content"][0]["text"], p.stderr
+    out = {r["id"]: r["result"] for r in map(json.loads, p.stdout.splitlines())}
+    assert "app/retry.py:5" in out[1]["content"][0]["text"] and not out[2]["isError"], p.stderr
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_plugin_node_launcher_finds_python_and_passes_stdio_through(tmp_path):
+    """What Claude Code / Gemini CLI run: `node mcp_launch.mjs` (their configs cannot choose python3 vs py per OS)."""
+    repo = _repo(tmp_path)
+    node, env = shutil.which("node"), {**os.environ, "DEVMEM_PYTHON": sys.executable}
+    p = subprocess.run([node, str(SCRIPTS / "mcp_launch.mjs")], cwd=repo, input=json.dumps({"jsonrpc": "2.0", "id": 7, "method": "tools/list"}) + "\n",
+                       env=env, capture_output=True, text=True, encoding="utf-8", timeout=90)
+    assert {"devmem_find", "devmem_review"} <= {t["name"] for t in json.loads(p.stdout)["result"]["tools"]}, p.stderr
+    bad = subprocess.run([node, str(SCRIPTS / "mcp_launch.mjs")], cwd=repo, input="", capture_output=True, text=True,
+                         env={**env, "DEVMEM_PYTHON": str(tmp_path / "nope.exe"), "PATH": ""}, timeout=60)
+    assert bad.returncode == 1 and "no Python 3.10+ found" in bad.stderr
+
+
+def test_doctor_reports_each_layer(tmp_path, monkeypatch, capsys):
+    from devmem.cli import main
+    repo = _repo(tmp_path)
+    monkeypatch.chdir(repo)
+    assert main(["doctor"]) == 1                                           # not published: no AGENTS.md block
+    out = capsys.readouterr().out
+    assert "ok    MCP server answers" in out and "FAIL  AGENTS.md" in out and "fix: publish the repo" in out
+    (repo / "AGENTS.md").write_text("<!-- devmem:start -->\nx\n<!-- devmem:end -->\n", encoding="utf-8")
+    (repo / ".cursor").mkdir()
+    (repo / ".cursor/mcp.json").write_text('{"mcpServers": {"devmem": {"command": "definitely-not-a-command"}}}', encoding="utf-8")
+    assert main(["doctor"]) == 1 and "cursor: .cursor/mcp.json starts `definitely-not-a-command`" in capsys.readouterr().out
 
 
 def test_connect_registers_every_agent_and_keeps_existing_config(tmp_path, monkeypatch, capsys):

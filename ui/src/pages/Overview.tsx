@@ -89,7 +89,7 @@ export default function Overview(_: any) {
         </p>
       )}
       {(alerts.data || []).length > 0 && <div className="alerts" role="list" aria-label="Needs attention">
-        {alerts.data.slice(0, 6).map((a: any, i: number) => <div key={i} role="listitem" className={`alert ${a.level}`}>{a.repo && <b>{a.repo}</b>}{a.text}<a href={`#/${a.page}`}>Fix</a></div>)}
+        {alerts.data.slice(0, 6).map((a: any, i: number) => <div key={i} role="listitem" className={`alert ${a.level}`}>{a.repo && <b>{a.repo}</b>}{a.text}<a href={`#/${a.page}${a.repo ? `?repo=${encodeURIComponent(a.repo)}` : ""}`}>Fix</a></div>)}
       </div>}
       {repos.data && <GettingStarted repos={list} mem={mem.data} docs={docs.data || []} />}
       <Err msg={repos.error || err} />

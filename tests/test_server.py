@@ -215,6 +215,8 @@ def test_connect_preview_activity_gaps_and_alerts(api):
     assert not (api.repos["py_app"] / ".devmem/usage.jsonl").exists()             # previews are not agent usage
     assert api.get("/api/repos/py_app/activity").json()["sessions"] == []
     assert isinstance(api.get("/api/repos/py_app/gaps").json(), list)
+    doc = api.get("/api/repos/py_app/doctor").json()
+    assert any(r["what"].startswith("MCP server answers") and r["ok"] for r in doc)
     al = api.get("/api/alerts").json()
     assert any(a["repo"] == "conv_app" and "no agent connected" in a["text"] for a in al)
     assert not any(a["repo"] == "py_app" and "no agent connected" in a["text"] for a in al)

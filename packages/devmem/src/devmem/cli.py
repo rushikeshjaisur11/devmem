@@ -390,6 +390,8 @@ def cmd_connect(a) -> int:
         print(f"{r['agent']:<9} {state:<11} {r['file']}  ({r['note']})")
     if a.local:
         print("note: --local wrote this machine's Python path; keep those files out of git")
+    elif cmd == "devmem" and not __import__("shutil").which("devmem"):
+        print("warning: `devmem` is not on PATH here, so agents cannot start it. Install the CLI, or rerun with --local")
     if not (root / ".devmem/index.json").exists():
         print("note: no .devmem/index.json yet: run `devmem-app publish <repo>` so the tools have data")
     return 0
@@ -479,6 +481,8 @@ def run(argv=None, via: str = "cli", root=None) -> int:
     s.set_defaults(fn=cmd_report, nolog=True)
     s = sub.add_parser("mcp", help="serve these commands as MCP tools over stdio (for agents that speak MCP)")
     s.set_defaults(fn=None)
+    s = sub.add_parser("doctor", help="check that agents can use devmem here (CLI, index, AGENTS.md, MCP round trip, agent configs)")
+    s.set_defaults(fn=None)
     s = sub.add_parser("connect", help="register devmem with coding agents in this repo (MCP server + AGENTS.md)")
     s.add_argument("agents", nargs="*", help="claude cursor vscode codex gemini kiro opencode aider windsurf (default: all)")
     s.add_argument("--command", dest="server_cmd", default="devmem", help="how agents start devmem (default: devmem on PATH)")
@@ -490,6 +494,12 @@ def run(argv=None, via: str = "cli", root=None) -> int:
         return serve()
     if a.command == "connect":
         return cmd_connect(a)
+    if a.command == "doctor":
+        import subprocess as _sp
+        from pathlib import Path as _P
+        from . import doctor
+        top = _sp.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+        return doctor.run(_P(top.stdout.strip()) if top.returncode == 0 else _P.cwd())
     if a.command in ("diffcheck", "report"):
         try:
             ix = Index.load()

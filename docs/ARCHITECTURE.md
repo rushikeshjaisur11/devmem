@@ -5,7 +5,7 @@ devmem is two Python packages that meet at a folder of files, `<repo>/.devmem/`.
 | Package | Runs | Depends on | Job |
 | --- | --- | --- | --- |
 | `packages/devmem-app` (`devmem_app`) | your machine, with network | tree-sitter, SCIP indexers (via npx), Graphify, FastAPI | build the index, publish knowledge, serve the web UI |
-| `packages/devmem` (`devmem`) | the agent's sandbox, offline | PyYAML only | read `.devmem/` and answer `find`, `impact`, `tests-for`, `diffcheck`, ... |
+| `packages/devmem` (`devmem`) | the agent's sandbox, offline | PyYAML only | read `.devmem/` and answer `find`, `impact`, `tests-for`, `diffcheck`, ...; also as an MCP server (`devmem mcp`) |
 
 The app never runs or edits your code; it writes only under `.devmem/`, `AGENTS.md` and a Copilot managed block, on a branch you review.
 The agent CLI never imports the app, so the wheel bundled in `plugins/devmem/skills/devmem/vendor` is enough for an agent with no PyPI access.
@@ -58,5 +58,9 @@ Budgets in `knowledge.py`: `AGENTS.md` index 300 tokens, `map.md` 1,500, any oth
 
 - Indexing: `devmem_app/indexer.py`, `scip.py`, `graphify.py`
 - Publishing: `devmem_app/publisher.py`, `commands.py`, `conventions.py`, `ranking.py`
-- Agent queries: `devmem/index.py`, `check.py`, `diffcheck.py`, `memory.py`
+- Agent queries: `devmem/index.py`, `check.py`, `diffcheck.py`, `memory.py`, `review.py` (PR summary, test gaps), `docs.py` (docs for the code being changed)
+- Agent integration: `devmem/mcp.py` (stdlib MCP server over stdio, stateless), `connect.py` (per-agent MCP configs), `doctor.py` (setup checks),
+  `usage.py` (token log in `.devmem/usage.jsonl`); plugin launcher `plugins/devmem/skills/devmem/scripts/mcp_launch.mjs` -> `mcp_server.py`
+- Parsing beyond Python and JS/TS: `devmem_app/treeparse.py` (Go, Java, C#, Kotlin, Rust); edges for them in `graph._typed_edges`
+- Freshness: `devmem_app/watch.py` (re-index when HEAD moves; runs inside `devmem-app ui`)
 - Web UI: `devmem_app/server.py` (API under `/api`), `ui/src` (React, built into `devmem_app/ui_dist`)

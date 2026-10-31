@@ -625,6 +625,11 @@ def create_app() -> FastAPI:
         except ValueError as e:
             raise HTTPException(422, str(e))
 
+    @app.get("/api/repos/{name}/doctor")
+    def doctor_view(name: str):
+        from devmem import doctor
+        return [{"ok": ok, "what": what, "fix": fix} for ok, what, fix in doctor.checks(root_of(name))]
+
     AGENT_VIEW = {"show", "find", "impact", "recall", "outline", "gaps", "helpers"}
 
     @app.get("/api/repos/{name}/agent-view")
@@ -678,7 +683,7 @@ def create_app() -> FastAPI:
             elif d["knowledge_problems"]:
                 out.append({"level": "info", "repo": name, "text": "not published yet: agents have no map", "page": "repos"})
             if not any(cn.status(Path(path)).values()):
-                out.append({"level": "info", "repo": name, "text": "no agent connected (MCP)", "page": "overview"})
+                out.append({"level": "info", "repo": name, "text": "no agent connected (MCP)", "page": "agents"})
         for lib in dm.list_libs():
             if (lib.get("age_days") or 0) > 120:
                 out.append({"level": "warn", "repo": None, "text": f"{lib['name']} docs are {lib['age_days']} days old: refresh them", "page": "docs"})

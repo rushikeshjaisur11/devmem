@@ -1,7 +1,14 @@
 {
   "name": "devmem",
-  "owner": { "name": "devmem" },
+  "owner": {
+    "name": "devmem"
+  },
+  "description": "devmem: code knowledge for coding agents (skills + MCP server).",
   "plugins": [
-    { "name": "devmem", "source": "./plugins/devmem", "description": "Token-lean, minimal-diff coding with a code graph, impact analysis, diff guard and cross-repo lessons." }
+    {
+      "name": "devmem",
+      "source": "./plugins/devmem",
+      "description": "Token-lean, minimal-diff coding with a code graph, impact analysis, diff guard and cross-repo lessons."
+    }
   ]
 }

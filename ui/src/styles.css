@@ -89,7 +89,8 @@ h2 { font: 700 34px/1.1 var(--display); letter-spacing: -.025em; margin: 0 0 8px
 .row:has(> h2) { margin-bottom: 10px; }
 
 /* ---------- surfaces ---------- */
-.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px 22px; margin-bottom: 18px; overflow-x: auto; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px 22px; margin-bottom: 18px; }
+.card:has(table) { overflow-x: auto; }   /* wide tables scroll; other cards let explanations (.term) overflow */
 .card h3 { margin: 0 0 14px; font: 650 17px/1.3 var(--display); letter-spacing: -.01em; color: var(--text); }
 .card > p:first-child { margin-top: 0; }
 .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
@@ -300,10 +301,10 @@ button.quiet.danger { color: var(--bad); }
 
 /* ---------- explanations, checklist, alerts, verdicts ---------- */
 .term { border-bottom: 1.5px dotted var(--text-3); cursor: help; position: relative; outline: none; }
-.term::after { content: attr(data-tip); position: absolute; left: 0; top: calc(100% + 8px); z-index: 30; width: max-content; max-width: 320px; padding: 9px 12px;
-  background: var(--text); color: var(--bg); font: 400 13.5px/1.45 var(--sans); border-radius: 8px; box-shadow: var(--shadow); opacity: 0; pointer-events: none;
-  transform: translateY(-3px); transition: opacity .12s, transform .12s; white-space: normal; text-transform: none; letter-spacing: 0; }
-.term:hover::after, .term:focus-visible::after { opacity: 1; transform: none; }
+.term::after { content: attr(data-tip); position: absolute; left: 0; top: calc(100% + 8px); z-index: 30; width: max-content; max-width: min(320px, 80vw); padding: 9px 12px;
+  background: var(--text); color: var(--bg); font: 400 13.5px/1.45 var(--sans); border-radius: 8px; box-shadow: var(--shadow); pointer-events: none; display: none;   /* not just invisible: hidden popups would still widen the page */
+  white-space: normal; text-transform: none; letter-spacing: 0; animation: fade .12s ease-out; }
+.term:hover::after, .term:focus-visible::after { display: block; }
 .checklist { display: grid; gap: 2px; }
 .check { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; gap: 14px; align-items: center; padding: 12px 4px; border-bottom: 1px solid var(--line); }
 .check:last-child { border-bottom: 0; }
@@ -336,3 +337,7 @@ pre.out { background: var(--surface-2); border: 1px solid var(--line); border-ra
 .session li { padding: 2px 0; }
 .stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 14px 22px; }
 .stats .stat { margin: 0; min-width: 0; }
+
+/* nothing may push the page wider than a phone screen */
+code { overflow-wrap: anywhere; }
+input, select, textarea { max-width: 100%; }

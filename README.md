@@ -96,7 +96,8 @@ Go, Java, Kotlin, C# and Rust are parsed with tree-sitter (name-resolved edges);
 and their edges become type-resolved. Without them those languages are not held to SCIP.
 
 ## Using it with agents
-devmem works four ways; pick what your agent supports (the **Agents** page in the UI does this for you):
+devmem works four ways; pick what your agent supports (the **Agents** page in the UI does this for you). Then run `devmem doctor`
+in the repo: it checks every layer, down to a real MCP round trip, and prints the fix for anything wrong. Details: `docs/INSTALL.md`.
 - **Any agent, CLI only**: `pip install "devmem @ git+https://github.com/rushikeshjaisur11/devmem.git#subdirectory=packages/devmem"`
   (the PyPI name `devmem` is another project). The `AGENTS.md` block tells the agent which commands to run.
 - **MCP, per repo**: `devmem connect` registers the MCP server in each agent's project config, merging into what is there: Claude Code
@@ -104,7 +105,8 @@ devmem works four ways; pick what your agent supports (the **Agents** page in th
   Kiro, OpenCode; Aider gets `read: AGENTS.md` (it has no MCP); Windsurf only has a user-level config, so it prints a snippet.
   `devmem connect cursor codex` picks agents; `--local` uses this Python's path (machine-specific, keep it out of git).
 - **Plugins**: Claude Code `/plugin marketplace add rushikeshjaisur11/devmem` then `/plugin install devmem@devmem` installs the skills
-  and starts the MCP server (needs `python3`; it uses the bundled wheel if devmem is not installed). Gemini CLI:
+  and starts the MCP server (needs Node.js and any Python 3.10+; set `DEVMEM_PYTHON` if Python is not on PATH; nothing else to install).
+  Gemini CLI:
   `gemini extensions install ./plugins/devmem`. Devin: `docs/INSTALL.md`. The skills make agents run `devmem recall`, `reuse`, `docs`,
   `impact`, `check`, `diffcheck` instead of reading files.
 - **Any MCP client** (Claude Code, Cursor, VS Code, ...): `devmem mcp` serves the same commands as tools over stdio (`devmem_recall`,
@@ -150,7 +152,7 @@ devmem works four ways; pick what your agent supports (the **Agents** page in th
 | `reuse`, `docs`, `hub`, `plan` | other repos' code, current library docs, the central hub, step-by-step plan briefs |
 | `tests-for`, `check`, `diffcheck`, `hygiene`, `report` | affected tests, lint/types, minimal-diff guard, PR metrics |
 | `review`, `gaps` | PR summary with blast radius and untested changes; untested code with many callers |
-| `connect` | register devmem with coding agents in this repo (MCP + AGENTS.md) |
+| `connect`, `doctor` | register devmem with coding agents in this repo (MCP + AGENTS.md); check that agents can use it, with fixes |
 
 ## Notes
 - Index and caches are JSON under `<repo>/.devmem/`; app state (workspace, docs store, hub clone, clones) is under `~/.devmem` (`DEVMEM_HOME`).

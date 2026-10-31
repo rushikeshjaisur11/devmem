@@ -57,10 +57,30 @@ function Standalone() {
       <table><tbody>
         <tr><td style={{ width: 190 }}><b>Any agent, CLI only</b></td><td>Install the CLI, then the agent follows the <code>AGENTS.md</code> block: <div className="row" style={{ marginTop: 6 }}><code>{INSTALL}</code><Copy text={INSTALL} /></div></td></tr>
         <tr><td><b>Any MCP client</b></td><td>Add this to the client's MCP settings: <div className="row" style={{ marginTop: 6 }}><code>{MCP_JSON}</code><Copy text={MCP_JSON} /></div></td></tr>
-        <tr><td><b>Claude Code plugin</b></td><td>Installs the skills and starts the MCP server itself (needs <code>python3</code>): <div className="row" style={{ marginTop: 6 }}><code>/plugin marketplace add rushikeshjaisur11/devmem</code> then <code>/plugin install devmem@devmem</code><Copy text={"/plugin marketplace add rushikeshjaisur11/devmem\n/plugin install devmem@devmem"} /></div></td></tr>
+        <tr><td><b>Claude Code plugin</b></td><td>Installs the skills and starts the MCP server itself (needs Node.js and any Python 3.10+; set <code>DEVMEM_PYTHON</code> if Python is not on PATH): <div className="row" style={{ marginTop: 6 }}><code>/plugin marketplace add rushikeshjaisur11/devmem</code> then <code>/plugin install devmem@devmem</code><Copy text={"/plugin marketplace add rushikeshjaisur11/devmem\n/plugin install devmem@devmem"} /></div></td></tr>
         <tr><td><b>Gemini CLI extension</b></td><td>From a clone of devmem: <div className="row" style={{ marginTop: 6 }}><code>gemini extensions install ./plugins/devmem</code><Copy text="gemini extensions install ./plugins/devmem" /></div></td></tr>
         <tr><td><b>Devin</b></td><td>Install the plugin in <code>plugins/devmem</code> (see docs/INSTALL.md); its skills run the CLI.</td></tr>
       </tbody></table>
+    </div>
+  );
+}
+
+function Doctor({ repo }: { repo: string }) {
+  const [rows, setRows] = useState<any[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  useEffect(() => setRows(null), [repo]);
+  const run = async () => { setBusy(true); setErr(""); try { setRows(await api.get(`/api/repos/${repo}/doctor`)); } catch (e: any) { setErr(e.message); } setBusy(false); };
+  const bad = (rows || []).filter((r) => r.ok === false).length;
+  return (
+    <div className="card">
+      <div className="row"><h3 style={{ margin: 0 }}>Check setup</h3><span className="grow" /><button disabled={!repo || busy} onClick={run}>{busy ? "Checking…" : "Run checks"}</button></div>
+      <p className="hint" style={{ margin: "6px 0 0" }}>Runs <code>devmem doctor</code>: Python, the CLI on PATH, a fresh index, the AGENTS.md block, a real MCP round trip, and every agent config in the repo.</p>
+      <Err msg={err} />
+      {rows && <table style={{ marginTop: 10 }}><tbody>{rows.map((r, i) => (
+        <tr key={i}><td style={{ width: 90 }}><Badge kind={r.ok ? "good" : r.ok === null ? "warn" : "bad"}>{r.ok ? "ok" : r.ok === null ? "note" : "fix"}</Badge></td><td>{r.what}{!r.ok && <div className="muted" style={{ fontSize: 13.5 }}>{r.fix}</div>}</td></tr>
+      ))}</tbody></table>}
+      {rows && <p className={bad ? "err" : "ok"}>{bad ? `${bad} problem${bad === 1 ? "" : "s"} to fix.` : "Agents can use devmem in this repo."}</p>}
     </div>
   );
 }
@@ -120,6 +140,7 @@ export default function Agents({ params }: { params: Record<string, string> }) {
       <div className="row"><h2>Agents</h2>{repos.data && <RepoSelect value={repo} onChange={setRepo} repos={repos.data} />}</div>
       <p className="sub">Connect the coding agents you use, see exactly what they read from devmem, and check what they asked for.</p>
       <Connect repo={repo} onDone={repos.reload} />
+      <Doctor repo={repo} />
       <Preview repo={repo} />
       <Activity repo={repo} />
       <Standalone />

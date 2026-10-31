@@ -5,8 +5,10 @@
   "contextFileName": "AGENTS.md",
   "mcpServers": {
     "devmem": {
-      "command": "python3",
-      "args": ["${extensionPath}${/}skills${/}devmem${/}scripts${/}mcp_server.py"],
+      "command": "node",
+      "args": [
+        "${extensionPath}${/}skills${/}devmem${/}scripts${/}mcp_launch.mjs"
+      ],
       "cwd": "${workspacePath}"
     }
   }

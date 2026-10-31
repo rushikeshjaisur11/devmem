@@ -4,7 +4,7 @@ import { Badge, EditorLink, editorHref, Empty, Err, RepoSelect, Term, riskOf, us
 import { nav } from "../route";
 
 const List = ({ title, items, repo, hint, link }: { title: any; items: any[]; repo: string; hint?: string; link: (id: string) => string | undefined }) => (
-  <div className="card"><h3>{title} <span className="muted">({items.length})</span></h3>{hint && <p className="muted" style={{ marginTop: 0 }}>{hint}</p>}
+  <div className="card"><h3>{title} <span className="muted">({items.length})</span></h3>{hint && items.length > 0 && <p className="muted" style={{ marginTop: 0 }}>{hint}</p>}
     {items.length ? <div className="list">{items.map((i) => {
       const id = typeof i === "string" ? i : i.id || i.job;
       return <div key={id}><a className="mono" onClick={() => id.includes("#") && nav("impact", { repo, target: id })}>{id}</a>{i.conf ? <span className="muted"> [{i.conf}]</span> : null}<EditorLink href={link(id)} /></div>;
@@ -51,12 +51,14 @@ export default function Impact({ params }: { params: Record<string, string> }) {
       {res?.kind === "symbol" && (() => {
         const name = res.targets[0]?.split("#")[1] || target, risk = riskOf(res.hop1.length, res.tests.length, !!res.capped?.length);
         const tests = res.tests.length ? `${res.tests.length} test${res.tests.length === 1 ? "" : "s"} reach it, so run those after the change` : "no test reaches it, so add one before you change it";
-        const who = res.hop1.length ? `${res.hop1.length} function${res.hop1.length === 1 ? "" : "s"} call${res.hop1.length === 1 ? "s" : ""} it directly${res.hop2.length ? ` and ${res.hop2.length} more depend on those` : ""}` : "nothing in this repo calls it";
+        const cap = (res.capped || []).find((c: any) => res.targets.includes(c.symbol));   // too many callers to list one by one
+        const who = cap ? `${cap.callers} places call it (a widely used utility, so they are not listed one by one)`
+          : res.hop1.length ? `${res.hop1.length} function${res.hop1.length === 1 ? "" : "s"} call${res.hop1.length === 1 ? "s" : ""} it directly${res.hop2.length ? ` and ${res.hop2.length} more depend on those` : ""}` : "nothing in this repo calls it";
         return <div className={`card verdict ${risk}`}><p>Changing <code>{name}</code>: {who}; {tests}.</p>
           <div className="tags"><span className={`badge ${risk === "high" ? "bad" : risk === "medium" ? "warn" : "good"}`}>{risk} risk</span>{res.capped?.length ? <span className="tag">widely used utility: change it backwards-compatibly</span> : null}<span className="tag">{res.files.length} file{res.files.length === 1 ? "" : "s"} in scope</span></div></div>;
       })()}
       {res?.kind === "symbol" && <>
-        <div className="card"><span className="stat"><b>{res.hop1.length}</b><span>direct callers</span></span><span className="stat"><b>{res.hop2.length}</b><span>indirect callers</span></span><span className="stat"><b>{res.tests.length}</b><span>tests reach it</span></span><span className="stat"><b>{res.files.length}</b><span>files</span></span>
+        <div className="card"><span className="stat"><b>{(res.capped || []).find((c: any) => res.targets.includes(c.symbol))?.callers ?? res.hop1.length}</b><span>direct callers</span></span><span className="stat"><b>{res.hop2.length}</b><span>indirect callers</span></span><span className="stat"><b>{res.tests.length}</b><span>tests reach it</span></span><span className="stat"><b>{res.files.length}</b><span>files</span></span>
           {res.capped?.length ? <div>{res.capped.map((c: any) => <Badge key={c.symbol} kind="warn">{c.symbol} has {c.callers} callers: widely used</Badge>)}</div> : null}</div>
         <List title={<><Term k="hop1">Direct callers</Term>: must still work</>} items={res.hop1} repo={repo} link={link} hint="[structural] = resolved from imports, [ambiguous] = several functions share the name: check it in the code." />
         <List title={<><Term k="hop2">Indirect callers</Term>: check what they rely on</>} items={res.hop2} repo={repo} link={link} />
