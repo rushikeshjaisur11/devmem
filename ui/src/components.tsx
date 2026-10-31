@@ -27,6 +27,36 @@ export function RepoSelect({ value, onChange, repos, indexedOnly = true }: { val
   );
 }
 
+/* ---------- plain-language explanations for devmem's terms ---------- */
+export const GLOSSARY: Record<string, string> = {
+  hop1: "Functions that call this one directly. Each must still work after your change.",
+  hop2: "Functions that call those callers. Only check that what they rely on (arguments, return shape) is unchanged.",
+  structural: "Link found by resolving imports and names. Usually right.",
+  ambiguous: "Several functions share this name and devmem could not tell which one is meant. Check it in the code.",
+  precise: "Link confirmed by a type-aware indexer (SCIP).",
+  index: "devmem's map of the repo: functions, who calls whom, tests and tables. Rebuilt when files change.",
+  stale: "The repo has commits newer than its map, so agents may see old code until it is re-indexed.",
+  publish: "Writes the map agents read (.devmem/ and a short AGENTS.md block) into the repo. Nothing else is changed.",
+  knowledge: "Short Markdown files agents read instead of whole source files.",
+  session: "What every agent conversation in this repo starts with: the devmem block in AGENTS.md.",
+  tokens: "The units an AI model reads, about 4 characters each. Fewer tokens means cheaper and faster agents.",
+  mcp: "Model Context Protocol: lets an agent call devmem as tools instead of running shell commands.",
+  hub: "One git repo that collects every repo's catalog, so agents can reuse code across repos.",
+  lineage: "Which jobs write and read each table, and how columns flow between them.",
+  gap: "Code that many places call but no test reaches. A bug there spreads far and nothing catches it.",
+};
+export const Term = ({ k, children }: { k: string; children: any }) => (
+  <span className="term" tabIndex={0} data-tip={GLOSSARY[k]} aria-label={`${typeof children === "string" ? children : ""}: ${GLOSSARY[k]}`}>{children}</span>
+);
+
+/** Same risk rule as `devmem review`: many callers, or callers but no test, is high. */
+export const riskOf = (hop1: number, tests: number, capped: boolean) => capped || hop1 >= 5 || (hop1 > 0 && tests === 0) ? "high" : tests === 0 || hop1 > 0 ? "medium" : "low";
+
+export function Copy({ text, label = "Copy" }: { text: string; label?: string }) {
+  const [done, setDone] = useState(false);
+  return <button className="quiet" onClick={async () => { try { await navigator.clipboard.writeText(text); setDone(true); setTimeout(() => setDone(false), 1500); } catch { /* clipboard blocked: text stays selectable */ } }}>{done ? "Copied" : label}</button>;
+}
+
 /* ---------- open in editor ---------- */
 export const EDITORS: Record<string, [string, string]> = { vscode: ["VS Code", "vscode://file/"], cursor: ["Cursor", "cursor://file/"], none: ["Off", ""] };
 export const getEditor = () => { try { return localStorage.getItem("devmem-editor") || "vscode"; } catch { return "vscode"; } };

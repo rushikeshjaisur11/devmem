@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useRoute, nav } from "./route";
 import { EDITORS, ErrorBoundary, getEditor, useRepos } from "./components";
 const Overview = lazy(() => import("./pages/Overview"));
+const Agents = lazy(() => import("./pages/Agents"));
 const Repos = lazy(() => import("./pages/Repos"));
 const Impact = lazy(() => import("./pages/Impact"));
 const Hygiene = lazy(() => import("./pages/Hygiene"));
@@ -15,6 +16,7 @@ const Docs = lazy(() => import("./pages/Docs"));
 
 const ic = (d: string) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" dangerouslySetInnerHTML={{ __html: d }} />;
 const ICONS: Record<string, string> = {
+  agents: '<rect x="4" y="7" width="16" height="12" rx="3"/><path d="M12 3v4M9 12h.01M15 12h.01M9 16h6"/>',
   overview: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.2"/>',
   docs: '<path d="M4 4h12a4 4 0 0 1 4 4v12H8a4 4 0 0 1-4-4z"/><path d="M8 9h8M8 13h6"/>',
   hub: '<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/>',
@@ -27,11 +29,11 @@ const ICONS: Record<string, string> = {
   chat: '<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/>',
   metrics: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
 };
-const GROUPS: [string, string[]][] = [["Workspace", ["overview", "repos"]], ["Understand code", ["impact", "graph", "lineage"]], ["Guide agents", ["chat", "memory", "docs", "hub"]], ["Quality", ["hygiene", "metrics"]]];
+const GROUPS: [string, string[]][] = [["Start here", ["overview", "agents", "repos"]], ["Before you change code", ["impact", "graph", "lineage"]], ["Guide agents", ["chat", "memory", "docs", "hub"]], ["Health", ["hygiene", "metrics"]]];
 const PAGES: [string, string, any][] = [
-  ["overview", "Overview", Overview], ["repos", "Repos", Repos], ["impact", "Impact", Impact], ["graph", "Graph", Graph],
-  ["lineage", "Lineage", Lineage], ["hygiene", "Hygiene", Hygiene], ["memory", "Lessons & rules", Memory], ["docs", "Library docs", Docs], ["hub", "Knowledge hub", Hub],
-  ["chat", "Chat", Chat], ["metrics", "Metrics", Metrics],
+  ["overview", "Overview", Overview], ["agents", "Agents", Agents], ["repos", "Repos", Repos], ["impact", "What breaks if…", Impact], ["graph", "Code map", Graph],
+  ["lineage", "Data flow", Lineage], ["hygiene", "Code health", Hygiene], ["memory", "Lessons & rules", Memory], ["docs", "Library docs", Docs], ["hub", "Team hub", Hub],
+  ["chat", "Ask & plan", Chat], ["metrics", "Results", Metrics],
 ];
 const LABEL = Object.fromEntries(PAGES.map((p) => [p[0], p[1]]));
 

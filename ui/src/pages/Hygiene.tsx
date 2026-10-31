@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { api } from "../api";
-import { Badge, EditorLink, Empty, Err, LineChart, RepoSelect, editorHref, useAsync, useRepos } from "../components";
+import { Badge, Copy, EditorLink, Empty, Err, LineChart, RepoSelect, Term, editorHref, useAsync, useRepos } from "../components";
 
 /** What each tool measures, in the words a reader uses. */
 const KINDS: [string, string][] = [["ruff", "Lint"], ["vulture", "Dead code"], ["radon", "Complexity"], ["bandit", "Security"],
@@ -19,6 +19,7 @@ export default function Hygiene({ params }: { params: Record<string, string> }) 
   const [copied, setCopied] = useState("");
   const h = useAsync(() => (repo ? api.get(`/api/repos/${repo}/hygiene`) : Promise.resolve(null)), [repo]);
   const d = h.data;
+  const gaps = useAsync(() => (repo ? api.get(`/api/repos/${repo}/gaps?limit=8`) : Promise.resolve([])), [repo]);
   const run = async () => { setBusy(true); setErr(""); try { await api.post(`/api/repos/${repo}/hygiene`); h.reload(); } catch (e: any) { setErr(e.message); } setBusy(false); };
   const all: any[] = d?.issues || [];
   const scoped = all.filter((i) => !tool || i.tool === tool);
@@ -35,7 +36,7 @@ export default function Hygiene({ params }: { params: Record<string, string> }) 
   return (
     <>
       <div className="row">
-        <h2>Hygiene</h2>
+        <h2>Code health</h2>
         {repos.data && <RepoSelect value={repo} onChange={setRepo} repos={repos.data} />}
         <button className="primary" disabled={!repo || busy} onClick={run}>{busy ? "Running tools…" : "Run hygiene"}</button>
       </div>
@@ -80,6 +81,18 @@ export default function Hygiene({ params }: { params: Record<string, string> }) 
             {trend.length > 1 && <div style={{ marginTop: 18 }}><LineChart points={trend} label="Total findings" height={150} /></div>}
           </div>
         </div>
+        {(gaps.data || []).length > 0 && <div className="card">
+          <h3><Term k="gap">Untested code</Term> that many places call</h3>
+          <p className="hint" style={{ marginTop: -6 }}>A bug here spreads to every caller and no test would catch it. One test for each of the top few is the cheapest safety you can add. Agents get this list from <code>devmem gaps</code>.</p>
+          {gaps.data.map((g: any) => (
+            <div className="hy-file" key={g.id}>
+              <span className="mono" title={g.doc || undefined}>{g.id.split("#")[1]} <span className="muted">{g.file}:{g.line}</span></span>
+              <span className="muted">{g.callers} callers in {g.files} file{g.files === 1 ? "" : "s"}</span>
+              <EditorLink href={editorHref(repos.data, repo, g.file, g.line)} />
+              <Copy label="Copy test prompt" text={`Write focused tests for ${g.id} (${g.callers} callers, no test reaches it). Run \`devmem show ${g.id}\` to read it and \`devmem impact ${g.id}\` for how callers use it. Cover the behaviour callers rely on; change no production code.`} />
+            </div>
+          ))}
+        </div>}
         <div className="card">
           <div className="row" style={{ marginBottom: 10 }}>
             <h3 style={{ margin: 0 }}>{tool ? KIND[tool] : "All findings"}</h3>

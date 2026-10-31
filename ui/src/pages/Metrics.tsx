@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { api } from "../api";
-import { Badge, Bars, EditorLink, Empty, Err, LineChart, RepoSelect, editorHref, useAsync, useRepos } from "../components";
+import { Badge, Bars, EditorLink, Empty, Err, RepoSelect, editorHref, useAsync, useRepos } from "../components";
 
 const fmt = (v: any) => (v === null || v === undefined ? "–" : v);
 
@@ -50,21 +50,28 @@ export default function Metrics({ params }: { params: Record<string, string> }) 
   const [repo, setRepo] = useState(params.repo || "");
   const m = useAsync(() => (repo ? api.get(`/api/repos/${repo}/metrics`) : Promise.resolve(null)), [repo]);
   const d = m.data;
-  const trend = (d?.hygiene_trend || []).map((t: any) => ({ x: t.ts.slice(0, 10), y: Object.values(t.counts as Record<string, number>).reduce((a, b) => a + b, 0) }));
+  const usage = (repos.data || []).find((r) => r.name === repo)?.usage;
+  const pm = d?.pr_metrics;
+  const agentNow = pm ? (pm.split ? pm.agent.after : pm.agent.all) : null;
   return (
     <>
-      <div className="row" style={{ marginBottom: 6 }}><h2 style={{ margin: 0 }}>Metrics</h2>{repos.data && <RepoSelect value={repo} onChange={setRepo} repos={repos.data} />}</div>
-      <p className="sub">Repo health and knowledge quality. Agent diff size before and after devmem, PR reports and Devin usage.</p>
+      <div className="row" style={{ marginBottom: 6 }}><h2>Results</h2>{repos.data && <RepoSelect value={repo} onChange={setRepo} repos={repos.data} />}</div>
+      <p className="sub">Is devmem paying off? Smaller agent changes, fewer tokens, and lessons agents found useful.</p>
       <Err msg={m.error} />
       {d && <>
-        <div className="card">
-          {[["symbols", d.symbols], ["tests", d.tests], ["files", d.files], ["lessons", d.lessons], ["rules", d.rules], ["recalls rated useful", d.feedback.useful], ["rated useless", d.feedback.useless]].map(([k, v]) => <span className="stat" key={k as string}><b>{v}</b><span>{k}</span></span>)}
+        <p className="lede" style={{ fontSize: 20 }}>
+          {usage?.calls ? <>Agents asked devmem <b>{usage.calls.toLocaleString()} questions</b> here and got <mark>{usage.out_tokens.toLocaleString()} tokens</mark> of answers instead of ~{usage.file_tokens.toLocaleString()} tokens of files. </> : <>No agent queries logged on this machine yet. </>}
+          {pm?.split && pm.agent.before.median_lines != null && pm.agent.after.median_lines != null
+            ? <>Agent commits changed a median of <b>{pm.agent.after.median_lines} lines</b> since devmem, compared with {pm.agent.before.median_lines} before.</>
+            : agentNow?.median_lines != null ? <>Agent commits change a median of <b>{agentNow.median_lines} lines</b>.</> : null}
+        </p>
+        <div className="card stats">
+          {[["symbols indexed", d.symbols], ["tests", d.tests], ["files", d.files], ["lessons", d.lessons], ["rules", d.rules], ["lessons rated useful", d.feedback.useful], ["rated not useful", d.feedback.useless]].map(([k, v]) => <span className="stat" key={k as string}><b>{(v as number).toLocaleString()}</b><span>{k}</span></span>)}
         </div>
         <div className="card"><h3>Knowledge freshness</h3>
           {d.knowledge_problems.length === 0 ? <Badge kind="good">all knowledge files fresh and within budget</Badge> : <ul style={{ margin: 0, paddingLeft: 18 }}>{d.knowledge_problems.map((p: string) => <li key={p}>{p}</li>)}</ul>}
         </div>
-        <div className="card"><h3>Hygiene findings over runs</h3><LineChart points={trend} label="Hygiene findings" /></div>
-        <div className="card"><h3>Hotspots (change carefully)</h3>
+        <div className="card"><h3>Files that change most (edit with care)</h3>
           {d.hotspots.length ? <table><thead><tr><th>File</th><th className="num">Commits</th><th className="num">Bug fixes</th><th className="num">Authors</th><th>Last change</th></tr></thead><tbody>
             {d.hotspots.map((h: any) => <tr key={h.file}><td className="mono">{h.file}<EditorLink href={editorHref(repos.data, repo, h.file)} /></td><td className="num">{h.commits}</td><td className="num">{h.bugfix}</td><td className="num">{h.authors}</td><td>{h.last}</td></tr>)}
           </tbody></table> : <Empty>No hotspots yet: publish a repo that has git history.</Empty>}

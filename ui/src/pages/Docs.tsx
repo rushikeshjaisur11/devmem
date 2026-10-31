@@ -42,7 +42,12 @@ export default function Docs(_: any) {
       <div className="card">
         <div className="row" style={{ justifyContent: "space-between" }}>
           <h3 style={{ margin: 0 }}>Libraries on file ({list.length})</h3>
-          <button disabled={busy === "refresh" || !list.length} onClick={() => run("refresh", () => api.post("/api/docs/refresh"), (r) => Object.entries(r).map(([k, v]) => `${k}: ${v}`).join(" · "))}>{busy === "refresh" ? "Refreshing…" : "Refresh all"}</button>
+          <div className="row">
+            <button disabled={busy === "notes" || !list.length || !repo} title="Release notes between the version the repo uses and the latest, saved with each library's docs"
+              onClick={() => run("notes", () => api.post("/api/docs/upgrade-notes", { repo }), (r) => Object.keys(r).length ? Object.entries(r).map(([k, v]) => `${k}: ${v}`).join("; ") + ". Publish the repo to ship them." : `${repo} is on the latest version of every library with docs here.`)}>
+              {busy === "notes" ? "Fetching…" : `Upgrade notes for ${repo || "repo"}`}</button>
+            <button disabled={busy === "refresh" || !list.length} onClick={() => run("refresh", () => api.post("/api/docs/refresh"), (r) => Object.entries(r).map(([k, v]) => `${k}: ${v}`).join(" · "))}>{busy === "refresh" ? "Refreshing…" : "Refresh all"}</button>
+          </div>
         </div>
         {!list.length ? <Empty>No docs yet. Add a library above.</Empty> : (
           <table style={{ marginTop: 8 }}>

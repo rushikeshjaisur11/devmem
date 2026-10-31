@@ -62,7 +62,7 @@ export default function Graph({ params }: { params: Record<string, string> }) {
 
   return (
     <>
-      <h2>Graph</h2>
+      <h2>Code map</h2>
       <p className="sub">{focus ? <>Neighbourhood of <b>{focus.split("#")[1] || focus}</b>: who calls it, what it calls, and the tests that cover it.</> : "How your repos fit together: modules inside each repo, calls between them, and tables that link repos. Search a symbol to zoom into its call neighbourhood."}</p>
 
       <div className="gtools">

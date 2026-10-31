@@ -36,11 +36,19 @@ export default function Chat() {
   const open = (h: any) => h.kind === "doc" ? window.open(h.path, "_blank", "noopener") : h.kind === "lesson" || h.kind === "rule" ? nav("memory", { repo: h.repo })
     : nav("impact", { repo: h.repo, target: h.ref });
   const openable = (h: any) => ["doc", "lesson", "rule", "symbol", "test"].includes(h.kind);
+  // examples from the user's own code: the most-called functions of the first indexed repo
+  const first = (repos.data || []).find((r) => r.indexed)?.name;
+  const examples = useAsync(async () => {
+    if (!first) return [];
+    const g: any[] = await api.get(`/api/repos/${first}/gaps?limit=2`);
+    const names = g.map((x) => x.id.split("#")[1]);
+    return names.length ? [`who calls ${names[0]}?`, ...(names[1] ? [`add a test for ${names[1]}`] : [])] : ["where is retry logic?"];
+  }, [first]);
 
   return (
     <>
-      <h2>Chat</h2>
-      <p className="sub">Talk to your repos. Questions get answers that point to code and current library docs. Something new to build, or a plan you wrote, gets a compact prompt for the agent that will do the work: what your org already built, what the libraries now provide built in, and what not to touch.</p>
+      <h2>Ask &amp; plan</h2>
+      <p className="sub">Ask a question and get answers that point to code and current library docs. Describe something to build, or paste a plan, and get a short prompt to hand to your agent: what already exists, what the libraries provide, and what not to touch.</p>
       <div className="card">
         <textarea ref={box} value={text} rows={2} placeholder={HINT} aria-label="Message" style={{ minHeight: 56, resize: "none" }}
           onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(text); } }} />
@@ -64,7 +72,9 @@ export default function Chat() {
           </div>
         </details>
       </div>
-      {msgs.length === 0 && <p className="muted">Try “who reads mart.sales_report”, “add retry with backoff to the export job”, or paste a step-by-step plan.</p>}
+      {msgs.length === 0 && <div className="examples"><span className="muted">Try:</span>
+        {(examples.data || []).map((x: string) => <button key={x} className="chip" onClick={() => send(x)}>{x}</button>)}
+        <span className="muted">or paste a step-by-step plan.</span></div>}
       {[...msgs].reverse().map((m, k) => {
         const idx = msgs.length - 1 - k, r = m.res;
         const impl = r?.intent === "implement";

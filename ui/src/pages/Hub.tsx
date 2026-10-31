@@ -1,11 +1,6 @@
 import { useState } from "react";
 import { api } from "../api";
-import { Badge, Empty, Err, useAsync } from "../components";
-
-function Copy({ text }: { text: string }) {
-  const [ok, setOk] = useState(false);
-  return <button onClick={() => navigator.clipboard?.writeText(text).then(() => { setOk(true); setTimeout(() => setOk(false), 1400); })}>{ok ? "Copied" : "Copy"}</button>;
-}
+import { Badge, Copy, Empty, Err, useAsync } from "../components";
 
 export default function Hub(_: any) {
   const st = useAsync(() => api.get("/api/hub"), []);
@@ -27,8 +22,8 @@ export default function Hub(_: any) {
   const snippet = h?.spec && h.agent_visible ? h.spec : "https://github.com/<org>/<hub-repo>.git";
   return (
     <>
-      <h2>Knowledge hub</h2>
-      <p className="sub">One git repo that holds what every onboarded repo knows: searchable code catalogs, overviews, maps and shared lessons. Agents read the hub instead of each repo carrying copies of the others.</p>
+      <h2>Team hub</h2>
+      <p className="sub">Use this when you have several repos: one shared git repo collects what each of them knows, so an agent working in one repo can find and reuse code another repo already has.</p>
       <Err msg={st.error || err} />
       {msg && <div className="ok">{msg}</div>}
 
@@ -81,7 +76,7 @@ export default function Hub(_: any) {
       )}
 
       <div className="card">
-        <h3>3 · Point Devin (or any agent) at it</h3>
+        <h3>{h?.configured ? 3 : 2} · Point your agents at it</h3>
         <ol style={{ margin: 0, paddingLeft: 20, lineHeight: 1.8 }}>
           <li>Give the agent read access to the hub repo (in Devin: add it to the repositories Devin can use, or make sure its GitHub integration covers it).</li>
           <li>Either run <b>Publish</b> on each repo and merge the PR, which commits <code>.devmem/hub.txt</code> containing the hub URL, or set an environment variable for every session:

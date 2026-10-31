@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import { Badge, Empty, Err, useRepos } from "../components";
+import { Badge, Empty, Err, Term, useRepos } from "../components";
 
 function BranchPicker({ repo, disabled, onSwitch }: { repo: any; disabled: boolean; onSwitch: (b: string) => void }) {
   const [branches, setBranches] = useState<string[]>([]);
@@ -71,7 +71,7 @@ export default function Repos(_: any) {
       <div className="card">
         {loading ? <Empty>Loading…</Empty> : !data?.length ? <Empty>No repos yet. Add one above.</Empty> : (
           <table>
-            <thead><tr><th>Repo</th><th>Branch</th><th>Status</th><th className="num">Symbols</th><th>Languages</th><th>Hygiene findings</th><th></th></tr></thead>
+            <thead><tr><th>Repo</th><th>Branch</th><th><Term k="index">Status</Term></th><th className="num">Symbols</th><th>Languages</th><th>Hygiene findings</th><th></th></tr></thead>
             <tbody>
               {data.map((r) => (
                 <tr key={r.name}>

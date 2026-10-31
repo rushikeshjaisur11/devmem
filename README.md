@@ -4,7 +4,7 @@ Code knowledge for AI coding agents (Devin, Claude Code, Copilot, Cursor), so th
 devmem **never runs or changes your code**: it indexes your repos, publishes compact knowledge files agents read instead of whole
 files, and builds prompts for the agent that will do the work.
 
-- **Index** repos into a call/test/table graph (Python, JS/TS, Go, Java, SQL, Spark) with blast-radius analysis, test selection and lineage.
+- **Index** repos into a call/test/table graph (Python, JS/TS, Go, Java, C#, Kotlin, Rust, SQL, Spark) with blast-radius analysis, test selection and lineage.
 - **Publish** `.devmem/` knowledge into each repo plus an `AGENTS.md` block; agents query it offline with the small `devmem` CLI.
 - **Cross-repo reuse**: find what other repos already built, rated by effort to adapt; share it through a central **hub** git repo.
 - **Library docs** (llms.txt, web pages, PyPI, npm, or a local docs folder) fetched where there is internet and shipped to agents that have none; reuse
@@ -30,7 +30,7 @@ Everything accuracy depends on is a hard dependency (see below). Agents only nee
 ```
 devmem-app add /path/to/repo               # or a Git URL; clones into ~/.devmem/clones/<name>
 devmem-app publish /path/to/repo --commit  # writes .devmem/ + AGENTS.md on branch devmem/knowledge-sync; you push and merge it
-devmem-app ui                              # http://127.0.0.1:8765 (Overview, Repos, Impact, Graph, Chat, ...; Ctrl+K to jump)
+devmem-app ui                              # http://127.0.0.1:8765 (Overview, Agents, What breaks if…, Ask & plan, ...; Ctrl+K)
 cd /path/to/repo && devmem find "retry logic" && devmem impact retry
 ```
 The UI is prebuilt. To change it: `cd ui && npm ci && npm run dev` (proxies to `devmem-app ui --no-open`), then `npm run build`.
@@ -46,7 +46,8 @@ devmem-app publish C:\work\orders-etl --commit   # writes .devmem/ + AGENTS.md o
 ```
 Push that branch and merge it. **Overview** now shows what agents load per session (~150 tokens) and what each knowledge file costs.
 
-**2. Give the agent the skill.** Install the plugin (`docs/INSTALL.md`). From then on the agent starts every task with `recall` and uses
+**2. Connect your agent.** On the **Agents** page tick your agents and press *Connect* (or run `devmem connect` in the repo), or install
+the plugin (`docs/INSTALL.md`). The Overview checklist ticks this off. From then on the agent starts every task with `recall` and uses
 the commands below instead of opening files. A typical agent turn:
 ```
 $ devmem find "retry"
@@ -91,10 +92,21 @@ SCIP (type-resolved edges), Graphify (an independent tree-sitter call graph) and
 indexing stops with the fix instead of quietly producing a worse index. `--fast` / `DEVMEM_ACCURACY=fast` is the explicit opt-out for CI;
 it is recorded in the index and shown as "reduced accuracy" in the UI. Measured on psf/requests, edge precision rose from 0.81 to
 0.92 with tightened name resolution and to 0.99 where Graphify agrees; with SCIP edges are type-resolved. Details: `docs/ACCURACY.md`.
+Go, Java, Kotlin, C# and Rust are parsed with tree-sitter (name-resolved edges); when `scip-go` or `scip-java` is installed it runs too
+and their edges become type-resolved. Without them those languages are not held to SCIP.
 
 ## Using it with agents
-- **Devin / Claude Code / Copilot**: install the plugin (`docs/INSTALL.md`); its skills make agents run `devmem recall`, `reuse`, `docs`,
-  `impact`, `check`, `diffcheck` instead of reading files. The wheel is bundled, so no PyPI access is needed.
+devmem works four ways; pick what your agent supports (the **Agents** page in the UI does this for you):
+- **Any agent, CLI only**: `pip install "devmem @ git+https://github.com/rushikeshjaisur11/devmem.git#subdirectory=packages/devmem"`
+  (the PyPI name `devmem` is another project). The `AGENTS.md` block tells the agent which commands to run.
+- **MCP, per repo**: `devmem connect` registers the MCP server in each agent's project config, merging into what is there: Claude Code
+  (`.mcp.json`, plus `@AGENTS.md` in `CLAUDE.md`), Cursor, VS Code/Copilot, Codex (`.codex/config.toml`, trusted projects), Gemini CLI,
+  Kiro, OpenCode; Aider gets `read: AGENTS.md` (it has no MCP); Windsurf only has a user-level config, so it prints a snippet.
+  `devmem connect cursor codex` picks agents; `--local` uses this Python's path (machine-specific, keep it out of git).
+- **Plugins**: Claude Code `/plugin marketplace add rushikeshjaisur11/devmem` then `/plugin install devmem@devmem` installs the skills
+  and starts the MCP server (needs `python3`; it uses the bundled wheel if devmem is not installed). Gemini CLI:
+  `gemini extensions install ./plugins/devmem`. Devin: `docs/INSTALL.md`. The skills make agents run `devmem recall`, `reuse`, `docs`,
+  `impact`, `check`, `diffcheck` instead of reading files.
 - **Any MCP client** (Claude Code, Cursor, VS Code, ...): `devmem mcp` serves the same commands as tools over stdio (`devmem_recall`,
   `devmem_find`, `devmem_show`, `devmem_impact`, `devmem_docs`, ...), stdlib only. Add it to the repo's `.mcp.json`:
   `{"mcpServers": {"devmem": {"command": "devmem", "args": ["mcp"]}}}` (set `DEVMEM_ROOT` if the client starts it elsewhere).
@@ -113,6 +125,12 @@ it is recorded in the index and shown as "reduced accuracy" in the UI. Measured 
   numbered list or `- [ ]`, optional `Docs:` / `Constraints:` lines) becomes a prompt with the existing org solution, `MODERNIZE` notes,
   current docs, what the target repo already has and protected paths. Read-only: nothing is written to any repo.
   CLI: `devmem-app prompt --into <repo> --need "..."` or `--plan plan.md`.
+- **PR review in CI**: the GitHub workflow in `.devmem/ci/github-actions.yml` posts `devmem review` on every PR (changed symbols, their
+  callers, which have no test, risk, affected tests) and runs the diff guard. `devmem gaps` lists widely used code no test reaches.
+- **Upgrade notes**: `devmem-app docs upgrade-notes <repo>` stores the GitHub release notes between the version a repo uses and the latest
+  with that library's docs; agents are pointed at them when versions differ. Set `GITHUB_TOKEN` to avoid API rate limits.
+- **Offline meaning-based search in Chat**: `pip install -e "packages/devmem-app[embed]"` and set `DEVMEM_LOCAL_EMBED=1` (downloads a
+  small model once, then runs on CPU).
 - **Optional LLM features** (Vertex): `pip install google-genai`, set `DEVMEM_VERTEX_PROJECT` (and `DEVMEM_VERTEX_EMBED_MODEL`) for written
   chat answers and embedding-based ranking; `hub push --summarize` has the LLM describe functions so offline keyword search matches by meaning.
 
@@ -121,7 +139,7 @@ it is recorded in the index and shown as "reduced accuracy" in the UI. Measured 
 |---|---|
 | `add`, `index`, `publish`, `ui`, `watch` | onboard, re-index, write knowledge into a repo, web UI, re-index when HEAD moves |
 | `reuse`, `prompt`, `ask`, `find` | cross-repo reuse, agent prompts, retrieval across repos |
-| `hub set/push/status`, `docs add/list/refresh/remove`, `libs` | central hub, library docs, dependency freshness |
+| `hub set/push/status`, `docs add/list/refresh/remove/upgrade-notes`, `libs` | central hub, library docs, upgrade notes, dependency freshness |
 | `hygiene`, `clones`, `verify`, `flaky`, `impact-column`, `schema`, `memory`, `metrics` | lint/dead-code/complexity, duplicates, test commands, lineage, lessons, PR metrics |
 
 | `devmem` (agents, offline) | |
@@ -131,6 +149,8 @@ it is recorded in the index and shown as "reduced accuracy" in the UI. Measured 
 | `recall`, `remember`, `feedback` | lessons, rules and cross-repo pointers for a task |
 | `reuse`, `docs`, `hub`, `plan` | other repos' code, current library docs, the central hub, step-by-step plan briefs |
 | `tests-for`, `check`, `diffcheck`, `hygiene`, `report` | affected tests, lint/types, minimal-diff guard, PR metrics |
+| `review`, `gaps` | PR summary with blast radius and untested changes; untested code with many callers |
+| `connect` | register devmem with coding agents in this repo (MCP + AGENTS.md) |
 
 ## Notes
 - Index and caches are JSON under `<repo>/.devmem/`; app state (workspace, docs store, hub clone, clones) is under `~/.devmem` (`DEVMEM_HOME`).
