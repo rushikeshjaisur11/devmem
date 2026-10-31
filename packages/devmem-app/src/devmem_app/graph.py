@@ -134,7 +134,7 @@ def build_edges(idx: dict) -> list[dict]:
             best[k] = conf
 
     for path, rec in files.items():
-        if rec.get("lang") in ("go", "java"):
+        if rec.get("lang") in ("go", "java", "csharp", "kotlin", "rust"):
             _typed_edges(path, rec, by_id, by_name, by_file, add)
             continue
         if rec.get("lang") in ("js", "ts"):

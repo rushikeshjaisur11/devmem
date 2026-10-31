@@ -78,6 +78,20 @@ def connect(root: Path, agents: list[str], command: str = "devmem", args: list[s
     return out
 
 
+def status(root: Path) -> dict[str, bool]:
+    """Which agents this repo is already connected for (their project config names the devmem server)."""
+    root, out = Path(root), {}
+    for agent, (rel, key, _) in JSON_AGENTS.items():
+        p = root / rel
+        try:
+            out[agent] = SERVER in (json.loads(p.read_text(encoding="utf-8")).get(key) or {}) if p.exists() else False
+        except ValueError:
+            out[agent] = False
+    out["codex"] = f"[mcp_servers.{SERVER}]" in ((root / ".codex/config.toml").read_text(encoding="utf-8") if (root / ".codex/config.toml").exists() else "")
+    out["aider"] = "AGENTS.md" in ((root / ".aider.conf.yml").read_text(encoding="utf-8") if (root / ".aider.conf.yml").exists() else "")
+    return out
+
+
 if __name__ == "__main__":   # self-check: merging keeps what was there, a second run changes nothing
     import tempfile
     with tempfile.TemporaryDirectory() as d:

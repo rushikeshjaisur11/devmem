@@ -50,6 +50,10 @@ TOOLS = {
     "devmem_check": (_s("Lint, types and only the tests affected by your diff, compact output. Runs the repo's commands."),
                      lambda a: ["check"]),
     "devmem_diffcheck": (_s("Before each commit: blocks oversized, out-of-scope or test-weakening diffs."), lambda a: ["diffcheck"]),
+    "devmem_review": (_s("Self-review before opening a PR: changed symbols, their callers, which have no test, and the diff guard result.",
+                         base=S("compare BASE...HEAD, e.g. origin/main", optional=True)),
+                      lambda a: ["review", *(["--base", a["base"]] if a.get("base") else [])]),
+    "devmem_gaps": (_s("Widely used code that no test reaches, riskiest first: where a new test helps most."), lambda a: ["gaps"]),
 }
 
 

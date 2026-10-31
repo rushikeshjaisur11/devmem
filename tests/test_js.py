@@ -112,3 +112,23 @@ def test_go_and_java_symbols_edges_and_test_commands(tmp_path):
     assert [h["id"] for h in r["hop1"]] == ["src/main/java/com/acme/UserService.java#UserService.load"]
     assert "src/test/java/com/acme/UserServiceTest.java#UserServiceTest.loadsUser" in r["tests"]
     assert chk.tests_for(jx, ["src/main/java/com/acme/Retry.java"])[1] == "mvn -q test -Dtest=UserServiceTest#loadsUser"
+
+
+def test_rust_and_csharp_index_to_edges_and_test_commands(tmp_path):
+    r = tmp_path / "rs"
+    (r / "src").mkdir(parents=True)
+    (r / "src/lib.rs").write_text("/// Retries a call.\npub fn retry(n: u32) -> u32 { n }\n\npub fn load() -> u32 { retry(3) }\n\n"
+                                  "#[cfg(test)]\nmod tests {\n    use super::*;\n    #[test]\n    fn loads() { load(); }\n}\n", encoding="utf-8")
+    ix = Index(indexer.index_repo(r, "rs"), r)
+    imp = ix.impact("src/lib.rs#retry")
+    assert [h["id"] for h in imp["hop1"]] == ["src/lib.rs#load"] and "src/lib.rs#loads" in imp["tests"]
+    assert chk.tests_for(ix, ["src/lib.rs"])[1] == "cargo test -- loads"
+    c = tmp_path / "cs"
+    c.mkdir()
+    (c / "Svc.cs").write_text("namespace A {\n  public class Svc {\n    public int Load() { return Retry.Run(3); }\n  }\n"
+                              "  public static class Retry { public static int Run(int n) { return n; } }\n}\n", encoding="utf-8")
+    (c / "SvcTests.cs").write_text("namespace A {\n  public class SvcTests {\n    [Fact] public void Loads() { new Svc().Load(); }\n  }\n}\n", encoding="utf-8")
+    ix = Index(indexer.index_repo(c, "cs"), c)
+    imp = ix.impact("Svc.cs#Retry.Run")
+    assert [h["id"] for h in imp["hop1"]] == ["Svc.cs#Svc.Load"] and "SvcTests.cs#SvcTests.Loads" in imp["tests"]
+    assert "FullyQualifiedName~SvcTests.Loads" in chk.tests_for(ix, ["Svc.cs"])[1]

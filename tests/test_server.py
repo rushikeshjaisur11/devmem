@@ -199,3 +199,22 @@ def test_rules_can_be_added_and_deleted_per_repo_and_globally(api):
     assert api.post("/api/rules", json={"text": "Use UTC timestamps everywhere"}, headers=H).status_code == 200
     assert [x["text"] for x in api.get("/api/memory").json()["hub_rules"]] == ["Use UTC timestamps everywhere"]
     assert api.post("/api/rules", json={"text": "  "}, headers=H).status_code == 422
+
+
+def test_connect_preview_activity_gaps_and_alerts(api):
+    st = api.get("/api/repos/py_app/connect").json()
+    assert "claude" in st["agents"] and not any(st["connected"].values())
+    res = api.post("/api/repos/py_app/connect", json={"agents": ["claude", "cursor"]}, headers=H).json()["results"]
+    assert {r["file"] for r in res} == {".mcp.json", ".cursor/mcp.json", "CLAUDE.md"}
+    py = next(r for r in api.get("/api/repos").json() if r["name"] == "py_app")
+    assert {"claude", "cursor"} <= set(py["connected"])
+    assert api.post("/api/repos/py_app/connect", json={"agents": ["nope"]}, headers=H).status_code == 422
+    v = api.get("/api/repos/py_app/agent-view", params={"cmd": "show", "arg": "retry"}).json()
+    assert "def retry" in v["output"] and v["tokens"] > 0
+    assert api.get("/api/repos/py_app/agent-view", params={"cmd": "diffcheck"}).status_code == 422
+    assert not (api.repos["py_app"] / ".devmem/usage.jsonl").exists()             # previews are not agent usage
+    assert api.get("/api/repos/py_app/activity").json()["sessions"] == []
+    assert isinstance(api.get("/api/repos/py_app/gaps").json(), list)
+    al = api.get("/api/alerts").json()
+    assert any(a["repo"] == "conv_app" and "no agent connected" in a["text"] for a in al)
+    assert not any(a["repo"] == "py_app" and "no agent connected" in a["text"] for a in al)

@@ -102,6 +102,8 @@ def create_app() -> FastAPI:
                 d["hygiene"] = json.loads(hp.read_text()).get("counts", {})
             d["agent_tokens"] = agent_tokens(root)
             d["usage"] = agent_usage.summary(root)
+            from devmem import connect as cn
+            d["connected"] = [k for k, v in cn.status(root).items() if v]
         return d
 
     def agent_tokens(root: Path) -> dict:
@@ -602,6 +604,94 @@ def create_app() -> FastAPI:
             raise HTTPException(404, "no such rule (rules in .devmem/rules.md are edited in that file)")
         f.unlink()
         return {"ok": True}
+
+    # ---------- agents: connect, what they see, what they did ----------
+    class ConnectIn(BaseModel):
+        agents: list[str] = []
+        local: bool = False
+
+    @app.get("/api/repos/{name}/connect")
+    def connect_status(name: str):
+        from devmem import connect as cn
+        return {"agents": cn.AGENTS, "connected": cn.status(root_of(name)), "user_only": list(cn.USER_ONLY)}
+
+    @app.post("/api/repos/{name}/connect")
+    def connect_agents(name: str, body: ConnectIn):
+        import sys as _sys
+        from devmem import connect as cn
+        cmd, args = (_sys.executable, ["-m", "devmem.cli", "mcp"]) if body.local else ("devmem", ["mcp"])
+        try:
+            return {"results": cn.connect(root_of(name), body.agents or cn.AGENTS, cmd, args)}
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+
+    AGENT_VIEW = {"show", "find", "impact", "recall", "outline", "gaps", "helpers"}
+
+    @app.get("/api/repos/{name}/agent-view")
+    def agent_view(name: str, cmd: str, arg: str = ""):
+        """Exactly what an agent gets back for one devmem command (not logged as agent usage)."""
+        import contextlib
+        import io
+        from devmem import cli as agent_cli
+        if cmd not in AGENT_VIEW:
+            raise HTTPException(422, f"previewable commands: {', '.join(sorted(AGENT_VIEW))}")
+        root = root_of(name)
+        ag = root / "AGENTS.md"
+        buf = io.StringIO()
+        # ponytail: redirect_stdout is process-wide; two previews at the same instant could mix output. Fine for a local one-user app.
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            try:
+                agent_cli.run([cmd, *([arg] if arg else [])], via="ui", root=root)
+            except SystemExit:
+                pass
+        text = buf.getvalue()
+        return {"command": f"devmem {cmd} {arg}".strip(), "output": text, "tokens": len(text) // 4,
+                "session_start": managed_block(ag.read_text(encoding="utf-8")) if ag.exists() else None}
+
+    @app.get("/api/repos/{name}/activity")
+    def activity(name: str):
+        return {"sessions": agent_usage.sessions(root_of(name)), "total": agent_usage.summary(root_of(name))}
+
+    @app.get("/api/repos/{name}/gaps")
+    def test_gaps(name: str, limit: int = 30):
+        from devmem import review
+        return review.gaps(ix_of(name), limit)
+
+    @app.get("/api/alerts")
+    def alerts():
+        """Things to fix, most urgent first: failed automatic re-index, stale index or knowledge, stale docs, unconnected repos."""
+        from devmem import connect as cn
+        from . import docs as dm
+        from . import watch
+        out = []
+        for name, path in ws()["repos"].items():
+            if name in watch.ERRORS:
+                out.append({"level": "bad", "repo": name, "text": watch.ERRORS[name], "page": "repos"})
+            d = repo_summary(name, path)
+            if not d["indexed"]:
+                continue
+            if d["stale"]:
+                out.append({"level": "warn", "repo": name, "text": "index is behind HEAD: agents see old code", "page": "repos"})
+            probs = [p for p in d["knowledge_problems"] if p != "not published"]
+            if probs:
+                out.append({"level": "warn", "repo": name, "text": f"{len(probs)} knowledge issue(s): {probs[0]}", "page": "repos"})
+            elif d["knowledge_problems"]:
+                out.append({"level": "info", "repo": name, "text": "not published yet: agents have no map", "page": "repos"})
+            if not any(cn.status(Path(path)).values()):
+                out.append({"level": "info", "repo": name, "text": "no agent connected (MCP)", "page": "overview"})
+        for lib in dm.list_libs():
+            if (lib.get("age_days") or 0) > 120:
+                out.append({"level": "warn", "repo": None, "text": f"{lib['name']} docs are {lib['age_days']} days old: refresh them", "page": "docs"})
+        rank = {"bad": 0, "warn": 1, "info": 2}
+        return sorted(out, key=lambda x: rank[x["level"]])
+
+    class UpgradeIn(BaseModel):
+        repo: str
+
+    @app.post("/api/docs/upgrade-notes")
+    def docs_upgrade_notes(body: UpgradeIn):
+        from . import docs as dm
+        return dm.add_upgrade_notes(root_of(body.repo))
 
     # ---------- chat ----------
     class Chat(BaseModel):

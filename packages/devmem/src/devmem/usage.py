@@ -9,22 +9,48 @@ import time
 from pathlib import Path
 
 LOG = ".devmem/usage.jsonl"
-LOGGED = {"find", "show", "outline", "impact", "recall", "reuse", "docs", "helpers", "tests-for", "hygiene", "plan"}
+LOGGED = {"find", "show", "outline", "impact", "recall", "reuse", "docs", "helpers", "tests-for", "hygiene", "plan", "gaps", "review"}
+BASELINE = {"find", "show", "outline", "impact", "recall", "reuse", "docs", "helpers", "hygiene"}   # answers that replace reading files
 _PATH = re.compile(r"[\w@.\-/]+\.[A-Za-z0-9]+")
 
 
-def record(ix, cmd: str, out: str, via: str = "cli") -> None:
+def record(ix, cmd: str, out: str, via: str = "cli", args: str = "") -> None:
     files = ix.data["files"]
     refs = {m for m in _PATH.findall(out) if m in files}
-    base = sum((ix.root / f).stat().st_size for f in refs if (ix.root / f).exists()) // 4
+    base = sum((ix.root / f).stat().st_size for f in refs if (ix.root / f).exists()) // 4 if cmd in BASELINE else 0
     log = ix.root / LOG
     gi = ix.root / ".devmem/.gitignore"
     if "usage.jsonl" not in (gi.read_text(encoding="utf-8") if gi.exists() else ""):
         with gi.open("a", encoding="utf-8") as f:
             f.write("usage.jsonl\n")
     with log.open("a", encoding="utf-8") as f:
-        f.write(json.dumps({"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "cmd": cmd, "via": via,
+        f.write(json.dumps({"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "cmd": cmd, "via": via, "args": args[:160],
                             "out_tokens": len(out) // 4, "file_tokens": base, "files": len(refs)}) + "\n")
+
+
+def sessions(root: Path, gap_min: int = 30, limit: int = 10) -> list[dict]:
+    """Recent query sessions (a pause of `gap_min` minutes starts a new one), newest first, with waste flags:
+    the same query repeated, and single answers over 2,000 tokens."""
+    p = Path(root) / LOG
+    rows = [json.loads(ln) for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip()] if p.exists() else []
+    out, cur, last = [], None, None
+    for r in rows:
+        t = time.mktime(time.strptime(r["ts"], "%Y-%m-%dT%H:%M:%SZ"))
+        if cur is None or t - last > gap_min * 60:
+            cur = {"start": r["ts"], "end": r["ts"], "via": r.get("via", "cli"), "queries": []}
+            out.append(cur)
+        cur["end"], last = r["ts"], t
+        cur["queries"].append(r)
+    for s in out:
+        seen: dict[str, int] = {}
+        for q in s["queries"]:
+            key = q["cmd"] + " " + q.get("args", "")
+            seen[key] = seen.get(key, 0) + 1
+            q["flags"] = (["repeated"] if q.get("args") and seen[key] > 1 else []) + (["large"] if q["out_tokens"] > 2000 else [])
+        s["out_tokens"] = sum(q["out_tokens"] for q in s["queries"])
+        s["file_tokens"] = sum(q["file_tokens"] for q in s["queries"])
+        s["waste"] = sum(1 for q in s["queries"] if q["flags"])
+    return out[::-1][:limit]
 
 
 def summary(root: Path, since: str | None = None) -> dict:

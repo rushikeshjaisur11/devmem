@@ -82,7 +82,7 @@ def _main(argv=None) -> int:
     s.add_argument("--prune", action="store_true", help="remove repos from the hub that are no longer onboarded")
     s.add_argument("--per-repo", type=int, default=400)
     s = sub.add_parser("docs", help="library docs for offline agents: add <llms.txt|url|pypi:pkg|npm:pkg|local path> | list | refresh [name..] | remove <name>")
-    s.add_argument("action", choices=["add", "list", "refresh", "remove"]); s.add_argument("args", nargs="*")
+    s.add_argument("action", choices=["add", "list", "refresh", "remove", "upgrade-notes"]); s.add_argument("args", nargs="*")
     s.add_argument("--name"); s.add_argument("--no-follow", action="store_true", help="llms.txt: do not fetch the pages it links to")
     s.add_argument("--max-pages", type=int, default=40)
     s = sub.add_parser("libs", help="what a repo depends on vs the latest releases (needs internet); feeds knowledge/libraries.md on publish")
@@ -246,6 +246,12 @@ def _main(argv=None) -> int:
         elif a.action == "refresh":
             for k, v in dm.refresh(a.args or None).items():
                 print(f"{k}: {v}")
+        elif a.action == "upgrade-notes":   # docs upgrade-notes <repo> [lib ...]
+            if not a.args or a.args[0] not in _ws()["repos"]:
+                sys.exit("usage: devmem-app docs upgrade-notes <repo name> [library ...]")
+            for k, v in dm.add_upgrade_notes(Path(_ws()["repos"][a.args[0]]), set(a.args[1:]) or None).items():
+                print(f"{k}: {v}")
+            print("publish the repo to ship them to its agents")
         else:
             print("removed" if a.args and dm.remove(a.args[0]) else "not found")
     elif a.cmd == "libs":

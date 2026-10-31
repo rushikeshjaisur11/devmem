@@ -107,3 +107,24 @@ def test_run_indexer_patches_windows_scip_python_path_regex(monkeypatch, tmp_pat
     assert captured["env"]["NODE_OPTIONS"].startswith("--max-old-space-size=1024 ")
     assert "process.argv[1]" in captured["source"] and "path.sep += path.sep" in captured["source"]
     assert not captured["preload"].exists()
+
+
+def test_native_scip_indexers_run_when_installed_and_leave_the_repo_clean(tmp_path, monkeypatch):
+    """scip-go writes index.scip into the module root; devmem runs it only when installed and moves the file out."""
+    import shutil
+    import sys
+    from devmem_app import scip as scip_mod
+    repo = tmp_path / "go_app"
+    shutil.copytree(Path(__file__).parent.parent / "fixtures/go_app", repo)
+    fake = tmp_path / ("scip-go.cmd" if sys.platform == "win32" else "scip-go")
+    src = Path(__file__).parent.parent / "fixtures/scip/py_app.scip"
+    fake.write_text(f'@"{sys.executable}" -c "import shutil; shutil.copy(r\'{src}\', \'index.scip\')"\n' if sys.platform == "win32"
+                    else f'#!/bin/sh\n"{sys.executable}" -c "import shutil; shutil.copy(\'{src}\', \'index.scip\')"\n', encoding="utf-8")
+    fake.chmod(0o755)
+    idx = {"repo": "go_app", "files": {"retry/retry.go": {"lang": "go"}}}
+    monkeypatch.setattr(scip_mod.shutil, "which", lambda n: str(fake) if n == "scip-go" else None)
+    assert scip_mod.applicable(repo, idx) == {"go"}
+    files, msgs = scip_mod.run_indexer(repo, idx)
+    assert len(files) == 1 and files[0].exists() and not (repo / "index.scip").exists() and msgs == []
+    monkeypatch.setattr(scip_mod.shutil, "which", lambda n: None)
+    assert scip_mod.applicable(repo, idx) == set()                     # not installed: Go is not held to SCIP

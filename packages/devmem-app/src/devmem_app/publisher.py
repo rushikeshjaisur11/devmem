@@ -39,7 +39,10 @@ DEFAULT_RULES = """# Rules (global + repo)
 - If a rule blocks the correct fix, make the fix and say why in the PR description.
 """
 
-PRECOMMIT = """# Merge into .pre-commit-config.yaml (runs inside Devin's session too, after `pip install devmem`)
+# The PyPI name `devmem` belongs to another project: install the agent CLI from this repo (or the plugin's bundled wheel).
+INSTALL = 'pip install "devmem @ git+https://github.com/rushikeshjaisur11/devmem.git#subdirectory=packages/devmem"'
+
+PRECOMMIT = """# Merge into .pre-commit-config.yaml (runs inside Devin's session too, once the devmem CLI is installed)
 repos:
   - repo: local
     hooks:
@@ -51,18 +54,27 @@ repos:
         always_run: true
 """
 
-GITHUB_CI = """name: devmem diffcheck
+GITHUB_CI = """name: devmem review
 on: [pull_request]
+permissions: {contents: read, pull-requests: write}
 jobs:
-  diffcheck:
+  review:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with: {fetch-depth: 0}
       - uses: actions/setup-python@v5
-        with: {python-version: "3.11"}
-      - run: pip install devmem
-      - run: devmem diffcheck --base origin/${{ github.base_ref }}
+        with: {python-version: "3.12"}
+      - run: """ + INSTALL + """
+      - name: Post blast radius and untested changes on the PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEVMEM_PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          devmem review --base origin/${{ github.base_ref }} > review.md
+          gh pr comment ${{ github.event.pull_request.number }} --body-file review.md --edit-last || gh pr comment ${{ github.event.pull_request.number }} --body-file review.md
+      - name: Diff guard
+        run: devmem diffcheck --base origin/${{ github.base_ref }}
         env:
           DEVMEM_PR_BODY: ${{ github.event.pull_request.body }}
 """
@@ -72,7 +84,9 @@ pr: [main]
 steps:
   - checkout: self
     fetchDepth: 0
-  - script: pip install devmem
+  - script: """ + INSTALL + """
+  - script: devmem review --base origin/$(System.PullRequest.TargetBranch)
+    displayName: devmem review
   - script: devmem diffcheck --base origin/$(System.PullRequest.TargetBranch)
     displayName: devmem diffcheck
 """
@@ -239,12 +253,11 @@ def publish(root: str | Path, idx: dict, peers: dict | None = None) -> list[str]
     nt += [f"- `{p}`" for p in notouch.patterns(root)]
     _write(root, f"{k}/no-touch.md", "\n".join(nt), commit, written)
 
-    # config + rules: created once, then owned by the repo (never overwritten)
-    for rel, body in ((".devmem/config.yaml", DEFAULT_CONFIG), (".devmem/rules.md", DEFAULT_RULES),
-                      (".devmem/ci/pre-commit-snippet.yaml", PRECOMMIT), (".devmem/ci/github-actions.yml", GITHUB_CI),
-                      (".devmem/ci/azure-pipelines.yml", AZURE_CI)):
+    # config + rules: created once, then owned by the repo (never overwritten); CI files are templates to copy, so kept current
+    templates = {".devmem/ci/pre-commit-snippet.yaml": PRECOMMIT, ".devmem/ci/github-actions.yml": GITHUB_CI, ".devmem/ci/azure-pipelines.yml": AZURE_CI}
+    for rel, body in ((".devmem/config.yaml", DEFAULT_CONFIG), (".devmem/rules.md", DEFAULT_RULES), *templates.items()):
         p = root / rel
-        if not p.exists():
+        if not p.exists() or (rel in templates and p.read_text(encoding="utf-8") != body):
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(body, encoding="utf-8")
             written.append(rel)

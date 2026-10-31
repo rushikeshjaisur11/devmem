@@ -30,8 +30,10 @@ def test_commands(ix: Index, paths: list[str]) -> tuple[list[str], list[str]]:
     """(selected test ids/files, ready-to-run commands): pytest ids for Python tests, test files for JS/TS runners."""
     sel = ix.tests_for_files(paths)
     go = {f: q for f, q in sel.items() if f.endswith(".go")}
-    java = {f: q for f, q in sel.items() if f.endswith(".java")}
-    py = {f: q for f, q in sel.items() if not is_js(f) and f not in go and f not in java}
+    java = {f: q for f, q in sel.items() if f.endswith((".java", ".kt", ".kts"))}
+    cs = {f: q for f, q in sel.items() if f.endswith(".cs")}
+    rs = {f: q for f, q in sel.items() if f.endswith(".rs")}
+    py = {f: q for f, q in sel.items() if not is_js(f) and f not in go and f not in java and f not in cs and f not in rs}
     js = sorted(f for f in sel if is_js(f))
     cmds = load_commands(ix.root)
     ids, out = [], []
@@ -52,6 +54,14 @@ def test_commands(ix: Index, paths: list[str]) -> tuple[list[str], list[str]]:
         gradle = next((g for g in ("gradlew", "build.gradle", "build.gradle.kts") if (ix.root / g).exists()), None)
         out.append(f"{'./gradlew' if gradle == 'gradlew' else 'gradle'} test " + " ".join(f"--tests {quote_all([c + '.' + m])}" for c, ms in sorted(sel_j.items()) for m in sorted(ms))
                    if gradle else "mvn -q test -Dtest=" + quote_all([spec]))
+    if cs:
+        names = sorted({q for quals in cs.values() for q in quals})
+        ids += names
+        out.append("dotnet test --filter " + quote_all(["|".join(f"FullyQualifiedName~{q}" for q in names)]))
+    if rs:
+        names = sorted({q.split(".")[-1] for quals in rs.values() for q in quals})
+        ids += names
+        out.append("cargo test -- " + quote_all(names))
     if py:
         pids = Index.pytest_ids(py)
         tmpl = (cmds.get("test_one") or {}).get("cmd") or "python -m pytest -q {tests}"

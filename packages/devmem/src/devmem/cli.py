@@ -130,6 +130,29 @@ def cmd_diffcheck(ix, a) -> int:
     return 0
 
 
+def cmd_review(ix, a) -> int:
+    import json as _json
+    import os
+    from . import diffcheck as dc
+    from . import review
+    root = dc.repo_root()
+    files = dc.collect_diff(root, a.base, False)
+    text = os.environ.get("DEVMEM_PR_BODY", "") + ("\n" + dc._git(root, "log", f"{a.base}..HEAD", "--format=%B", check=False) if a.base else "")
+    blocked, allowed = dc.apply_allow(dc.run_checks(root, files, dc.load_config(root), a.base), dc.allowances(text))
+    r = review.build(ix, files, blocked, allowed)
+    print(_json.dumps(r, indent=1) if a.json else review.render_md(r))
+    return 0
+
+
+def cmd_gaps(ix, a) -> int:
+    from . import review
+    rows = review.gaps(ix, a.limit)
+    for g in rows:
+        print(f"{g['file']}:{g['line']}  {g['id'].split('#', 1)[1]}  [{g['callers']} callers in {g['files']} file{'s' if g['files'] != 1 else ''}, no test reaches it]")
+    print("no untested code with callers found" if not rows else "write a test for the top ones first: `devmem show <symbol>` shows the code")
+    return 0
+
+
 def cmd_report(ix, a) -> int:
     from . import diffcheck as dc
     from .report import build_record, write_record
@@ -386,7 +409,7 @@ def main(argv=None) -> int:
     return run(argv)
 
 
-def run(argv=None, via: str = "cli") -> int:
+def run(argv=None, via: str = "cli", root=None) -> int:
     """Parse and run one command. Read commands also log their token cost (see usage.py); `via` says who asked (cli | mcp)."""
     p = argparse.ArgumentParser(prog="devmem", description="Code knowledge for coding agents")
     p.add_argument("--version", action="version", version="devmem " + _version())
@@ -445,6 +468,11 @@ def run(argv=None, via: str = "cli") -> int:
     s.add_argument("--base", help="compare BASE...HEAD (CI)")
     s.add_argument("--allow-file", action="append", help="file whose devmem-allow: lines apply (e.g. PR body)")
     s.set_defaults(fn=cmd_diffcheck, nolog=True)
+    s = sub.add_parser("review", help="Markdown summary of the current diff: changed symbols, callers, tests reaching them, risk")
+    s.add_argument("--base", help="compare BASE...HEAD (CI)"); s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_review)
+    s = sub.add_parser("gaps", help="widely used code no test reaches, riskiest first")
+    s.add_argument("-n", "--limit", type=int, default=15); s.set_defaults(fn=cmd_gaps)
     s = sub.add_parser("report", help="record this PR's diff size and diffcheck result in .devmem/metrics/runs (commit it)")
     s.add_argument("--base"); s.add_argument("--task"); s.add_argument("--tokens", type=int, help="tokens/ACUs the agent knows it used")
     s.add_argument("--recalls", type=int); s.add_argument("--rounds", type=int, help="review rounds so far")
@@ -469,7 +497,7 @@ def run(argv=None, via: str = "cli") -> int:
             ix = None
         return a.fn(ix, a)
     try:
-        ix = Index.load()
+        ix = Index.load(root)
     except FileNotFoundError as e:
         print(e, file=sys.stderr)
         return 2
@@ -482,7 +510,8 @@ def run(argv=None, via: str = "cli") -> int:
     with contextlib.redirect_stdout(buf):
         code = a.fn(ix, a)
     sys.stdout.write(buf.getvalue())
-    usage.record(ix, a.command, buf.getvalue(), via)
+    if via != "ui":   # the web UI previews what agents see; that is not agent usage
+        usage.record(ix, a.command, buf.getvalue(), via, " ".join(argv if argv is not None else sys.argv[1:]))
     return code
 
 

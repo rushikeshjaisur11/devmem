@@ -161,7 +161,8 @@ def for_code(ix, files: list[str], text: str = "", query: str = "", limit: int =
         hits = search(ix.root, f"{query} {names}".strip(), 1, man["name"])
         uses = repo_ver.get(key) or repo_ver.get(_norm(man["name"])) or ""
         out.append({"lib": man["name"], "version": man.get("version", ""), "fetched": man.get("fetched", ""), "stale": (age_days(man) or 0) > STALE_DAYS,
-                    "names": names, "hit": hits[0] if hits else None, "repo_version": uses if _major(uses) not in (None, _major(man.get("version", ""))) else None})
+                    "names": names, "hit": hits[0] if hits else None,
+                    "notes": any(str(pg.get("file", "")).startswith("upgrade-") for pg in man.get("pages", [])), "repo_version": uses if _major(uses) not in (None, _major(man.get("version", ""))) else None})
     return out[:limit]
 
 
@@ -174,5 +175,6 @@ def render_pointer(d: dict) -> str:
     where = f"{d['lib']}{' ' + d['version'] if d['version'] else ''} (fetched {d['fetched'] or '?'}{', STALE' if d['stale'] else ''})"
     sec = f": {d['hit']['heading'] or d['hit']['title']}" if d["hit"] else ""
     warn = (f"\n   ! docs describe {d['version']} but this repo uses {d['repo_version']}: confirm the API exists in that version, "
-            f"or ask for pinned docs (devmem-app docs add <eco>:{d['lib']}=={d['repo_version']})") if d.get("repo_version") else ""
+            + (f"or read what changed: devmem docs \"upgrade notes\" --lib {d['lib']}" if d.get("notes") else
+               f"or ask for pinned docs (devmem-app docs add <eco>:{d['lib']}=={d['repo_version']})")) if d.get("repo_version") else ""
     return f"{where}{sec}  -> devmem docs \"{d['names']}\" --lib {d['lib']}{warn}"

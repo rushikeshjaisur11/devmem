@@ -9,6 +9,8 @@ from typing import Callable
 
 from .indexer import AccuracyError, git_head, index_repo
 
+ERRORS: dict[str, str] = {}   # repo -> why the last automatic re-index failed (shown as an alert in the UI)
+
 
 def stale(root: Path) -> str | None:
     """The new HEAD when the index is behind it, else None."""
@@ -33,10 +35,11 @@ def tick(repos: dict[str, str], publish_too: bool, failed: dict[str, str], log: 
                 from .publisher import publish
                 publish(root, idx, repos)
         except AccuracyError as e:
-            failed[name] = head
+            failed[name], ERRORS[name] = head, f"not re-indexed at {head[:8]}: {e}"
             log(f"{name}: not re-indexed at {head[:8]}: {e}")
             continue
         failed.pop(name, None)
+        ERRORS.pop(name, None)
         done.append(name)
         log(f"{name}: re-indexed at {head[:8]} ({idx['stats']['parsed']} files parsed){', published' if publish_too else ''}")
     return done

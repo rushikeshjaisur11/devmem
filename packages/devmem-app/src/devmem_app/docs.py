@@ -416,3 +416,81 @@ def copy_relevant(root: Path) -> list[str]:
     if not got and dest.exists():
         shutil.rmtree(dest, ignore_errors=True)
     return got
+
+
+# ---------- upgrade notes: what changed between the version a repo uses and the latest ----------
+def _ver(s: str) -> tuple:
+    m = re.search(r"(\d+(?:\.\d+)*)", s or "")
+    return tuple(int(x) for x in m.group(1).split(".")[:3]) + (0, 0, 0) if m else ()
+
+
+def source_repo(eco: str, name: str) -> str | None:
+    """owner/repo on GitHub for a package, from its PyPI project URLs or npm `repository`."""
+    if eco == "pypi":
+        info = json.loads(get(f"https://pypi.org/pypi/{urllib.parse.quote(name)}/json", 15))["info"]
+        urls = list((info.get("project_urls") or {}).values()) + [info.get("home_page") or ""]
+    else:
+        meta = json.loads(get(f"https://registry.npmjs.org/{urllib.parse.quote(name, safe='@')}/latest", 15))
+        repo = meta.get("repository")
+        urls = [repo.get("url", "") if isinstance(repo, dict) else str(repo or ""), meta.get("homepage") or ""]
+    for u in urls:
+        m = re.search(r"github\.com[/:]([\w.-]+)/([\w.-]+?)(?:\.git)?(?:[/#?]|$)", u or "")
+        if m:
+            return f"{m.group(1)}/{m.group(2)}"
+    return None
+
+
+def release_notes(repo: str, frm: str, to: str | None, cap: int = 60_000) -> list[tuple[str, str]]:
+    """[(tag, body)] of GitHub releases newer than `frm` up to `to`, oldest first. Set GITHUB_TOKEN to lift the API rate limit."""
+    import os
+    req = urllib.request.Request(f"https://api.github.com/repos/{repo}/releases?per_page=100",
+                                 headers={"User-Agent": UA, "Accept": "application/vnd.github+json",
+                                          **({"Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}"} if os.environ.get("GITHUB_TOKEN") else {})})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        rels = json.loads(r.read().decode("utf-8", "replace"))
+    lo, hi = _ver(frm), _ver(to) if to else (10**9,)
+    picked = sorted(((_ver(x.get("tag_name", "")), x.get("tag_name", ""), x.get("body") or "") for x in rels
+                     if not x.get("prerelease") and _ver(x.get("tag_name", "")) and lo < _ver(x.get("tag_name", "")) <= hi))
+    out, total = [], 0
+    for _, tag, body in picked:
+        total += len(body)
+        if total > cap:
+            break
+        out.append((tag, body.strip()))
+    return out
+
+
+def add_upgrade_notes(root: Path, only: set[str] | None = None) -> dict:
+    """For each dependency a repo uses at an older version than the latest and has docs on file, store the release notes in
+    between as a page of that library's docs (`upgrade notes <from> -> <to>`), so agents read what changed offline."""
+    res = {}
+    dirs = {}
+    for l in list_libs():   # stored names differ from package names for npm scopes (@a/b -> a-b): match on both
+        dirs[_norm(l["name"])] = dirs[_norm(str(l["source"]).split(":", 1)[-1].split("==")[0])] = docs_dir() / l["name"]
+    for row in libs_report(root, online=True):
+        name, used = row["name"], row.get("locked") or row["spec"]
+        lib = dirs.get(_norm(name), docs_dir() / "-")
+        if (only and name not in only) or not row["docs"] or not row["latest"] or not (lib / "manifest.json").exists() \
+                or not _ver(used) or _ver(used) >= _ver(row["latest"]):
+            continue
+        try:
+            repo = source_repo(row["eco"], name)
+            notes = release_notes(repo, used, row["latest"]) if repo else []
+        except Exception as e:   # network or API limit: report per library, keep going
+            res[name] = f"failed: {e}"
+            continue
+        if not notes:
+            res[name] = "no GitHub release notes found"
+            continue
+        frm = re.search(r"(\d+(?:\.\d+)*)", used).group(1)
+        title = f"{name} upgrade notes {frm} -> {row['latest']}"
+        body = f"# {title}\n\nRelease notes between the version this repo uses and the latest. Read before using newer APIs.\n\n" + \
+               "\n\n".join(f"## {tag}\n\n{b}" for tag, b in notes)
+        man = json.loads((lib / "manifest.json").read_text(encoding="utf-8"))
+        fn = f"upgrade-{_slug(frm)}-{_slug(row['latest'])}.md"
+        (lib / fn).write_text(f"<!-- source: https://github.com/{repo}/releases -->\n{body}\n", encoding="utf-8")
+        man["pages"] = [p for p in man.get("pages", []) if not p["file"].startswith("upgrade-")] + \
+                       [{"file": fn, "url": f"https://github.com/{repo}/releases", "title": title, "sha1": hashlib.sha1(body.encode()).hexdigest()[:12]}]
+        (lib / "manifest.json").write_text(json.dumps(man, indent=1), encoding="utf-8")
+        res[name] = f"{len(notes)} releases {frm} -> {row['latest']}"
+    return res

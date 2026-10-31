@@ -296,3 +296,24 @@ def test_changing_code_surfaces_docs_for_the_libraries_it_uses(tmp_path, monkeyp
     (repo / ".devmem/libs.json").write_text(json.dumps([{"eco": "pypi", "name": "fancylib", "spec": ">=2", "locked": "2.4.0"}]), encoding="utf-8")
     assert main(["show", "signup"]) == 0
     assert "docs describe 3.1 but this repo uses 2.4.0" in capsys.readouterr().out
+
+
+def test_upgrade_notes_store_release_notes_between_used_and_latest(tmp_path, monkeypatch):
+    import io
+    monkeypatch.setenv("DEVMEM_HOME", str(tmp_path / "home"))
+    from devmem_app import docs as dm
+    lib = dm.docs_dir() / "fancylib"
+    lib.mkdir(parents=True)
+    (lib / "manifest.json").write_text(json.dumps({"name": "fancylib", "source": "pypi:fancylib", "version": "3.1", "fetched": "2026-10-30", "pages": []}), encoding="utf-8")
+    monkeypatch.setattr(dm, "libs_report", lambda root, online=True: [{"eco": "pypi", "name": "fancylib", "spec": ">=2", "locked": "2.4.0", "latest": "3.1.0", "docs": True}])
+    monkeypatch.setattr(dm, "source_repo", lambda eco, name: "acme/fancylib")
+    rels = [{"tag_name": t, "body": f"notes for {t}", "prerelease": False} for t in ("v2.3.0", "v2.5.0", "v3.0.0", "v3.1.0", "v3.2.0")]
+
+    class R(io.BytesIO):
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+    monkeypatch.setattr(dm.urllib.request, "urlopen", lambda req, timeout=20: R(json.dumps(rels).encode()))
+    assert dm.add_upgrade_notes(tmp_path) == {"fancylib": "3 releases 2.4.0 -> 3.1.0"}
+    page = (lib / "upgrade-2-4-0-3-1-0.md").read_text(encoding="utf-8")
+    assert "notes for v2.5.0" in page and "notes for v3.1.0" in page and "v2.3.0" not in page and "v3.2.0" not in page
+    assert json.loads((lib / "manifest.json").read_text(encoding="utf-8"))["pages"][0]["title"] == "fancylib upgrade notes 2.4.0 -> 3.1.0"
