@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, q } from "../api";
-import { Badge, Copy, Empty, Err, RepoSelect, Term, useAsync, useRepos } from "../components";
+import { Badge, Copy, Empty, Err, RepoSelect, SymbolSearch, Term, useAsync, useRepos } from "../components";
 
 const AGENTS: Record<string, [string, string]> = {
   claude: ["Claude Code", ".mcp.json + CLAUDE.md"], cursor: ["Cursor", ".cursor/mcp.json"], vscode: ["VS Code / Copilot", ".vscode/mcp.json"],
@@ -103,7 +103,9 @@ function Preview({ repo }: { repo: string }) {
         <select value={cmd} onChange={(e) => setCmd(e.target.value)} aria-label="Command">
           {["show", "find", "impact", "recall", "outline", "gaps", "helpers"].map((c) => <option key={c}>{c}</option>)}
         </select>
-        {needsArg && <input className="grow mono" value={arg} onChange={(e) => setArg(e.target.value)} onKeyDown={(e) => e.key === "Enter" && run()} placeholder={cmd === "outline" ? "path/to/file" : cmd === "recall" ? "the task in one sentence" : "symbol or words"} aria-label="Argument" />}
+        {needsArg && (cmd === "show" || cmd === "impact"
+          ? <SymbolSearch repo={repo} value={arg} onChange={setArg} onPick={(id) => { setArg(id); run(cmd, id); }} placeholder="Describe the code in plain words or type a name" />
+          : <input className="grow mono" value={arg} onChange={(e) => setArg(e.target.value)} onKeyDown={(e) => e.key === "Enter" && run()} placeholder={cmd === "outline" ? "path/to/file" : cmd === "recall" ? "the task in one sentence" : "words, e.g. retry upload"} aria-label="Argument" />)}
         <button className="primary" disabled={!repo || (needsArg && !arg.trim())} onClick={() => run()}>Run as agent</button>
       </div>
       {(gaps.data || []).length > 0 && <div className="examples"><span className="muted">Try:</span>{gaps.data.map((g: any) => <button key={g.id} className="chip" onClick={() => { setCmd("show"); setArg(g.id); run("show", g.id); }}>show {g.id.split("#")[1]}</button>)}</div>}

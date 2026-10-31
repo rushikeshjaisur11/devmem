@@ -78,6 +78,10 @@ imports one of these libraries, the matching section of the latest docs is liste
 **5. Hand work to an agent.** In **Chat**, describe a change ("add retry with backoff to the export job") or paste a plan. You get a
 compact prompt with the code your org already has, current library docs and the paths not to touch. Paste it into the agent.
 
+**Not a developer?** You never need exact names. Wherever the UI asks for code (What breaks if…, Code map, Agents preview), type
+what the feature does in your own words ("retry failed upload") and pick from suggestions that show each function's description;
+hover any dotted term for a plain explanation, and use **Ask & plan** for questions. `DEVMEM_LOCAL_EMBED=1` adds meaning-based matching.
+
 **6. Keep it fresh.** While `devmem-app ui` runs it re-indexes any repo whose HEAD moved (pull, merge, commit, branch switch); add
 `--publish` to republish too, or `--no-watch` to turn it off. Without the UI: `devmem-app watch` (or `watch --once` from cron or a git
 hook). Overview flags an index behind HEAD and any knowledge file over its token budget.

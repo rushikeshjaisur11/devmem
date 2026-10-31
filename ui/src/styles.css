@@ -341,3 +341,14 @@ pre.out { background: var(--surface-2); border: 1px solid var(--line); border-ra
 /* nothing may push the page wider than a phone screen */
 code { overflow-wrap: anywhere; }
 input, select, textarea { max-width: 100%; }
+
+/* ---------- plain-words code search ---------- */
+.sym-search { position: relative; flex: 1; min-width: 220px; }
+.sym-search > svg { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); width: 15px; height: 15px; color: var(--text-3); pointer-events: none; }
+.sym-search input { width: 100%; padding-left: 36px; }
+.sym-search .hits div { align-items: flex-start; }
+.sym-search .hits div.on { background: var(--hl-soft); }
+.sym-search .hits small { display: block; color: var(--text-3); font-size: 12.5px; margin-top: 1px; max-width: 60ch; }
+.sym-search .hits .mono { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 45%; }
+.idname b { font-weight: 600; }
+.idname .muted { font-family: var(--mono); font-size: 12px; margin-left: 8px; }

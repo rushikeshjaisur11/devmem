@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import threading
 import zlib
 from collections import defaultdict, deque
 from pathlib import Path
@@ -25,6 +26,7 @@ class Index:
     def __init__(self, data: dict, root: Path):
         self.data, self.root = data, root
         self._fts: sqlite3.Connection | None = None
+        self._fts_lock = threading.Lock()   # one connection, queried from the web app's thread pool: one query at a time
         self.symbols = {s["id"]: s for s in data["symbols"]}
         self.cochange: dict[str, list[tuple[str, int]]] = defaultdict(list)
         hp = Path(root) / ".devmem/history.json"
@@ -71,13 +73,14 @@ class Index:
     def _candidates(self, q: set[str], query: str, limit: int) -> list[str]:
         """Ids of symbols sharing a token with the query (best bm25 first) or containing it in the qualname.
         Capped at max(CANDIDATE_CAP, 10 * limit) per source: exact unless a query matches more symbols than that."""
-        if self._fts is None:
-            self._fts = _open_fts(self)
         cap = max(CANDIDATE_CAP, 10 * limit)
         match = " OR ".join(f'"{t}"' for t in sorted(q))
-        ranked = self._fts.execute(  # column weights mirror _score: name 3, doc 1, path 0.5 (bm25 is lower = better)
-            "SELECT id FROM sym WHERE sym MATCH ? ORDER BY bm25(sym, 0, 3, 1, 0.5) LIMIT ?", (match, cap)).fetchall()
-        substr = self._fts.execute("SELECT id FROM qual WHERE instr(q, ?) > 0 LIMIT ?", (query.lower(), cap)).fetchall()
+        with self._fts_lock:
+            if self._fts is None:
+                self._fts = _open_fts(self)
+            ranked = self._fts.execute(  # column weights mirror _score: name 3, doc 1, path 0.5 (bm25 is lower = better)
+                "SELECT id FROM sym WHERE sym MATCH ? ORDER BY bm25(sym, 0, 3, 1, 0.5) LIMIT ?", (match, cap)).fetchall()
+            substr = self._fts.execute("SELECT id FROM qual WHERE instr(q, ?) > 0 LIMIT ?", (query.lower(), cap)).fetchall()
         return list(dict.fromkeys(r[0] for r in ranked + substr))
 
     def source(self, s: dict) -> str:
@@ -214,9 +217,22 @@ class Index:
         return out[:limit]
 
 
+_SUFFIX = ("ators", "ations", "ator", "ation", "ating", "ated", "ate", "ings", "ing", "ers", "er", "ed", "es", "ion", "s")
+
+
+def _stem(t: str) -> str:
+    """Crude suffix stripping so validate / validator / validation and table / tables / parse / parsing meet in the middle."""
+    for suf in _SUFFIX:
+        if t.endswith(suf) and len(t) - len(suf) >= 4:
+            t = t[: -len(suf)]
+            break
+    return t[:-1] if t.endswith("e") and len(t) > 4 else t
+
+
 def _tokens(text: str) -> set[str]:
+    """Words of an identifier or sentence, stemmed, so "save settings" finds saveSetting / savingSettings."""
     text = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", text)
-    return {t.lower() for t in re.split(r"[^A-Za-z0-9]+", text) if len(t) > 1}
+    return {_stem(t.lower()) for t in re.split(r"[^A-Za-z0-9]+", text) if len(t) > 1}
 
 
 def _score(q: set[str], query: str, s: dict) -> float:
@@ -227,6 +243,7 @@ def _score(q: set[str], query: str, s: dict) -> float:
 
 
 CANDIDATE_CAP = 300
+FTS_FORMAT = 2   # bump when indexed tokens change (2: stemmed), so older index.db files are rebuilt
 
 
 def _rebuild_fts(db: sqlite3.Connection, ix: "Index") -> None:
@@ -244,7 +261,7 @@ def _rebuild_fts(db: sqlite3.Connection, ix: "Index") -> None:
 
 def _stamp(src: Path) -> int:
     st = src.stat()
-    return zlib.crc32(f"{st.st_size}:{st.st_mtime_ns}".encode()) & 0x7FFFFFFF  # fits PRAGMA user_version
+    return zlib.crc32(f"{FTS_FORMAT}:{st.st_size}:{st.st_mtime_ns}".encode()) & 0x7FFFFFFF  # fits PRAGMA user_version
 
 
 def write_db(ix: "Index") -> None:
@@ -262,13 +279,13 @@ def _open_fts(ix: "Index") -> sqlite3.Connection:
     """The cached db when it matches index.json, else an in-memory build (read-only; no file is created)."""
     src, cache = ix.root / INDEX_PATH, ix.root / DB_PATH
     if src.exists() and cache.exists():
-        db = sqlite3.connect(f"file:{cache.as_posix()}?mode=ro", uri=True)
+        db = sqlite3.connect(f"file:{cache.as_posix()}?mode=ro", uri=True, check_same_thread=False)   # read-only; the web app queries it from its thread pool
         try:
             if db.execute("PRAGMA user_version").fetchone()[0] == _stamp(src):
                 return db
         except sqlite3.DatabaseError:
             pass
         db.close()
-    db = sqlite3.connect(":memory:")
+    db = sqlite3.connect(":memory:", check_same_thread=False)
     _rebuild_fts(db, ix)
     return db

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type cytoscape from "cytoscape";
 import { api, q } from "../api";
-import { Empty, Err, RepoSelect, useAsync, useRepos } from "../components";
+import { Empty, Err, RepoSelect, SymbolSearch, useAsync, useRepos } from "../components";
 import { CyGraph, EDGE_KINDS, LAYOUT_LABELS, NODE_KINDS, kindColor } from "../graph";
 import { nav } from "../route";
 
@@ -19,7 +19,6 @@ export default function Graph({ params }: { params: Record<string, string> }) {
   const [hideRepos, setHideRepos] = useState<string[]>([]);
   const [edgeLabels, setEdgeLabels] = useState(false);
   const [find, setFind] = useState("");
-  const [hits, setHits] = useState<any[]>([]);
   const cyRef = useRef<cytoscape.Core | null>(null);
 
   const overview = useAsync(() => (focus ? Promise.resolve(null) : api.get("/api/graph/overview")), [focus]);
@@ -28,11 +27,6 @@ export default function Graph({ params }: { params: Record<string, string> }) {
   const lay = layout || (focus ? "columns" : "cose");
 
   useEffect(() => { setSel(null); setHide([]); setHideRepos([]); setQuery(""); setLayout(""); }, [focus, repo]);
-  useEffect(() => {
-    if (!repo || find.trim().length < 2) { setHits([]); return; }
-    const t = setTimeout(() => api.get(`/api/repos/${repo}/search?${q({ q: find })}`).then(setHits).catch(() => setHits([])), 200);
-    return () => clearTimeout(t);
-  }, [repo, find]);
 
   const elements = useMemo(() => (g ? [...g.nodes, ...g.edges] : []), [g]);
   const counts = useMemo(() => {
@@ -67,15 +61,8 @@ export default function Graph({ params }: { params: Record<string, string> }) {
 
       <div className="gtools">
         {repos.data && <RepoSelect value={repo} onChange={(v) => { setRepo(v); }} repos={repos.data} />}
-        <div className="search">
-          <SearchIcon />
-          <input placeholder="Find a symbol to focus on (e.g. retry)…" value={find} onChange={(e) => setFind(e.target.value)} aria-label="Find a symbol to focus on" />
-          {hits.length > 0 && find && (
-            <div className="hits">
-              {hits.map((h) => <div key={h.id} onClick={() => { setFocus(h.id); setFind(""); setHits([]); }}><span>{h.qualname}</span><span className="muted mono">{h.file}</span></div>)}
-            </div>
-          )}
-        </div>
+        <SymbolSearch repo={repo} value={find} onChange={setFind} onPick={(id) => { if (id.includes("#")) { setFocus(id); setFind(""); } }}
+          placeholder="Zoom into a feature: describe it (e.g. retry upload) or type a name" />
         <div className="search" style={{ maxWidth: 260 }}>
           <SearchIcon />
           <input placeholder="Highlight on graph…" value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Highlight nodes on the graph" />

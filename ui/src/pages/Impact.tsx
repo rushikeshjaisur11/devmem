@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
 import { api, q } from "../api";
-import { Badge, EditorLink, editorHref, Empty, Err, RepoSelect, Term, riskOf, useAsync, useRepos } from "../components";
+import { Badge, EditorLink, editorHref, Empty, Err, RepoSelect, SymbolSearch, Term, riskOf, splitId, useAsync, useRepos } from "../components";
 import { nav } from "../route";
 
 const List = ({ title, items, repo, hint, link }: { title: any; items: any[]; repo: string; hint?: string; link: (id: string) => string | undefined }) => (
   <div className="card"><h3>{title} <span className="muted">({items.length})</span></h3>{hint && items.length > 0 && <p className="muted" style={{ marginTop: 0 }}>{hint}</p>}
     {items.length ? <div className="list">{items.map((i) => {
       const id = typeof i === "string" ? i : i.id || i.job;
-      return <div key={id}><a className="mono" onClick={() => id.includes("#") && nav("impact", { repo, target: id })}>{id}</a>{i.conf ? <span className="muted"> [{i.conf}]</span> : null}<EditorLink href={link(id)} /></div>;
+      const { name, file } = splitId(id);
+      return <div key={id} className="idname"><a onClick={() => id.includes("#") && nav("impact", { repo, target: id })} title={id.includes("#") ? "See what depends on this one" : undefined}><b>{name}</b></a>{file && <span className="muted">{file}</span>}{i.conf ? <span className="muted"> [{i.conf}]</span> : null}<EditorLink href={link(id)} /></div>;
     })}</div> : <span className="muted">none</span>}
   </div>
 );
@@ -40,10 +41,13 @@ export default function Impact({ params }: { params: Record<string, string> }) {
       <p className="sub">Use this before editing a function, table or column: it lists everything that depends on it and the tests that would catch a mistake.</p>
       <div className="row" style={{ marginBottom: 12 }}>
         {repos.data && <RepoSelect value={repo} onChange={setRepo} repos={repos.data} />}
-        <input className="grow" placeholder="symbol, db.table, or db.table.column" value={target} onChange={(e) => setTarget(e.target.value)} onKeyDown={(e) => e.key === "Enter" && run()} aria-label="Impact target" />
+        {cross ? <input className="grow" placeholder="db.table.column" value={target} onChange={(e) => setTarget(e.target.value)} onKeyDown={(e) => e.key === "Enter" && run()} aria-label="Column" />
+          : <SymbolSearch repo={repo} value={target} onChange={setTarget} onPick={(id) => { setTarget(id); run(id); }}
+              placeholder="What will you change? Describe it (e.g. save settings) or type a name, table or table.column" />}
         <label className="row"><input type="checkbox" checked={cross} onChange={(e) => setCross(e.target.checked)} /> column, across all repos</label>
         <button className="primary" disabled={!target || busy} onClick={() => run()}>{busy ? "…" : "Analyse"}</button>
       </div>
+      <p className="hint" style={{ margin: "-4px 0 14px" }}>Don't know the code? Type what the feature does in your own words and pick from the suggestions; each shows what that code is for. Or <a onClick={() => nav("chat")}>ask in plain language</a>.</p>
       <Err msg={err} />
       {!res && !err && <div className="card"><Empty>Enter a function, class, table or column: devmem lists what depends on it before you edit.
         {(examples.data || []).length > 0 && <div className="examples" style={{ justifyContent: "center" }}><span className="muted">Widely used here:</span>{examples.data.map((g: any) => <button key={g.id} className="chip" onClick={() => pickExample(g.id)}>{g.id.split("#")[1]}</button>)}</div>}

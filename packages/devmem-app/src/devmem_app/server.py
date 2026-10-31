@@ -240,8 +240,19 @@ def create_app() -> FastAPI:
     # ---------- explorer ----------
     @app.get("/api/repos/{name}/search")
     def search(name: str, q: str, limit: int = 20):
+        """Code by plain words. Keyword match on names and docstrings; with DEVMEM_LOCAL_EMBED on, the top 40 are re-ranked by
+        meaning too, so "save" also finds persist/store code a user would not know the name of."""
         ix = ix_of(name)
-        return [{**s, "score": round(sc, 1)} for sc, s in ix.find(q, limit)]
+        hits = ix.find(q, max(limit, 40))
+        try:
+            emb = chat_mod.local_embedder()
+        except ImportError:   # DEVMEM_LOCAL_EMBED set without model2vec installed: keyword ranking only
+            emb = None
+        if emb and hits:
+            vecs = chat_mod._embed_cached(emb, [q] + [f"{s['qualname']} {s['doc']} {s['file']}" for _, s in hits])
+            top = hits[0][0] or 1
+            hits = sorted(((0.5 * sc / top + 0.5 * max(chat_mod._cos(vecs[0], v), 0), s) for (sc, s), v in zip(hits, vecs[1:])), key=lambda x: -x[0])
+        return [{**s, "score": round(sc, 2)} for sc, s in hits[:limit]]
 
     # ---------- impact / lineage ----------
     @app.get("/api/repos/{name}/impact")

@@ -57,6 +57,47 @@ export function Copy({ text, label = "Copy" }: { text: string; label?: string })
   return <button className="quiet" onClick={async () => { try { await navigator.clipboard.writeText(text); setDone(true); setTimeout(() => setDone(false), 1500); } catch { /* clipboard blocked: text stays selectable */ } }}>{done ? "Copied" : label}</button>;
 }
 
+/* ---------- find code without knowing its name ---------- */
+/** "path/to/file.ts#Class.method" -> { name: "Class.method", file: "path/to/file.ts" }, for showing ids to people. */
+export const splitId = (id: string) => ({ name: id.includes("#") ? id.split("#")[1] : id, file: id.includes("#") ? id.split("#")[0] : "" });
+
+/** Type what the code does in plain words ("save settings", "retry upload") or part of a name; pick from suggestions that
+ *  show each function's description. Enter without picking passes the text as typed (tables, columns, exact ids). */
+export function SymbolSearch({ repo, value, onChange, onPick, placeholder = "Describe it in plain words, e.g. save settings, or type a name" }:
+  { repo: string; value: string; onChange: (v: string) => void; onPick: (id: string) => void; placeholder?: string }) {
+  const [hits, setHits] = useState<Json[]>([]);
+  const [open, setOpen] = useState(false);
+  const [i, setI] = useState(0);
+  useEffect(() => {
+    if (!repo || value.trim().length < 2 || value.includes("#")) { setHits([]); return; }
+    const t = setTimeout(() => api.get(`/api/repos/${repo}/search?q=${encodeURIComponent(value)}&limit=8`).then(setHits).catch(() => setHits([])), 180);
+    return () => clearTimeout(t);
+  }, [repo, value]);
+  const pick = (id: string) => { onPick(id); setOpen(false); };
+  const show = open && hits.length > 0;
+  return (
+    <div className="search sym-search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+      <input value={value} placeholder={placeholder} role="combobox" aria-expanded={show} aria-autocomplete="list" aria-label={placeholder}
+        onChange={(e) => { onChange(e.target.value); setOpen(true); setI(0); }} onFocus={() => setOpen(true)} onBlur={() => setTimeout(() => setOpen(false), 150)}
+        onKeyDown={(e) => {
+          if (e.key === "ArrowDown") { e.preventDefault(); setI(Math.min(i + 1, hits.length - 1)); }
+          else if (e.key === "ArrowUp") { e.preventDefault(); setI(Math.max(i - 1, 0)); }
+          else if (e.key === "Escape") setOpen(false);
+          else if (e.key === "Enter" && value.trim()) { e.preventDefault(); pick(show && hits[i] ? hits[i].id : value.trim()); }
+        }} />
+      {show && <div className="hits" role="listbox">
+        {hits.map((h, n) => (
+          <div key={h.id} role="option" aria-selected={n === i} className={n === i ? "on" : ""} onMouseDown={() => pick(h.id)} onMouseEnter={() => setI(n)}>
+            <span><b>{h.qualname}</b>{h.doc && <small>{h.doc}</small>}</span>
+            <span className="muted mono">{h.file}:{h.line}</span>
+          </div>
+        ))}
+      </div>}
+    </div>
+  );
+}
+
 /* ---------- open in editor ---------- */
 export const EDITORS: Record<string, [string, string]> = { vscode: ["VS Code", "vscode://file/"], cursor: ["Cursor", "cursor://file/"], none: ["Off", ""] };
 export const getEditor = () => { try { return localStorage.getItem("devmem-editor") || "vscode"; } catch { return "vscode"; } };

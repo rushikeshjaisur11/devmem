@@ -13,7 +13,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-from .index import Index
+from .index import Index, _stem
 
 CATALOG = ".devmem/reuse-catalog.json"
 STDLIB = set(getattr(sys, "stdlib_module_names", ())) | {"__future__"}
@@ -24,20 +24,10 @@ def tokens(text: str) -> list[str]:
     return [t.lower() for t in re.split(r"[^A-Za-z0-9]+", text) if len(t) > 1]
 
 
-_SUFFIX = ("ators", "ations", "ator", "ation", "ating", "ated", "ate", "ings", "ing", "ers", "er", "ed", "es", "ion", "s")
 # words that say "I want to build something" or are plain grammar: they carry no information about WHICH code matches
 STOP = {"how", "do", "does", "did", "an", "the", "to", "of", "for", "in", "on", "with", "and", "or", "is", "are", "it", "this", "that", "my",
         "we", "can", "should", "what", "which", "when", "where", "why", "use", "using", "from", "into", "be", "as", "at", "by", "our", "you",
         "your", "add", "create", "make", "implement", "build", "write", "support", "need", "want", "please", "new", "feature", "all", "any"}
-
-
-def _stem(t: str) -> str:
-    """Crude suffix stripping so validate / validator / validation and table / tables / parse / parsing meet in the middle."""
-    for suf in _SUFFIX:
-        if t.endswith(suf) and len(t) - len(suf) >= 4:
-            t = t[: -len(suf)]
-            break
-    return t[:-1] if t.endswith("e") and len(t) > 4 else t
 
 
 def stem_tokens(text: str) -> list[str]:
