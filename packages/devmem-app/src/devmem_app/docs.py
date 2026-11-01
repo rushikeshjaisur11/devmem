@@ -131,12 +131,18 @@ def _try(url: str) -> str | None:
 
 
 def add(spec: str, name: str | None = None, follow: bool = True, max_pages: int = 40, dest: Path | None = None) -> dict:
-    """spec: an llms.txt / llms-full.txt / web page URL, `pypi:<pkg>` or `npm:<pkg>`."""
+    """spec: an llms.txt / llms-full.txt / web page URL, `pypi:<pkg>[==ver]`, `npm:<pkg>[@ver]`, or a local file/folder of docs.
+    Without a version the latest release is fetched; with one, that release (for a repo that cannot upgrade yet)."""
     pages: list[tuple[str, str, str]] = []   # (title, url, markdown)
     version, kind = "", "url"
-    if spec.startswith("pypi:"):
-        pkg = spec[5:].strip()
-        info = json.loads(get(f"https://pypi.org/pypi/{urllib.parse.quote(pkg)}/json"))["info"]
+    local = Path(spec).expanduser() if not re.match(r"^(https?|pypi|npm):", spec) else None
+    if local and local.exists():
+        kind, spec = "local", str(local.resolve())
+        pages = _from_local(local.resolve(), max(max_pages, 200))   # a local folder is usually a whole docs tree; MAX_LIB still caps it
+        name = name or _slug(local.stem if local.is_file() else local.name)
+    elif spec.startswith("pypi:"):
+        pkg, _, want = spec[5:].strip().partition("==")
+        info = json.loads(get(f"https://pypi.org/pypi/{urllib.parse.quote(pkg)}/{urllib.parse.quote(want) + '/' if want else ''}json"))["info"]
         name, version, kind = name or _norm(pkg), info.get("version", ""), "pypi"
         pages.append((f"{pkg} {version}: overview", f"https://pypi.org/project/{pkg}/", f"# {info.get('name')} {version}\n\n{info.get('summary') or ''}\n\n{info.get('description') or ''}"))
         urls = info.get("project_urls") or {}
@@ -153,9 +159,11 @@ def add(spec: str, name: str | None = None, follow: bool = True, max_pages: int 
             if spec_llms:
                 pages += _from_llms(spec_llms[0], spec_llms[1], follow, max_pages)
     elif spec.startswith("npm:"):
-        pkg = spec[4:].strip()
+        pkg, want = spec[4:].strip(), ""
+        if "@" in pkg[1:]:   # npm:zod@3.22.4, npm:@scope/pkg@1.0
+            pkg, want = pkg[0] + pkg[1:].split("@", 1)[0], pkg[1:].split("@", 1)[1]
         qp = urllib.parse.quote(pkg, safe="@")
-        meta = json.loads(get(f"https://registry.npmjs.org/{qp}/latest"))   # the full packument can be many MB; `latest` is small
+        meta = json.loads(get(f"https://registry.npmjs.org/{qp}/{urllib.parse.quote(want) if want else 'latest'}"))   # the full packument can be many MB
         version = meta.get("version", "")
         name, kind = name or _slug(pkg.lstrip("@")), "npm"
         readme = ""
@@ -187,6 +195,21 @@ def add(spec: str, name: str | None = None, follow: bool = True, max_pages: int 
     if not pages:
         raise RuntimeError(f"nothing fetched from {spec}")
     return _save(name or _slug(spec), spec, kind, version, pages, follow, max_pages, dest)
+
+
+LOCAL_EXT = {".md", ".mdx", ".markdown", ".txt", ".rst", ".html", ".htm"}
+
+
+def _from_local(p: Path, max_pages: int) -> list[tuple[str, str, str]]:
+    """A docs file, or every docs file under a folder (sorted, hidden/vendored folders skipped). Re-read on refresh."""
+    files = [p] if p.is_file() else sorted(f for f in p.rglob("*") if f.is_file() and f.suffix.lower() in LOCAL_EXT
+                                           and not any(x.startswith(".") or x == "node_modules" for x in f.relative_to(p).parts))
+    pages = []
+    for f in files[:max_pages]:
+        text = f.read_text(encoding="utf-8", errors="replace")
+        t, md = _page(f.as_uri(), text)
+        pages.append((t or f.stem, f.as_uri(), md))
+    return pages
 
 
 def _from_llms(url: str, text: str, follow: bool, max_pages: int) -> list[tuple[str, str, str]]:
@@ -331,15 +354,37 @@ def latest_version(eco: str, name: str) -> str | None:
 from devmem.reuse import version_behind as behind  # noqa: E402  (one implementation, shared with the agent side)
 
 
+def locked_versions(root: Path) -> dict[tuple[str, str], str]:
+    """Exact installed versions from lockfiles: package-lock.json, uv.lock / poetry.lock, and `==` pins in requirements."""
+    root, out = Path(root), {}
+    pl = root / "package-lock.json"
+    if pl.exists():
+        for k, v in (json.loads(pl.read_text(encoding="utf-8")).get("packages") or {}).items():
+            if k.startswith("node_modules/") and "/node_modules/" not in k and v.get("version"):
+                out[("npm", k[len("node_modules/"):].lower())] = v["version"]
+    for lock in ("uv.lock", "poetry.lock"):
+        f = root / lock
+        if f.exists():
+            for name, ver in re.findall(r'\[\[package\]\]\s*\nname\s*=\s*"([^"]+)"\s*\nversion\s*=\s*"([^"]+)"', f.read_text(encoding="utf-8")):
+                out[("pypi", _norm(name))] = ver
+    for d in scan_deps(root):
+        m = re.fullmatch(r"==([\w.]+)", d["spec"] or "")
+        if d["eco"] == "pypi" and m:
+            out.setdefault(("pypi", d["name"]), m.group(1))
+    return out
+
+
 def libs_report(root: Path, online: bool = True) -> list[dict]:
     deps = scan_deps(root)
+    locked = locked_versions(root)
     have = {_norm(l["name"]) for l in list_libs()}
     if online:
         with ThreadPoolExecutor(8) as ex:
             latest = list(ex.map(lambda d: latest_version(d["eco"], d["name"]), deps))
     else:
         latest = [None] * len(deps)
-    return [{**d, "latest": lt, "behind": behind(d["spec"], lt), "docs": _norm(d["name"]) in have} for d, lt in zip(deps, latest)]
+    return [{**d, "locked": locked.get((d["eco"], d["name"])), "latest": lt, "behind": behind(locked.get((d["eco"], d["name"])) or d["spec"], lt),
+             "docs": _norm(d["name"]) in have} for d, lt in zip(deps, latest)]
 
 
 def write_libs(root: Path, online: bool = True) -> list[dict]:
@@ -371,3 +416,81 @@ def copy_relevant(root: Path) -> list[str]:
     if not got and dest.exists():
         shutil.rmtree(dest, ignore_errors=True)
     return got
+
+
+# ---------- upgrade notes: what changed between the version a repo uses and the latest ----------
+def _ver(s: str) -> tuple:
+    m = re.search(r"(\d+(?:\.\d+)*)", s or "")
+    return tuple(int(x) for x in m.group(1).split(".")[:3]) + (0, 0, 0) if m else ()
+
+
+def source_repo(eco: str, name: str) -> str | None:
+    """owner/repo on GitHub for a package, from its PyPI project URLs or npm `repository`."""
+    if eco == "pypi":
+        info = json.loads(get(f"https://pypi.org/pypi/{urllib.parse.quote(name)}/json", 15))["info"]
+        urls = list((info.get("project_urls") or {}).values()) + [info.get("home_page") or ""]
+    else:
+        meta = json.loads(get(f"https://registry.npmjs.org/{urllib.parse.quote(name, safe='@')}/latest", 15))
+        repo = meta.get("repository")
+        urls = [repo.get("url", "") if isinstance(repo, dict) else str(repo or ""), meta.get("homepage") or ""]
+    for u in urls:
+        m = re.search(r"github\.com[/:]([\w.-]+)/([\w.-]+?)(?:\.git)?(?:[/#?]|$)", u or "")
+        if m:
+            return f"{m.group(1)}/{m.group(2)}"
+    return None
+
+
+def release_notes(repo: str, frm: str, to: str | None, cap: int = 60_000) -> list[tuple[str, str]]:
+    """[(tag, body)] of GitHub releases newer than `frm` up to `to`, oldest first. Set GITHUB_TOKEN to lift the API rate limit."""
+    import os
+    req = urllib.request.Request(f"https://api.github.com/repos/{repo}/releases?per_page=100",
+                                 headers={"User-Agent": UA, "Accept": "application/vnd.github+json",
+                                          **({"Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}"} if os.environ.get("GITHUB_TOKEN") else {})})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        rels = json.loads(r.read().decode("utf-8", "replace"))
+    lo, hi = _ver(frm), _ver(to) if to else (10**9,)
+    picked = sorted(((_ver(x.get("tag_name", "")), x.get("tag_name", ""), x.get("body") or "") for x in rels
+                     if not x.get("prerelease") and _ver(x.get("tag_name", "")) and lo < _ver(x.get("tag_name", "")) <= hi))
+    out, total = [], 0
+    for _, tag, body in picked:
+        total += len(body)
+        if total > cap:
+            break
+        out.append((tag, body.strip()))
+    return out
+
+
+def add_upgrade_notes(root: Path, only: set[str] | None = None) -> dict:
+    """For each dependency a repo uses at an older version than the latest and has docs on file, store the release notes in
+    between as a page of that library's docs (`upgrade notes <from> -> <to>`), so agents read what changed offline."""
+    res = {}
+    dirs = {}
+    for l in list_libs():   # stored names differ from package names for npm scopes (@a/b -> a-b): match on both
+        dirs[_norm(l["name"])] = dirs[_norm(str(l["source"]).split(":", 1)[-1].split("==")[0])] = docs_dir() / l["name"]
+    for row in libs_report(root, online=True):
+        name, used = row["name"], row.get("locked") or row["spec"]
+        lib = dirs.get(_norm(name), docs_dir() / "-")
+        if (only and name not in only) or not row["docs"] or not row["latest"] or not (lib / "manifest.json").exists() \
+                or not _ver(used) or _ver(used) >= _ver(row["latest"]):
+            continue
+        try:
+            repo = source_repo(row["eco"], name)
+            notes = release_notes(repo, used, row["latest"]) if repo else []
+        except Exception as e:   # network or API limit: report per library, keep going
+            res[name] = f"failed: {e}"
+            continue
+        if not notes:
+            res[name] = "no GitHub release notes found"
+            continue
+        frm = re.search(r"(\d+(?:\.\d+)*)", used).group(1)
+        title = f"{name} upgrade notes {frm} -> {row['latest']}"
+        body = f"# {title}\n\nRelease notes between the version this repo uses and the latest. Read before using newer APIs.\n\n" + \
+               "\n\n".join(f"## {tag}\n\n{b}" for tag, b in notes)
+        man = json.loads((lib / "manifest.json").read_text(encoding="utf-8"))
+        fn = f"upgrade-{_slug(frm)}-{_slug(row['latest'])}.md"
+        (lib / fn).write_text(f"<!-- source: https://github.com/{repo}/releases -->\n{body}\n", encoding="utf-8")
+        man["pages"] = [p for p in man.get("pages", []) if not p["file"].startswith("upgrade-")] + \
+                       [{"file": fn, "url": f"https://github.com/{repo}/releases", "title": title, "sha1": hashlib.sha1(body.encode()).hexdigest()[:12]}]
+        (lib / "manifest.json").write_text(json.dumps(man, indent=1), encoding="utf-8")
+        res[name] = f"{len(notes)} releases {frm} -> {row['latest']}"
+    return res

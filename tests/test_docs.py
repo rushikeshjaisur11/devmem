@@ -252,3 +252,68 @@ def test_agent_side_plan_file_progress_still_works(tmp_path, capsys):
     finally:
         os.chdir(cwd)
     assert core_plan.parse("# t\nno steps here")["steps"] == []
+
+
+def test_local_docs_folder_is_stored_and_refreshable(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEVMEM_HOME", str(tmp_path / "home"))
+    from devmem_app import docs as dm
+    d = tmp_path / "Internal Guide"
+    (d / "api").mkdir(parents=True)
+    (d / "index.md").write_text("# Internal guide\nHow we call the billing service.", encoding="utf-8")
+    (d / "api" / "auth.md").write_text("# Auth\nTokens expire after 1h.", encoding="utf-8")
+    (d / "logo.png").write_bytes(b"\x89PNG")
+    (d / ".git").mkdir(); (d / ".git" / "x.md").write_text("ignored", encoding="utf-8")
+    m = dm.add(str(d))
+    assert m["name"] == "internal-guide" and m["kind"] == "local" and len(m["pages"]) == 2
+    (d / "api" / "auth.md").write_text("# Auth\nTokens expire after 2h.", encoding="utf-8")
+    assert "internal-guide" in dm.refresh()
+    stored = "".join(p.read_text(encoding="utf-8") for p in (tmp_path / "home").rglob("*auth*.md"))
+    assert "2h" in stored
+
+
+def test_changing_code_surfaces_docs_for_the_libraries_it_uses(tmp_path, monkeypatch, capsys):
+    from devmem_app.indexer import index_repo
+    repo = tmp_path / "svc"
+    (repo / "app").mkdir(parents=True)
+    (repo / "app" / "signup.py").write_text(
+        "import json\nfrom fancylib import validate_email\n\n\ndef signup(addr):\n    return validate_email(addr)\n\n\n"
+        "def dump(x):\n    return json.dumps(x)\n", encoding="utf-8")
+    lib = repo / ".devmem/docs/fancylib"
+    lib.mkdir(parents=True)
+    (lib / "01-email.md").write_text("# Validating email\nUse `validate_email(addr, check_deliverability=False)` since 3.0.\n\n"
+                                     "# Parsing dates\nUse parse_date.\n", encoding="utf-8")
+    (lib / "manifest.json").write_text(json.dumps({"name": "fancylib", "source": "pypi:fancylib", "version": "3.1", "fetched": "2026-10-30",
+                                                   "pages": [{"file": "01-email.md", "url": "https://fancylib.dev/email", "title": "Email"}]}), encoding="utf-8")
+    index_repo(repo)
+    monkeypatch.chdir(repo)
+    assert main(["show", "signup"]) == 0
+    out = capsys.readouterr().out
+    assert "# library docs for this code" in out and "fancylib 3.1" in out and "Validating email" in out
+    assert main(["show", "dump"]) == 0 and "library docs" not in capsys.readouterr().out      # json is stdlib, no docs
+    assert main(["recall", "change signup validation", "--files", "app/signup.py"]) == 0
+    assert "LIBRARY DOCS FOR THIS CODE" in capsys.readouterr().out
+    assert main(["docs", "--for", "app/signup.py"]) == 0 and "check_deliverability" in capsys.readouterr().out
+    (repo / ".devmem/libs.json").write_text(json.dumps([{"eco": "pypi", "name": "fancylib", "spec": ">=2", "locked": "2.4.0"}]), encoding="utf-8")
+    assert main(["show", "signup"]) == 0
+    assert "docs describe 3.1 but this repo uses 2.4.0" in capsys.readouterr().out
+
+
+def test_upgrade_notes_store_release_notes_between_used_and_latest(tmp_path, monkeypatch):
+    import io
+    monkeypatch.setenv("DEVMEM_HOME", str(tmp_path / "home"))
+    from devmem_app import docs as dm
+    lib = dm.docs_dir() / "fancylib"
+    lib.mkdir(parents=True)
+    (lib / "manifest.json").write_text(json.dumps({"name": "fancylib", "source": "pypi:fancylib", "version": "3.1", "fetched": "2026-10-30", "pages": []}), encoding="utf-8")
+    monkeypatch.setattr(dm, "libs_report", lambda root, online=True: [{"eco": "pypi", "name": "fancylib", "spec": ">=2", "locked": "2.4.0", "latest": "3.1.0", "docs": True}])
+    monkeypatch.setattr(dm, "source_repo", lambda eco, name: "acme/fancylib")
+    rels = [{"tag_name": t, "body": f"notes for {t}", "prerelease": False} for t in ("v2.3.0", "v2.5.0", "v3.0.0", "v3.1.0", "v3.2.0")]
+
+    class R(io.BytesIO):
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+    monkeypatch.setattr(dm.urllib.request, "urlopen", lambda req, timeout=20: R(json.dumps(rels).encode()))
+    assert dm.add_upgrade_notes(tmp_path) == {"fancylib": "3 releases 2.4.0 -> 3.1.0"}
+    page = (lib / "upgrade-2-4-0-3-1-0.md").read_text(encoding="utf-8")
+    assert "notes for v2.5.0" in page and "notes for v3.1.0" in page and "v2.3.0" not in page and "v3.2.0" not in page
+    assert json.loads((lib / "manifest.json").read_text(encoding="utf-8"))["pages"][0]["title"] == "fancylib upgrade notes 2.4.0 -> 3.1.0"

@@ -123,10 +123,12 @@ class Provider(Protocol):
 
 
 class VertexProvider:
-    """Gemini on Vertex AI through google-genai (pip install google-genai); credentials via ADC."""
-    def __init__(self, project: str, location: str, model: str, embed_model: str | None):
+    """Gemini on Vertex AI through google-genai (pip install google-genai): an API key (Vertex express mode)
+    when one is given, otherwise a project with ADC credentials (gcloud auth application-default login)."""
+    def __init__(self, project: str | None, location: str, model: str, embed_model: str | None, api_key: str | None = None):
         from google import genai  # lazy: only needed when configured
-        self.client = genai.Client(vertexai=True, project=project, location=location)
+        self.client = (genai.Client(vertexai=True, api_key=api_key) if api_key
+                       else genai.Client(vertexai=True, project=project, location=location))
         self.model, self.embed_model, self.name = model, embed_model, f"vertex:{model}"
 
     def generate(self, prompt: str) -> str:
@@ -143,19 +145,47 @@ class VertexProvider:
         return out
 
 
+class LocalEmbedder:
+    """Offline meaning-based ranking with a small static embedding model (pip install model2vec). Opt in with
+    DEVMEM_LOCAL_EMBED=1 (default model) or =<huggingface model id>; the model is downloaded once, then runs offline on CPU."""
+    def __init__(self, model: str):
+        from model2vec import StaticModel   # lazy: optional dependency
+        self.m, self.name = StaticModel.from_pretrained(model), f"local:{model}"
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return [list(map(float, v)) for v in self.m.encode(texts)]
+
+
+_local: dict = {}
+
+
+def local_embedder() -> LocalEmbedder | None:
+    spec = os.environ.get("DEVMEM_LOCAL_EMBED", "")
+    if not spec or spec == "0":
+        return None
+    model = "minishlab/potion-base-8M" if spec == "1" else spec
+    if model not in _local:
+        _local[model] = LocalEmbedder(model)
+    return _local[model]
+
+
+def _api_key() -> str | None:
+    return os.environ.get("DEVMEM_VERTEX_API_KEY") or os.environ.get("GOOGLE_API_KEY") or None
+
+
 def provider_from_env() -> Provider | None:
-    project = os.environ.get("DEVMEM_VERTEX_PROJECT")
-    if not project:
+    project, key = os.environ.get("DEVMEM_VERTEX_PROJECT"), _api_key()
+    if not (project or key):
         return None
     return VertexProvider(project, os.environ.get("DEVMEM_VERTEX_LOCATION", "us-central1"),
                           os.environ.get("DEVMEM_VERTEX_MODEL", "gemini-2.5-flash"),
-                          os.environ.get("DEVMEM_VERTEX_EMBED_MODEL") or None)
+                          os.environ.get("DEVMEM_VERTEX_EMBED_MODEL") or None, key)
 
 
 def llm_status() -> dict:
-    p = os.environ.get("DEVMEM_VERTEX_PROJECT")
+    p = os.environ.get("DEVMEM_VERTEX_PROJECT") or _api_key()
     return {"configured": bool(p), "model": os.environ.get("DEVMEM_VERTEX_MODEL", "gemini-2.5-flash") if p else None,
-            "embeddings": bool(p and os.environ.get("DEVMEM_VERTEX_EMBED_MODEL"))}
+            "embeddings": bool(p and os.environ.get("DEVMEM_VERTEX_EMBED_MODEL")) or os.environ.get("DEVMEM_LOCAL_EMBED", "0") != "0"}
 
 
 def _cos(a, b) -> float:
@@ -207,9 +237,14 @@ def retrieve(question: str, repos: dict[str, Path], limit: int = 8, provider: Pr
         return []
     top = cands[0][0]
     scores = [s / top for s, _, _ in cands]
-    if provider is not None:
+    emb = provider if provider is not None and getattr(provider, "embed_model", None) else None
+    try:
+        emb = emb or local_embedder()
+    except ImportError:
+        emb = None   # DEVMEM_LOCAL_EMBED set but model2vec not installed: keyword ranking only
+    if emb is not None:
         try:
-            vecs = _embed_cached(provider, [question] + [d["title"] + " " + d["text"][:300] for _, d, _ in cands])
+            vecs = _embed_cached(emb, [question] + [d["title"] + " " + d["text"][:300] for _, d, _ in cands])
             scores = [0.5 * s + 0.5 * max(_cos(vecs[0], v), 0) for s, v in zip(scores, vecs[1:])]
         except Exception:
             pass  # embeddings are an optional boost; BM25 order stands

@@ -150,7 +150,8 @@ def merge(idx: dict, scip_edges: list[dict], covered: set[str]) -> dict:
 
 # ---------- running the indexers ----------
 def run_indexer(root: Path, idx: dict, timeout: int = 900) -> tuple[list[Path], list[str]]:
-    """Run scip-python and/or scip-typescript for the languages present. Returns (scip files, messages)."""
+    """Run scip-python and/or scip-typescript (via npx) for the languages present, plus scip-go / scip-java when those binaries
+    are installed. Returns (scip files, messages)."""
     langs = {f["lang"] for f in idx["files"].values()}
     npx = shutil.which("npx") or shutil.which("npx.cmd")
     out, msgs = [], []
@@ -159,8 +160,23 @@ def run_indexer(root: Path, idx: dict, timeout: int = 900) -> tuple[list[Path], 
         jobs.append(("scip-python", ["@sourcegraph/scip-python", "index", "--project-name", idx.get("repo", root.name), "--project-version", "0"]))
     if langs & {"ts", "js"} and ((root / "tsconfig.json").exists() or (root / "package.json").exists()):
         jobs.append(("scip-typescript", ["@sourcegraph/scip-typescript", "index"] + ([] if (root / "tsconfig.json").exists() else ["--infer-tsconfig"])))
-    if not npx:
-        return [], ["npx not found: install Node.js, or pass an existing index with --scip-file"]
+    for name, lang_set, ok in NATIVE:
+        exe = shutil.which(name)
+        if exe and langs & lang_set and ok(root) and not (root / "index.scip").exists():
+            dest = Path(tempfile.mkdtemp(prefix="devmem-scip-")) / f"{name}.scip"
+            try:   # these write index.scip into the project root; move it out so the repo stays untouched
+                r = subprocess.run([exe] + (["index"] if name == "scip-java" else []), cwd=str(root), capture_output=True, text=True,
+                                   errors="replace", timeout=timeout, check=False)
+            except (subprocess.TimeoutExpired, OSError) as e:
+                msgs.append(f"{name}: {e}")
+                continue
+            if (root / "index.scip").exists():
+                shutil.move(str(root / "index.scip"), dest)
+                out.append(dest)
+            else:
+                msgs.append(f"{name} failed: {((r.stderr or r.stdout).strip().splitlines() or ['no output'])[-1][:160]}")
+    if jobs and not npx:
+        return out, msgs + ["npx not found: install Node.js, or pass an existing index with --scip-file"]
     for name, args in jobs:
         dest = Path(tempfile.mkdtemp(prefix="devmem-scip-")) / f"{name}.scip"
         preload_dir = None
@@ -198,10 +214,18 @@ def run_indexer(root: Path, idx: dict, timeout: int = 900) -> tuple[list[Path], 
     return out, msgs
 
 
+# indexers installed as binaries: optional (used when on PATH), so Go/Java repos still index without them
+NATIVE = [("scip-go", {"go"}, lambda r: (r / "go.mod").exists()),
+          ("scip-java", {"java", "kotlin"}, lambda r: any((r / f).exists() for f in ("pom.xml", "build.gradle", "build.gradle.kts", "build.sbt")))]
+
+
 def applicable(root: Path, idx: dict) -> set[str]:
     """Languages SCIP can index in this repo (mirrors the jobs run_indexer starts)."""
     langs = {f["lang"] for f in idx["files"].values()}
     out = {"python"} & langs
+    for name, lang_set, ok in NATIVE:
+        if langs & lang_set and shutil.which(name) and ok(root):
+            out |= langs & lang_set
     if langs & {"ts", "js"} and ((root / "tsconfig.json").exists() or (root / "package.json").exists()):
         out |= {"ts", "js"} & langs
     return out

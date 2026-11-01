@@ -9,6 +9,8 @@ dependencies = [
   # accuracy is not optional: these are always installed and always used
   "graphifyy",                                                              # tree-sitter call graph, cross-checks our edges
   "tree-sitter>=0.22", "tree-sitter-javascript>=0.21", "tree-sitter-typescript>=0.21",   # JS/TS parsing
+  "tree-sitter-go>=0.23", "tree-sitter-java>=0.23",                                       # Go/Java parsing
+  "tree-sitter-rust>=0.23", "tree-sitter-c-sharp>=0.23", "tree-sitter-kotlin>=1.0",       # Rust/C#/Kotlin parsing
   "ruff", "vulture", "radon", "deptry", "bandit", "sqlfluff",               # hygiene reports
 ]
 
@@ -17,6 +19,7 @@ devmem = { workspace = true }
 
 [project.optional-dependencies]
 test = ["httpx", "pytest"]
+embed = ["model2vec"]   # offline meaning-based ranking in Chat (DEVMEM_LOCAL_EMBED=1)
 
 [project.scripts]
 devmem-app = "devmem_app.cli:main"

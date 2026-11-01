@@ -138,3 +138,27 @@ def test_cli_exit_codes(repo, monkeypatch, capsys):
     assert "FAIL    [new_dependency]" in capsys.readouterr().out
     monkeypatch.setenv("DEVMEM_PR_BODY", "devmem-allow: new_dependency needed for http client")
     assert main(["diffcheck"]) == 0
+
+
+def test_review_summarises_changed_symbols_and_gaps_lists_untested_code(tmp_path, monkeypatch, capsys):
+    import shutil
+    import subprocess
+    from pathlib import Path
+    from devmem.cli import main
+    from devmem_app.indexer import index_repo
+    repo = tmp_path / "py_app"
+    shutil.copytree(Path(__file__).parent.parent / "fixtures/py_app", repo)
+    g = ["git", "-c", "user.email=a@b", "-c", "user.name=a"]
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(g + ["add", "-A"], cwd=repo, check=True)
+    subprocess.run(g + ["commit", "-qm", "base"], cwd=repo, check=True)
+    index_repo(repo)
+    p = repo / "app/retry.py"
+    p.write_text(p.read_text(encoding="utf-8").replace("time.sleep(delay)", "time.sleep(delay * 2)"), encoding="utf-8")
+    monkeypatch.chdir(repo)
+    assert main(["review"]) == 0
+    out = capsys.readouterr().out
+    assert "### devmem review" in out and "`app/retry.py#retry`" in out and "Affected tests" in out
+    assert main(["gaps"]) == 0
+    out = capsys.readouterr().out
+    assert "no test reaches it" in out or "no untested code" in out

@@ -7,9 +7,21 @@ description: Use at the start of any coding task in a repo that has a .devmem/ f
 
 devmem keeps token use low and diffs small. Follow this order; every step replaces reading files in bulk.
 
+## Token budget (every tool result is re-sent on every later turn, so small outputs compound)
+
+- One `recall` per task, not per step. Never re-run a query you already ran; reuse its answer.
+- Search narrow first: `find "<2-4 words>" -n 5`. Widen (`-n 20`, other words) only if the hit is missing.
+- `show <symbol>` (first 80 lines; `--full` only when you must edit past them) and `outline <file>` instead of reading files. When you must open a file, read only the line range `find`/`show` gave you.
+- `impact` lists are capped at 12 items; add `--all` only for a signature or contract change.
+- Read `map.md` once; open a topic file only when the task touches that topic.
+- Pipe nothing big into your context: `check` prints one line per passing step and only the failing lines. Do not run the full test suite or `cat` logs unless `check` says no tests are mapped.
+- Keep your own messages short: report what changed and what was verified, not a narrative.
+
 ## 0. Make sure the CLI exists (once per session)
 
-Run `devmem --version`. If it is missing, run `bash <this skill folder>/scripts/bootstrap.sh` (it installs the wheel bundled in `vendor/`, or from git if `DEVMEM_GIT_URL` is set). If all fail, tell the user and continue without devmem. Do not retry in a loop. If `devmem reuse --help` fails, the installed CLI is older than this skill: run `python3 -m pip install --force-reinstall <this skill folder>/vendor/devmem-*.whl`.
+Run `devmem --version`. If it is missing, run `bash <this skill folder>/scripts/bootstrap.sh` (it installs the wheel bundled in `vendor/`, or from git if `DEVMEM_GIT_URL` is set). If all fail, tell the user and continue without devmem. Do not retry in a loop. If `devmem reuse --help` fails, the installed CLI is older than this skill: run `python3 -m pip install --force-reinstall <this skill folder>/vendor/devmem-*.whl` (on Windows `python` or `py -3` instead of `python3`).
+
+If `devmem_*` MCP tools are available, call them instead of the shell commands below: same commands, same output, no shell.
 
 If `.devmem/index.json` does not exist in the repo, devmem has no data here: work normally and mention that `devmem-app publish <repo>` has not been run.
 
@@ -19,7 +31,7 @@ If `.devmem/index.json` does not exist in the repo, devmem has no data here: wor
 2. Read `.devmem/knowledge/map.md` (ranked repo map), then only the topic files that match the task (`commands.md`, `conventions.md`, `helpers.md`, `lineage.md`, `no-touch.md`, `hygiene.md`).
 3. Before writing anything non-trivial, look for code that already exists in the organisation's other repos: `devmem reuse "<what you need>"`. It shows source, tests and dependencies of matching code and rates the effort to adapt it here (`--prompt` prints porting instructions). Copy with a one-line origin comment and fit this repo's conventions instead of rewriting.
    - If `.devmem/hub.txt` exists (or `DEVMEM_HUB` is set) there is a central knowledge hub with every onboarded repo. Run `devmem hub sync` once per session (needs git read access to it; if it fails, carry on: `devmem reuse` falls back to the catalog committed in this repo). `devmem hub repos` lists what the hub knows; `devmem hub show <repo>` prints another repo's overview.
-4. Older org code can predate what the libraries offer today. For any new requirement run `devmem docs "<need>"` (offline copy of the CURRENT library documentation, with version and fetch date; `devmem docs --list` shows what exists). When a `devmem reuse` card shows `MODERNIZE`, tell the user: "this repo/other repo already solves it, but <library> <version> now provides it built in; the existing code hand-rolls it", and prefer the built-in. If the docs on file do not cover the need, say so instead of guessing an API from memory.
+4. Older org code can predate what the libraries offer today. When you change existing code, `devmem show` and `recall` end with a `library docs for this code` list: the latest docs for the libraries that code imports. Read the named section (`devmem docs --for <file|symbol>` prints them) and write against that API version, not the pattern already in the file. If the pointer warns that the docs describe another major version than the repo uses, use only APIs that exist in the repo's version and say so in the PR. For any new requirement run `devmem docs "<need>"` (offline copy of the CURRENT library documentation, with version and fetch date; `devmem docs --list` shows what exists). When a `devmem reuse` card shows `MODERNIZE`, tell the user: "this repo/other repo already solves it, but <library> <version> now provides it built in; the existing code hand-rolls it", and prefer the built-in. If the docs on file do not cover the need, say so instead of guessing an API from memory.
 5. If the task is "execute this plan" (a plan file in `.devmem/plans/`), stop here and use the `devmem-plan` skill instead.
 6. Locate code: `devmem find "<concept>"`, `devmem show <symbol>`, `devmem outline <file>`. Prefer these to `grep`/`cat` on whole files. Reuse what `devmem helpers` lists before writing a new helper.
 

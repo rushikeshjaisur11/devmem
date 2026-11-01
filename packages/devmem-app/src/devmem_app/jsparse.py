@@ -58,10 +58,16 @@ def _sig(n, src_lines: list[str]) -> str:
 
 
 def _doc(n) -> str:
-    prev = n.prev_sibling
-    if prev is not None and prev.type == "comment" and prev.end_point[0] >= n.start_point[0] - 1:
-        text = _t(prev)
+    if n.parent is not None and n.parent.type == "export_statement":   # `export function f` keeps its comment outside
+        n = n.parent
+    prev, block = n.prev_sibling, []
+    while prev is not None and prev.type == "comment" and prev.end_point[0] >= (block[0] if block else n).start_point[0] - 1:
+        block.insert(0, prev)   # consecutive `//` lines are separate nodes; the doc starts at the first one
+        prev = prev.prev_sibling
+    if block:
+        text = "\n".join(_t(c) for c in block)
         for ln in text.strip("/* \n").splitlines():
+            ln = ln.strip().removeprefix("//")
             ln = ln.strip(" */")
             if ln and not ln.startswith("@"):
                 return ln[:160]

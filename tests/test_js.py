@@ -3,6 +3,7 @@ import shutil
 from pathlib import Path
 
 from devmem import check as chk
+from devmem.runner import quote_all
 from devmem.index import Index
 from devmem_app import commands, hygiene, indexer, jsparse
 from devmem_app.publisher import publish
@@ -86,3 +87,48 @@ def test_hygiene_js_without_node_modules(tmp_path):
     assert h["tools"]["knip"].startswith("unavailable") and h["tools"]["eslint"].startswith("skipped")
     md = hygiene.render_hygiene_md(h)
     assert "| eslint |" in md and "| knip |" in md
+
+
+def test_js_doc_starts_at_first_line_of_a_comment_block():
+    src = "// Retries a request with backoff.\n// Second line of detail.\nexport function retry() {}\n"
+    _, syms = jsparse.parse_js("src/r.js", src)
+    assert next(s for s in syms if s["name"] == "retry")["doc"] == "Retries a request with backoff."
+
+
+def test_go_and_java_symbols_edges_and_test_commands(tmp_path):
+    for app in ("go_app", "java_app"):
+        shutil.copytree(FIX / app, tmp_path / app)
+    gx = Index(indexer.index_repo(tmp_path / "go_app", "go_app"), tmp_path / "go_app")
+    assert {"retry/retry.go#Do", "svc/client.go#Client", "svc/client.go#Client.Get", "svc/client_test.go#TestLoadUser"} <= set(gx.symbols)
+    assert gx.symbols["retry/retry.go#Do"]["doc"] == "Do calls fn up to n times until it succeeds."
+    r = gx.impact("retry/retry.go#Do")
+    assert [h["id"] for h in r["hop1"]] == ["svc/client.go#Client.Get"] and "svc/client_test.go#TestLoadUser" in r["tests"]
+    ids, cmd = chk.tests_for(gx, ["retry/retry.go"])
+    assert cmd == "go test ./svc -run " + quote_all(["^(TestLoadUser)$"]) and "TestLoadUser" in ids[0]
+    jx = Index(indexer.index_repo(tmp_path / "java_app", "java_app"), tmp_path / "java_app")
+    run = "src/main/java/com/acme/Retry.java#Retry.run"
+    assert jx.symbols[run]["doc"] == "Runs the task up to n times."
+    r = jx.impact(run)
+    assert [h["id"] for h in r["hop1"]] == ["src/main/java/com/acme/UserService.java#UserService.load"]
+    assert "src/test/java/com/acme/UserServiceTest.java#UserServiceTest.loadsUser" in r["tests"]
+    assert chk.tests_for(jx, ["src/main/java/com/acme/Retry.java"])[1] == "mvn -q test -Dtest=UserServiceTest#loadsUser"
+
+
+def test_rust_and_csharp_index_to_edges_and_test_commands(tmp_path):
+    r = tmp_path / "rs"
+    (r / "src").mkdir(parents=True)
+    (r / "src/lib.rs").write_text("/// Retries a call.\npub fn retry(n: u32) -> u32 { n }\n\npub fn load() -> u32 { retry(3) }\n\n"
+                                  "#[cfg(test)]\nmod tests {\n    use super::*;\n    #[test]\n    fn loads() { load(); }\n}\n", encoding="utf-8")
+    ix = Index(indexer.index_repo(r, "rs"), r)
+    imp = ix.impact("src/lib.rs#retry")
+    assert [h["id"] for h in imp["hop1"]] == ["src/lib.rs#load"] and "src/lib.rs#loads" in imp["tests"]
+    assert chk.tests_for(ix, ["src/lib.rs"])[1] == "cargo test -- loads"
+    c = tmp_path / "cs"
+    c.mkdir()
+    (c / "Svc.cs").write_text("namespace A {\n  public class Svc {\n    public int Load() { return Retry.Run(3); }\n  }\n"
+                              "  public static class Retry { public static int Run(int n) { return n; } }\n}\n", encoding="utf-8")
+    (c / "SvcTests.cs").write_text("namespace A {\n  public class SvcTests {\n    [Fact] public void Loads() { new Svc().Load(); }\n  }\n}\n", encoding="utf-8")
+    ix = Index(indexer.index_repo(c, "cs"), c)
+    imp = ix.impact("Svc.cs#Retry.Run")
+    assert [h["id"] for h in imp["hop1"]] == ["Svc.cs#Svc.Load"] and "SvcTests.cs#SvcTests.Loads" in imp["tests"]
+    assert "FullyQualifiedName~SvcTests.Loads" in chk.tests_for(ix, ["Svc.cs"])[1]

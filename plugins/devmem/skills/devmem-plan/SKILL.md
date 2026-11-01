@@ -1,6 +1,6 @@
 ---
 name: devmem-plan
-description: Use when the task is "execute this plan" (a markdown plan written by a human: a plan file in the repo, or a prompt that already lists numbered steps). Run the plan step by step exactly as written, with current library docs and existing org code supplied per step, no redesign, no library swaps, no extra scope.
+description: Use when the task is "execute this plan" (a markdown plan written by a human, as a plan file in the repo or a prompt that already lists numbered steps). Run the plan step by step exactly as written, with current library docs and existing org code supplied per step, no redesign, no library swaps, no extra scope.
 ---
 
 # Execute a plan with devmem

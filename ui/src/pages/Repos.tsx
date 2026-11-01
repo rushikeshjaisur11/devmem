@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import { Badge, Empty, Err, useRepos } from "../components";
-import { nav } from "../route";
+import { Badge, Empty, Err, Term, useRepos } from "../components";
 
 function BranchPicker({ repo, disabled, onSwitch }: { repo: any; disabled: boolean; onSwitch: (b: string) => void }) {
   const [branches, setBranches] = useState<string[]>([]);
@@ -44,8 +43,8 @@ export default function Repos(_: any) {
 
   return (
     <>
-      <h2>Repos</h2>
-      <p className="sub">Onboard local clones, keep their index fresh, and publish knowledge into each repo.</p>
+      <h1>Repos</h1>
+      <p className="sub">Add a repo to index its code. Publish writes the map agents read (<code>.devmem/</code> and an <code>AGENTS.md</code> block) into the repo; nothing else is changed.</p>
       <div className="card">
         <h3>Onboard a repo</h3>
         <div className="tabs" role="tablist">
@@ -72,25 +71,28 @@ export default function Repos(_: any) {
       <div className="card">
         {loading ? <Empty>Loading…</Empty> : !data?.length ? <Empty>No repos yet. Add one above.</Empty> : (
           <table>
-            <thead><tr><th>Repo</th><th className="num">Symbols</th><th className="num">Files</th><th>Branch</th><th>Languages</th><th>Index</th><th>Knowledge</th><th>Hygiene</th><th></th></tr></thead>
+            <thead><tr><th>Repo</th><th>Branch</th><th><Term k="index">Status</Term></th><th className="num">Symbols</th><th>Languages</th><th>Hygiene findings</th><th></th></tr></thead>
             <tbody>
               {data.map((r) => (
                 <tr key={r.name}>
-                  <td><a onClick={() => nav("explorer", { repo: r.name })}>{r.name}</a><div className="muted mono" title={r.path} style={{ maxWidth: 170, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.path}</div></td>
-                  <td className="num">{r.symbols ?? "-"}</td><td className="num">{r.files ?? "-"}</td>
+                  <td className="repo-name"><b>{r.name}</b><div className="path" title={r.path}>{r.path}</div></td>
                   <td><BranchPicker repo={r} disabled={!!busy} onSwitch={(b) => confirm(`Check out ${b} in ${r.path} and re-index it?`) ? act("b" + r.name, () => api.post(`/api/repos/${r.name}/branch`, { branch: b }), (x) => `${r.name}: now on ${x.branch}, ${x.symbols} symbols (parsed ${x.stats.parsed}, reused ${x.stats.reused})`) : reload()} /></td>
-                  <td>{r.langs ? Object.entries(r.langs).map(([l, n]) => `${l} ${n}`).join(", ") : "-"}</td>
-                  <td>{!r.indexed ? <Badge kind="bad">not indexed</Badge> : r.stale ? <Badge kind="warn">stale: HEAD moved</Badge> : <Badge kind="good">fresh</Badge>}{r.indexed && r.accuracy === "fast" && <> <Badge kind="bad">reduced accuracy</Badge></>}</td>
-                  <td>{!r.indexed ? "-" : r.knowledge_problems.length === 0 ? <Badge kind="good">published</Badge> :
-                    r.knowledge_problems[0] === "not published" ? <Badge>not published</Badge> :
-                    <Badge kind="warn"><span title={r.knowledge_problems.join("\n")}>{r.knowledge_problems.length} issue(s)</span></Badge>}</td>
-                  <td>{r.hygiene ? Object.entries(r.hygiene).map(([k, v]) => `${k} ${v}`).join(" · ") : <span className="muted">not run</span>}</td>
+                  <td><div className="tags">
+                    {!r.indexed ? <Badge kind="bad">not indexed</Badge> : r.stale ? <Badge kind="warn">index behind HEAD</Badge> : <Badge kind="good">index fresh</Badge>}
+                    {r.indexed && (r.knowledge_problems.length === 0 ? <Badge kind="good">published</Badge> :
+                      r.knowledge_problems[0] === "not published" ? <Badge>not published</Badge> :
+                      <Badge kind="warn"><span title={r.knowledge_problems.join("\n")}>{r.knowledge_problems.length} knowledge issue{r.knowledge_problems.length === 1 ? "" : "s"}</span></Badge>)}
+                    {r.indexed && r.accuracy === "fast" && <Badge kind="bad">reduced accuracy</Badge>}
+                  </div></td>
+                  <td className="num">{r.symbols?.toLocaleString() ?? "-"}<div className="muted" style={{ fontSize: 12.5 }}>{r.files ? `${r.files} files` : ""}</div></td>
+                  <td><div className="tags">{r.langs ? Object.entries(r.langs as Record<string, number>).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([l, n]) => <span className="tag" key={l}>{l} <b>{n}</b></span>) : "-"}{r.langs && Object.keys(r.langs).length > 3 && <span className="tag" title={Object.entries(r.langs).slice(3).map(([l, n]) => `${l} ${n}`).join(", ")}>+{Object.keys(r.langs).length - 3}</span>}</div></td>
+                  <td>{r.hygiene ? <div className="tags">{Object.entries(r.hygiene).map(([k, v]) => <span className="tag" key={k}>{k} <b>{String(v)}</b></span>)}</div> : <span className="muted">not run</span>}</td>
                   <td>
                     <div className="row actions">
-                      <button disabled={!!busy} onClick={() => act("i" + r.name, () => api.post(`/api/repos/${r.name}/index`), (x) => `${r.name}: parsed ${x.stats.parsed}, reused ${x.stats.reused}`)}>{busy === "i" + r.name ? "…" : "Re-index"}</button>
-                      <button disabled={!!busy || !r.indexed} onClick={() => act("p" + r.name, () => api.post(`/api/repos/${r.name}/publish`, { commit }), (x) => `${r.name}: wrote ${x.written.length} files${x.branch ? ` on branch ${x.branch}` : ""}`)}>{busy === "p" + r.name ? "…" : "Publish"}</button>
-                      <button disabled={!!busy || !r.indexed} onClick={() => act("h" + r.name, () => api.post(`/api/repos/${r.name}/hygiene`), (x) => `${r.name} hygiene: ${JSON.stringify(x.counts)}`)}>{busy === "h" + r.name ? "Running…" : "Hygiene"}</button>
-                      <button className="danger" disabled={!!busy} onClick={() => confirm(`Remove ${r.name} from devmem? (files stay untouched)`) && act("d" + r.name, () => api.del(`/api/repos/${r.name}`), () => `Removed ${r.name}`)}>Remove</button>
+                      <button className="quiet" disabled={!!busy} onClick={() => act("i" + r.name, () => api.post(`/api/repos/${r.name}/index`), (x) => `${r.name}: parsed ${x.stats.parsed}, reused ${x.stats.reused}`)}>{busy === "i" + r.name ? "…" : "Re-index"}</button>
+                      <button className="primary" disabled={!!busy || !r.indexed} onClick={() => act("p" + r.name, () => api.post(`/api/repos/${r.name}/publish`, { commit }), (x) => `${r.name}: wrote ${x.written.length} files${x.branch ? ` on branch ${x.branch}` : ""}`)}>{busy === "p" + r.name ? "…" : "Publish"}</button>
+                      <button className="quiet" disabled={!!busy || !r.indexed} onClick={() => act("h" + r.name, () => api.post(`/api/repos/${r.name}/hygiene`), (x) => `${r.name} hygiene: ${JSON.stringify(x.counts)}`)}>{busy === "h" + r.name ? "Running…" : "Hygiene"}</button>
+                      <button className="quiet danger" disabled={!!busy} onClick={() => confirm(`Remove ${r.name} from devmem? (files stay untouched)`) && act("d" + r.name, () => api.del(`/api/repos/${r.name}`), () => `Removed ${r.name}`)}>Remove</button>
                     </div>
                   </td>
                 </tr>

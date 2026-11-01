@@ -80,3 +80,19 @@ def test_candidate_cap_keeps_the_best_match_for_common_tokens(tmp_path, monkeypa
     ix = Index.load(tmp_path)
     assert len(ix._candidates(_tokens("retry handler"), "retry handler", 1)) <= 20  # 10 per source, not all 68
     assert ix.find("retry handler", 1)[0][1]["id"] == brute(ix, "retry handler")[0][1]["id"] == "x/r.py#retry_handler"
+
+
+def test_search_works_from_several_threads(tmp_path):
+    """The web app caches one Index and serves requests from a thread pool."""
+    import shutil
+    from concurrent.futures import ThreadPoolExecutor
+    from pathlib import Path
+    from devmem.index import Index
+    from devmem_app.indexer import index_repo
+    repo = tmp_path / "py_app"
+    shutil.copytree(Path(__file__).parent.parent / "fixtures/py_app", repo)
+    index_repo(repo)
+    ix = Index.load(repo)
+    with ThreadPoolExecutor(4) as ex:
+        results = list(ex.map(lambda q: [s["id"] for _, s in ix.find(q, 3)], ["retry", "user", "client", "retry"] * 3))
+    assert all(r for r in results) and results[0][0] == "app/retry.py#retry"

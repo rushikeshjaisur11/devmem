@@ -10,13 +10,15 @@ from pathlib import Path
 
 from devmem import lineage as agent_lineage
 from devmem import memory as m
+from devmem import usage as agent_usage
 from devmem.index import Index
-from devmem.knowledge import check_knowledge
+from devmem.knowledge import AGENTS_INDEX_BUDGET, MAP_BUDGET, check_knowledge, est_tokens, managed_block, parse_header
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from . import crossrepo
 from . import chat as chat_mod
 from . import hygiene as hyg
 from . import metrics as metrics_mod
@@ -83,14 +85,6 @@ def create_app() -> FastAPI:
             cache[name] = (mt, Index.load(root))
         return cache[name][1]
 
-    def safe_file(root: Path, rel: str) -> Path:
-        p = (root / rel).resolve()
-        try:
-            p.relative_to(root.resolve())
-        except ValueError:
-            raise HTTPException(400, "path outside repo")
-        return p
-
     def repo_summary(name: str, path: str) -> dict:
         root = Path(path)
         d = {"name": name, "path": path, "indexed": False}
@@ -107,7 +101,21 @@ def create_app() -> FastAPI:
             hp = root / ".devmem/hygiene.json"
             if hp.exists():
                 d["hygiene"] = json.loads(hp.read_text()).get("counts", {})
+            d["agent_tokens"] = agent_tokens(root)
+            d["usage"] = agent_usage.summary(root)
+            from devmem import connect as cn
+            d["connected"] = [k for k, v in cn.status(root).items() if v]
         return d
+
+    def agent_tokens(root: Path) -> dict:
+        """What an agent pays to read the published knowledge: the AGENTS.md block every session, then each topic file on demand."""
+        ag = root / "AGENTS.md"
+        blk = managed_block(ag.read_text(encoding="utf-8")) if ag.exists() else None
+        files = {}
+        for f in sorted((root / ".devmem/knowledge").glob("*.md")):
+            h = parse_header(f.read_text(encoding="utf-8"))
+            files[f.name] = h["tokens"] if h else None
+        return {"always": est_tokens(blk) if blk else None, "always_budget": AGENTS_INDEX_BUDGET, "map_budget": MAP_BUDGET, "files": files}
 
 
     # ---------- repos ----------
@@ -231,58 +239,21 @@ def create_app() -> FastAPI:
         return {"counts": h["counts"], "tools": h["tools"]}
 
     # ---------- explorer ----------
-    @app.get("/api/repos/{name}/tree")
-    def tree(name: str):
-        ix = ix_of(name)
-        counts = Counter(s["file"] for s in ix.symbols.values() if s["kind"] != "module")
-        root: dict = {"name": name, "path": "", "type": "dir", "children": []}
-        for path in sorted(ix.data["files"]):
-            node = root
-            parts = path.split("/")
-            for i, part in enumerate(parts):
-                last = i == len(parts) - 1
-                p = "/".join(parts[: i + 1])
-                nxt = next((c for c in node["children"] if c["name"] == part), None)
-                if not nxt:
-                    nxt = {"name": part, "path": p, "type": "file" if last else "dir"}
-                    if last:
-                        nxt.update({"lang": ix.data["files"][path]["lang"], "symbols": counts.get(path, 0)})
-                    else:
-                        nxt["children"] = []
-                    node["children"].append(nxt)
-                node = nxt
-        return root
-
-    @app.get("/api/repos/{name}/file")
-    def file_view(name: str, path: str):
-        ix = ix_of(name)
-        root = root_of(name)
-        if path not in ix.data["files"]:
-            raise HTTPException(404, "file not indexed")
-        f = safe_file(root, path)
-        text = f.read_text(encoding="utf-8", errors="replace")
-        rec = ix.data["files"][path]
-        issues = []
-        hp = root / ".devmem/hygiene.json"
-        if hp.exists():
-            issues = [i for i in json.loads(hp.read_text())["issues"] if i["path"] == path]
-        return {"path": path, "lang": rec["lang"], "text": text, "symbols": ix.outline(path), "issues": issues,
-                "tables": rec.get("tables", [])}
-
     @app.get("/api/repos/{name}/search")
     def search(name: str, q: str, limit: int = 20):
+        """Code by plain words. Keyword match on names and docstrings; with DEVMEM_LOCAL_EMBED on, the top 40 are re-ranked by
+        meaning too, so "save" also finds persist/store code a user would not know the name of."""
         ix = ix_of(name)
-        return [{**s, "score": round(sc, 1)} for sc, s in ix.find(q, limit)]
-
-    @app.get("/api/repos/{name}/symbol")
-    def symbol(name: str, id: str):
-        ix = ix_of(name)
-        s = ix.symbols.get(id)
-        if not s:
-            raise HTTPException(404, "unknown symbol")
-        callers = [{"id": e["src"], "type": e["type"], "conf": e["conf"]} for e in ix.inc.get(id, [])]
-        callees = [{"id": e["dst"], "type": e["type"], "conf": e["conf"]} for e in ix.out.get(id, [])]
-        return {"symbol": s, "source": ix.source(s), "callers": callers, "callees": callees}
+        hits = ix.find(q, max(limit, 40))
+        try:
+            emb = chat_mod.local_embedder()
+        except ImportError:   # DEVMEM_LOCAL_EMBED set without model2vec installed: keyword ranking only
+            emb = None
+        if emb and hits:
+            vecs = chat_mod._embed_cached(emb, [q] + [f"{s['qualname']} {s['doc']} {s['file']}" for _, s in hits])
+            top = hits[0][0] or 1
+            hits = sorted(((0.5 * sc / top + 0.5 * max(chat_mod._cos(vecs[0], v), 0), s) for (sc, s), v in zip(hits, vecs[1:])), key=lambda x: -x[0])
+        return [{**s, "score": round(sc, 2)} for sc, s in hits[:limit]]
 
     # ---------- impact / lineage ----------
     @app.get("/api/repos/{name}/impact")
@@ -296,7 +267,8 @@ def create_app() -> FastAPI:
         r = ix.impact(target)
         if "table" in r:
             return {"kind": "table", **r}
-        return {"kind": "symbol", **r}
+        ids = r["targets"] + [i["id"] for i in r["hop1"] + r["hop2"]] + r["tests"]
+        return {"kind": "symbol", **r, "lines": {i: ix.symbols[i]["line"] for i in ids if i in ix.symbols}}
 
     @app.get("/api/impact-column")
     def impact_column(column: str):
@@ -402,7 +374,7 @@ def create_app() -> FastAPI:
             except Exception:
                 prov = None
             if prov is None:
-                raise HTTPException(422, "summaries need DEVMEM_VERTEX_PROJECT and google-genai installed")
+                raise HTTPException(422, "summaries need DEVMEM_VERTEX_API_KEY or DEVMEM_VERTEX_PROJECT, and google-genai installed")
         try:
             return hubmod.push(ws()["repos"], 400, prov, True, body.push, body.prune)
         except (RuntimeError, subprocess.TimeoutExpired) as e:
@@ -449,6 +421,53 @@ def create_app() -> FastAPI:
             for r in d["readers"]:
                 edges.append({"data": {"id": f"r:{t}>{r}", "source": f"table:{t}", "target": r, "kind": "reads"}})
         return {"nodes": nodes, "edges": edges}
+
+    @app.get("/api/graph/all")
+    def graph_all(level: str = "file"):
+        """Every file (or symbol) of every repo and every link between them, for the Obsidian-style map.
+        Tables are shared nodes, so repos that touch the same table connect through it."""
+        nodes, links, keys, loaded = {}, Counter(), {}, {}
+        for rname, rpath in ws()["repos"].items():
+            ip = Path(rpath) / ".devmem/index.json"
+            if not ip.exists():
+                continue
+            idx = json.loads(ip.read_text(encoding="utf-8"))
+            loaded[rname] = (Path(rpath), idx)
+            sym = {s["id"]: s for s in idx["symbols"]}
+            test_files = {s["file"] for s in idx["symbols"] if s["is_test"]}
+
+            def key(end: str, rname=rname, idx=idx, sym=sym, test_files=test_files) -> str | None:
+                if end.startswith("table:"):
+                    nodes.setdefault(end, {"id": end, "label": end[6:], "kind": "table", "repo": ""})
+                    return end
+                s, f = sym.get(end), end.split("#")[0]
+                if level == "symbol" and s:
+                    nid = f"{rname}:{end}"
+                    nodes.setdefault(nid, {"id": nid, "label": s["qualname"], "kind": "test" if s["is_test"] else s["kind"],
+                                           "repo": rname, "file": f, "sid": end})
+                    return nid
+                if f not in idx["files"]:
+                    return None
+                nid = f"{rname}:{f}"
+                nodes.setdefault(nid, {"id": nid, "label": f.rsplit("/", 1)[-1], "kind": "test" if f in test_files else "file",
+                                       "repo": rname, "file": f})
+                return nid
+
+            for x in (idx["files"] if level != "symbol" else [s["id"] for s in idx["symbols"] if s["kind"] != "module"]):
+                key(x)   # unlinked files/symbols too: the map shows orphans
+            for e in idx["edges"]:
+                a, b = key(e["src"]), key(e["dst"])
+                if a and b and a != b:
+                    links[(a, b, e["type"])] += 1
+            keys[rname] = key
+        for x in crossrepo.cross_links(loaded):   # a file importing a module another onboarded repo defines
+            a = keys[x["src_repo"]](x["src_file"])
+            dst = f"{x['dst_file']}#{x['name']}" if x["name"] else x["dst_file"]
+            b = keys[x["dst_repo"]](dst) or keys[x["dst_repo"]](x["dst_file"])
+            if a and b:
+                links[(a, b, "imports")] += 1
+        return {"nodes": list(nodes.values()),
+                "links": [{"source": a, "target": b, "kind": t, "weight": n} for (a, b, t), n in links.items()]}
 
     @app.get("/api/repos/{name}/graph")
     def graph_focus(name: str, focus: str, depth: int = 1, limit: int = 60):
@@ -618,6 +637,126 @@ def create_app() -> FastAPI:
             raise HTTPException(404, "no such proposal")
         return {"ok": True}
 
+    class RuleIn(BaseModel):
+        text: str
+        applies_to: str = "**"
+        severity: str = "rule"
+        repo: str | None = None          # None: global rule in the hub, synced into every repo
+
+    @app.post("/api/rules")
+    def add_rule(body: RuleIn):
+        text = body.text.strip()
+        if not text or body.severity not in ("rule", "advice"):
+            raise HTTPException(422, "a rule needs text, and severity 'rule' or 'advice'")
+        rid = m.slug(" ".join(text.split()[:6]))
+        if body.repo:
+            p = m.write_rule(root_of(body.repo), rid, text, body.applies_to or "**", "repo", body.severity)
+        else:
+            p = am._write_global_rule(rid, text, body.applies_to or "**", body.severity)
+        return {"id": p.stem}
+
+    @app.delete("/api/rules/{rid}")
+    def delete_rule(rid: str, repo: str | None = None):
+        d = root_of(repo) / m.RULES_DIR if repo else am.hub_dir() / "rules"
+        f = d / f"{rid}.md"
+        if not re.fullmatch(r"[a-z0-9-]+", rid) or not f.exists():
+            raise HTTPException(404, "no such rule (rules in .devmem/rules.md are edited in that file)")
+        f.unlink()
+        return {"ok": True}
+
+    # ---------- agents: connect, what they see, what they did ----------
+    class ConnectIn(BaseModel):
+        agents: list[str] = []
+        local: bool = False
+
+    @app.get("/api/repos/{name}/connect")
+    def connect_status(name: str):
+        from devmem import connect as cn
+        return {"agents": cn.AGENTS, "connected": cn.status(root_of(name)), "user_only": list(cn.USER_ONLY)}
+
+    @app.post("/api/repos/{name}/connect")
+    def connect_agents(name: str, body: ConnectIn):
+        import sys as _sys
+        from devmem import connect as cn
+        cmd, args = (_sys.executable, ["-m", "devmem.cli", "mcp"]) if body.local else ("devmem", ["mcp"])
+        try:
+            return {"results": cn.connect(root_of(name), body.agents or cn.AGENTS, cmd, args)}
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+
+    @app.get("/api/repos/{name}/doctor")
+    def doctor_view(name: str):
+        from devmem import doctor
+        return [{"ok": ok, "what": what, "fix": fix} for ok, what, fix in doctor.checks(root_of(name))]
+
+    AGENT_VIEW = {"show", "find", "impact", "recall", "outline", "gaps", "helpers"}
+
+    @app.get("/api/repos/{name}/agent-view")
+    def agent_view(name: str, cmd: str, arg: str = ""):
+        """Exactly what an agent gets back for one devmem command (not logged as agent usage)."""
+        import contextlib
+        import io
+        from devmem import cli as agent_cli
+        if cmd not in AGENT_VIEW:
+            raise HTTPException(422, f"previewable commands: {', '.join(sorted(AGENT_VIEW))}")
+        root = root_of(name)
+        ag = root / "AGENTS.md"
+        buf = io.StringIO()
+        # ponytail: redirect_stdout is process-wide; two previews at the same instant could mix output. Fine for a local one-user app.
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            try:
+                agent_cli.run([cmd, *([arg] if arg else [])], via="ui", root=root)
+            except SystemExit:
+                pass
+        text = buf.getvalue()
+        return {"command": f"devmem {cmd} {arg}".strip(), "output": text, "tokens": len(text) // 4,
+                "session_start": managed_block(ag.read_text(encoding="utf-8")) if ag.exists() else None}
+
+    @app.get("/api/repos/{name}/activity")
+    def activity(name: str):
+        return {"sessions": agent_usage.sessions(root_of(name)), "total": agent_usage.summary(root_of(name))}
+
+    @app.get("/api/repos/{name}/gaps")
+    def test_gaps(name: str, limit: int = 30):
+        from devmem import review
+        return review.gaps(ix_of(name), limit)
+
+    @app.get("/api/alerts")
+    def alerts():
+        """Things to fix, most urgent first: failed automatic re-index, stale index or knowledge, stale docs, unconnected repos."""
+        from devmem import connect as cn
+        from . import docs as dm
+        from . import watch
+        out = []
+        for name, path in ws()["repos"].items():
+            if name in watch.ERRORS:
+                out.append({"level": "bad", "repo": name, "text": watch.ERRORS[name], "page": "repos"})
+            d = repo_summary(name, path)
+            if not d["indexed"]:
+                continue
+            if d["stale"]:
+                out.append({"level": "warn", "repo": name, "text": "index is behind HEAD: agents see old code", "page": "repos"})
+            probs = [p for p in d["knowledge_problems"] if p != "not published"]
+            if probs:
+                out.append({"level": "warn", "repo": name, "text": f"{len(probs)} knowledge issue(s): {probs[0]}", "page": "repos"})
+            elif d["knowledge_problems"]:
+                out.append({"level": "info", "repo": name, "text": "not published yet: agents have no map", "page": "repos"})
+            if not any(cn.status(Path(path)).values()):
+                out.append({"level": "info", "repo": name, "text": "no agent connected (MCP)", "page": "agents"})
+        for lib in dm.list_libs():
+            if (lib.get("age_days") or 0) > 120:
+                out.append({"level": "warn", "repo": None, "text": f"{lib['name']} docs are {lib['age_days']} days old: refresh them", "page": "docs"})
+        rank = {"bad": 0, "warn": 1, "info": 2}
+        return sorted(out, key=lambda x: rank[x["level"]])
+
+    class UpgradeIn(BaseModel):
+        repo: str
+
+    @app.post("/api/docs/upgrade-notes")
+    def docs_upgrade_notes(body: UpgradeIn):
+        from . import docs as dm
+        return dm.add_upgrade_notes(root_of(body.repo))
+
     # ---------- chat ----------
     class Chat(BaseModel):
         question: str
@@ -628,6 +767,21 @@ def create_app() -> FastAPI:
         force: str | None = None         # "ask" | "implement": the user's correction of the automatic decision
         detail: str = "pointers"         # "code": also include source of existing solutions in an agent prompt
         fetch_docs: bool = True
+
+    @app.get("/api/reuse")
+    def reuse_search(need: str, into: str, limit: int = 5):
+        """What the other onboarded repos already built for `need`, each fitted against `into`: effort, notes, a port prompt."""
+        from .reuse import live
+        allr = {n: p for n, p in ws()["repos"].items() if (Path(p) / ".devmem/index.json").exists()}
+        if into not in allr:
+            raise HTTPException(404, f"unknown or unindexed repo {into}")
+        if len(allr) < 2:
+            return {"hits": [], "peers": 0}
+        try:
+            prov = chat_mod.provider_from_env()
+        except Exception:   # optional LLM ranking: a missing SDK or bad credentials fall back to keyword ranking
+            prov = None
+        return {"hits": live(need, into, allr, max(1, min(limit, 10)), provider=prov), "peers": len(allr) - 1}
 
     @app.get("/api/chat/status")
     def chat_status():
@@ -669,60 +823,11 @@ def create_app() -> FastAPI:
             except ValueError as e:
                 raise HTTPException(422, str(e))
         if body.llm and not chat_mod.llm_status()["configured"]:
-            raise HTTPException(409, "no LLM configured: set DEVMEM_VERTEX_PROJECT (and pip install google-genai)")
+            raise HTTPException(409, "no LLM configured: set DEVMEM_VERTEX_API_KEY or DEVMEM_VERTEX_PROJECT (and pip install google-genai)")
         try:
             return {**verdict, **chat_mod.ask(body.question, {n: Path(allr[n]) for n in names}, min(max(body.limit, 1), 20), use_llm=body.llm)}
         except ImportError as e:
             raise HTTPException(409, f"LLM client not installed: {e}")
-
-    # ---------- share code between repos ----------
-    COMMENT = {".py": "#", ".sh": "#", ".yaml": "#", ".yml": "#", ".sql": "--", ".js": "//", ".ts": "//", ".tsx": "//"}
-
-    @app.get("/api/share/preview")
-    def share_preview(repo: str, file: str, symbol: str | None = None):
-        ix = ix_of(repo)
-        root = root_of(repo)
-        if file not in ix.data["files"]:
-            raise HTTPException(404, "file not indexed")
-        if symbol:
-            s = ix.symbols.get(symbol)
-            if not s or s["file"] != file:
-                raise HTTPException(404, "unknown symbol")
-            text = ix.source(s)
-        else:
-            text = safe_file(root, file).read_text(encoding="utf-8", errors="replace")
-        imports = [l for l in safe_file(root, file).read_text(encoding="utf-8", errors="replace").splitlines()
-                   if re.match(r"\s*(import|from)\s+\w", l)] if file.endswith(".py") else []
-        return {"text": text, "review_imports": imports}
-
-    class ShareCode(BaseModel):
-        from_repo: str
-        file: str
-        symbol: str | None = None
-        to_repo: str
-        dest: str
-        append: bool = False
-
-    @app.post("/api/share")
-    def share_code(body: ShareCode):
-        ix = ix_of(body.from_repo)
-        src_root, dst_root = root_of(body.from_repo), root_of(body.to_repo)
-        prev = share_preview(body.from_repo, body.file, body.symbol)
-        dest = safe_file(dst_root, body.dest)
-        if dest.exists() and not body.append:
-            raise HTTPException(409, "destination exists (use append to add to it)")
-        commit = (ix.data.get("commit") or "unknown")[:10]
-        ref = f"{body.from_repo}:{body.file}" + (f"#{ix.symbols[body.symbol]['qualname']}" if body.symbol else "") + f"@{commit}"
-        cm = COMMENT.get(Path(body.file).suffix)
-        header = f"{cm} devmem: copied from {ref}\n" if cm else ""
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        text = header + prev["text"].rstrip() + "\n"
-        if dest.exists():
-            dest.write_text(dest.read_text(encoding="utf-8").rstrip() + "\n\n\n" + text, encoding="utf-8")
-        else:
-            dest.write_text(text, encoding="utf-8")
-        return {"written": body.dest, "origin": ref, "review_imports": prev["review_imports"], "staged": False,
-                "note": "left unstaged for your review" + ("" if cm else "; no origin header for this file type")}
 
     # ---------- static UI ----------
     if UI_DIST.exists():

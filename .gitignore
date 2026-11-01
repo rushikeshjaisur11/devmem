@@ -10,3 +10,4 @@ graphify-out/
 .devmem/metrics/
 node_modules/
 build/
+.taste-skill/

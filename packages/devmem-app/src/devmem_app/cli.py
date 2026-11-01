@@ -67,6 +67,11 @@ def _main(argv=None) -> int:
     s.add_argument("action", choices=["show", "ingest-devin"]); s.add_argument("arg", help="repo name (show) or JSON file (ingest-devin)")
     s = sub.add_parser("ui", help="start the local web app")
     s.add_argument("--port", type=int, default=8765); s.add_argument("--no-open", action="store_true")
+    s.add_argument("--no-watch", action="store_true", help="do not re-index repos whose HEAD moved while the app runs")
+    s.add_argument("--publish", action="store_true", help="watcher also publishes after re-indexing")
+    s = sub.add_parser("watch", help="re-index onboarded repos whenever their HEAD moves (pull, merge, commit, branch switch)")
+    s.add_argument("--interval", type=int, default=60, help="seconds between checks"); s.add_argument("--publish", action="store_true")
+    s.add_argument("--once", action="store_true", help="one pass, then exit (for cron or a git hook)")
     s = sub.add_parser("reuse", help="what other onboarded repos already built for a need, and the effort to adapt it into --into")
     s.add_argument("need"); s.add_argument("--into", required=True, help="target repo name"); s.add_argument("-n", "--limit", type=int, default=5)
     s.add_argument("--prompt", action="store_true"); s.add_argument("--json", action="store_true")
@@ -76,8 +81,8 @@ def _main(argv=None) -> int:
     s.add_argument("--summarize", action="store_true", help="have the configured LLM (Vertex) describe each function so offline search matches by meaning")
     s.add_argument("--prune", action="store_true", help="remove repos from the hub that are no longer onboarded")
     s.add_argument("--per-repo", type=int, default=400)
-    s = sub.add_parser("docs", help="library docs for offline agents: add <llms.txt|url|pypi:pkg|npm:pkg> | list | refresh [name..] | remove <name>")
-    s.add_argument("action", choices=["add", "list", "refresh", "remove"]); s.add_argument("args", nargs="*")
+    s = sub.add_parser("docs", help="library docs for offline agents: add <llms.txt|url|pypi:pkg|npm:pkg|local path> | list | refresh [name..] | remove <name>")
+    s.add_argument("action", choices=["add", "list", "refresh", "remove", "upgrade-notes"]); s.add_argument("args", nargs="*")
     s.add_argument("--name"); s.add_argument("--no-follow", action="store_true", help="llms.txt: do not fetch the pages it links to")
     s.add_argument("--max-pages", type=int, default=40)
     s = sub.add_parser("libs", help="what a repo depends on vs the latest releases (needs internet); feeds knowledge/libraries.md on publish")
@@ -206,7 +211,17 @@ def _main(argv=None) -> int:
         import uvicorn
         if not a.no_open:
             threading.Timer(1.0, lambda: webbrowser.open(f"http://127.0.0.1:{a.port}")).start()
+        if not a.no_watch:
+            from . import watch
+            watch.start(lambda: _ws()["repos"], publish_too=a.publish)
         uvicorn.run("devmem_app.server:app", host="127.0.0.1", port=a.port, log_level="warning")
+    elif a.cmd == "watch":
+        from . import watch
+        if a.once:
+            watch.tick(_ws()["repos"], a.publish, {})
+        else:
+            print(f"watching {len(_ws()['repos'])} repos every {a.interval}s (Ctrl+C to stop)")
+            watch.run(lambda: _ws()["repos"], a.interval, a.publish)
     elif a.cmd == "prompt":
         from .implement import build
         repos = _ws()["repos"]
@@ -221,7 +236,7 @@ def _main(argv=None) -> int:
         from . import docs as dm
         if a.action == "add":
             if not a.args:
-                sys.exit("usage: devmem-app docs add <llms.txt-url | page-url | pypi:pkg | npm:pkg>")
+                sys.exit("usage: devmem-app docs add <llms.txt-url | page-url | pypi:pkg | npm:pkg | local file or folder>")
             for spec in a.args:
                 m = dm.add(spec, a.name if len(a.args) == 1 else None, not a.no_follow, a.max_pages)
                 print(f"{m['name']} {m['version']}: {len(m['pages'])} pages, {m['bytes'] // 1024} KB")
@@ -231,6 +246,12 @@ def _main(argv=None) -> int:
         elif a.action == "refresh":
             for k, v in dm.refresh(a.args or None).items():
                 print(f"{k}: {v}")
+        elif a.action == "upgrade-notes":   # docs upgrade-notes <repo> [lib ...]
+            if not a.args or a.args[0] not in _ws()["repos"]:
+                sys.exit("usage: devmem-app docs upgrade-notes <repo name> [library ...]")
+            for k, v in dm.add_upgrade_notes(Path(_ws()["repos"][a.args[0]]), set(a.args[1:]) or None).items():
+                print(f"{k}: {v}")
+            print("publish the repo to ship them to its agents")
         else:
             print("removed" if a.args and dm.remove(a.args[0]) else "not found")
     elif a.cmd == "libs":
@@ -252,7 +273,7 @@ def _main(argv=None) -> int:
             from .chat import provider_from_env
             prov = provider_from_env() if a.summarize else None
             if a.summarize and prov is None:
-                sys.exit("--summarize needs DEVMEM_VERTEX_PROJECT (and pip install google-genai)")
+                sys.exit("--summarize needs DEVMEM_VERTEX_API_KEY or DEVMEM_VERTEX_PROJECT (and pip install google-genai)")
             print(json.dumps(hubmod.push(_ws()["repos"], a.per_repo, prov, True, a.push, a.prune), indent=1))
     elif a.cmd == "reuse":
         from devmem import reuse as core

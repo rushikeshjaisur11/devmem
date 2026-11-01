@@ -7,7 +7,7 @@ export function parse(): Route {
   const [page, qs = ""] = h.split("?");
   const params: Record<string, string> = {};
   new URLSearchParams(qs).forEach((v, k) => (params[k] = v));
-  return { page: page || "repos", params };
+  return { page: page || "overview", params };
 }
 
 export function nav(page: string, params: Record<string, string | undefined> = {}) {

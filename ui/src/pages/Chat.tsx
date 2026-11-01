@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
-import { Badge, Err, useAsync, useRepos } from "../components";
+import { Badge, EditorLink, Err, editorHref, useAsync, useRepos } from "../components";
 import { nav } from "../route";
 
 interface Msg { q: string; res?: any; err?: string; busy?: boolean; target?: string; force?: "ask" | "implement" }
@@ -34,12 +34,21 @@ export default function Chat() {
     }
   }
   const open = (h: any) => h.kind === "doc" ? window.open(h.path, "_blank", "noopener") : h.kind === "lesson" || h.kind === "rule" ? nav("memory", { repo: h.repo })
-    : nav("explorer", { repo: h.repo, file: h.path, symbol: h.kind === "symbol" || h.kind === "test" ? h.ref : undefined });
+    : nav("impact", { repo: h.repo, target: h.ref });
+  const openable = (h: any) => ["doc", "lesson", "rule", "symbol", "test"].includes(h.kind);
+  // examples from the user's own code: the most-called functions of the first indexed repo
+  const first = (repos.data || []).find((r) => r.indexed)?.name;
+  const examples = useAsync(async () => {
+    if (!first) return [];
+    const g: any[] = await api.get(`/api/repos/${first}/gaps?limit=2`);
+    const names = g.map((x) => x.id.split("#")[1]);
+    return names.length ? [`who calls ${names[0]}?`, ...(names[1] ? [`add a test for ${names[1]}`] : [])] : ["where is retry logic?"];
+  }, [first]);
 
   return (
     <>
-      <h2>Chat</h2>
-      <p className="sub">Talk to your repos. Questions get answers that point to code and current library docs. Something new to build, or a plan you wrote, gets a compact prompt for the agent that will do the work: what your org already built, what the libraries now provide built in, and what not to touch.</p>
+      <h1>Ask &amp; plan</h1>
+      <p className="sub">Ask a question and get answers that point to code and current library docs. Describe something to build, or paste a plan, and get a short prompt to hand to your agent: what already exists, what the libraries provide, and what not to touch.</p>
       <div className="card">
         <textarea ref={box} value={text} rows={2} placeholder={HINT} aria-label="Message" style={{ minHeight: 56, resize: "none" }}
           onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(text); } }} />
@@ -50,7 +59,7 @@ export default function Chat() {
         <details style={{ marginTop: 10 }}>
           <summary className="muted" style={{ cursor: "pointer", fontSize: 12.5 }}>Options</summary>
           <div className="row" style={{ marginTop: 8, gap: 18 }}>
-            <label className="row"><input type="checkbox" checked={llm} disabled={!status.data?.configured} onChange={(e) => setLlm(e.target.checked)} />Write answers with {status.data?.model || "an LLM"}{!status.data?.configured && <span className="muted"> (set DEVMEM_VERTEX_PROJECT)</span>}</label>
+            <label className="row"><input type="checkbox" checked={llm} disabled={!status.data?.configured} onChange={(e) => setLlm(e.target.checked)} />Write answers with {status.data?.model || "an LLM"}{!status.data?.configured && <span className="muted"> (set DEVMEM_VERTEX_API_KEY or DEVMEM_VERTEX_PROJECT)</span>}</label>
             <label className="row"><input type="checkbox" checked={code} onChange={(e) => setCode(e.target.checked)} />Include source of existing code in agent prompts</label>
           </div>
           <div className="row" style={{ marginTop: 8 }}>
@@ -63,7 +72,9 @@ export default function Chat() {
           </div>
         </details>
       </div>
-      {msgs.length === 0 && <p className="muted">Try “who reads mart.sales_report”, “add retry with backoff to the export job”, or paste a step-by-step plan.</p>}
+      {msgs.length === 0 && <div className="examples"><span className="muted">Try:</span>
+        {(examples.data || []).map((x: string) => <button key={x} className="chip" onClick={() => send(x)}>{x}</button>)}
+        <span className="muted">or paste a step-by-step plan.</span></div>}
       {[...msgs].reverse().map((m, k) => {
         const idx = msgs.length - 1 - k, r = m.res;
         const impl = r?.intent === "implement";
@@ -102,7 +113,7 @@ export default function Chat() {
                   <p key={s.n + "-" + i} style={{ margin: "0 0 6px" }}><Badge kind="warn">modernize</Badge> {x}</p>))}
                 {!r.counts.doc_excerpts && <p className="muted" style={{ fontSize: 12.5, margin: "4px 0" }}>No library docs matched. Add the libraries on the <a onClick={() => nav("docs")}>Library docs</a> page so the agent follows current APIs, not older org code.</p>}
                 <pre className="code" style={{ padding: 12, whiteSpace: "pre-wrap", margin: "8px 0 0", maxHeight: 460 }}>{r.prompt}</pre>
-                <p className="muted" style={{ marginBottom: 0, fontSize: 12.5 }}>Paste into Devin or any agent. Read-only: nothing was written to your repos.</p>
+                <p className="muted" style={{ marginBottom: 0, fontSize: 12.5 }}>Paste it into your coding agent. Read-only: nothing was written to your repos.</p>
               </>
             )}
             {r && !impl && (
@@ -112,7 +123,7 @@ export default function Chat() {
                 <div className="muted" style={{ marginBottom: 6 }}>{r.mode === "llm" ? `Answered by ${r.model}` : "Retrieval only"} · {r.hits.length} sources</div>
                 {r.hits.map((h: any) => (
                   <details key={h.n} open={r.cited?.includes(h.n)} style={{ marginBottom: 6 }}>
-                    <summary><span className="mono">[{h.n}]</span> <Badge>{h.kind}</Badge> {h.title} <a className="mono" href="#" onClick={(e) => { e.preventDefault(); open(h); }}>{h.pointer}</a></summary>
+                    <summary><span className="mono">[{h.n}]</span> <Badge>{h.kind}</Badge> {h.title} {openable(h) ? <a className="mono" href="#" onClick={(e) => { e.preventDefault(); open(h); }}>{h.pointer}</a> : <span className="mono">{h.pointer}</span>}{h.kind !== "doc" && <EditorLink href={editorHref(repos.data, h.repo, h.path, h.line)} />}</summary>
                     {h.snippet && <pre>{h.snippet}</pre>}
                   </details>
                 ))}
