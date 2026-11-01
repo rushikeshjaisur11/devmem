@@ -123,10 +123,12 @@ class Provider(Protocol):
 
 
 class VertexProvider:
-    """Gemini on Vertex AI through google-genai (pip install google-genai); credentials via ADC."""
-    def __init__(self, project: str, location: str, model: str, embed_model: str | None):
+    """Gemini on Vertex AI through google-genai (pip install google-genai): an API key (Vertex express mode)
+    when one is given, otherwise a project with ADC credentials (gcloud auth application-default login)."""
+    def __init__(self, project: str | None, location: str, model: str, embed_model: str | None, api_key: str | None = None):
         from google import genai  # lazy: only needed when configured
-        self.client = genai.Client(vertexai=True, project=project, location=location)
+        self.client = (genai.Client(vertexai=True, api_key=api_key) if api_key
+                       else genai.Client(vertexai=True, project=project, location=location))
         self.model, self.embed_model, self.name = model, embed_model, f"vertex:{model}"
 
     def generate(self, prompt: str) -> str:
@@ -167,17 +169,21 @@ def local_embedder() -> LocalEmbedder | None:
     return _local[model]
 
 
+def _api_key() -> str | None:
+    return os.environ.get("DEVMEM_VERTEX_API_KEY") or os.environ.get("GOOGLE_API_KEY") or None
+
+
 def provider_from_env() -> Provider | None:
-    project = os.environ.get("DEVMEM_VERTEX_PROJECT")
-    if not project:
+    project, key = os.environ.get("DEVMEM_VERTEX_PROJECT"), _api_key()
+    if not (project or key):
         return None
     return VertexProvider(project, os.environ.get("DEVMEM_VERTEX_LOCATION", "us-central1"),
                           os.environ.get("DEVMEM_VERTEX_MODEL", "gemini-2.5-flash"),
-                          os.environ.get("DEVMEM_VERTEX_EMBED_MODEL") or None)
+                          os.environ.get("DEVMEM_VERTEX_EMBED_MODEL") or None, key)
 
 
 def llm_status() -> dict:
-    p = os.environ.get("DEVMEM_VERTEX_PROJECT")
+    p = os.environ.get("DEVMEM_VERTEX_PROJECT") or _api_key()
     return {"configured": bool(p), "model": os.environ.get("DEVMEM_VERTEX_MODEL", "gemini-2.5-flash") if p else None,
             "embeddings": bool(p and os.environ.get("DEVMEM_VERTEX_EMBED_MODEL")) or os.environ.get("DEVMEM_LOCAL_EMBED", "0") != "0"}
 

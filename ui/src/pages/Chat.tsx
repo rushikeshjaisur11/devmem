@@ -47,7 +47,7 @@ export default function Chat() {
 
   return (
     <>
-      <h2>Ask &amp; plan</h2>
+      <h1>Ask &amp; plan</h1>
       <p className="sub">Ask a question and get answers that point to code and current library docs. Describe something to build, or paste a plan, and get a short prompt to hand to your agent: what already exists, what the libraries provide, and what not to touch.</p>
       <div className="card">
         <textarea ref={box} value={text} rows={2} placeholder={HINT} aria-label="Message" style={{ minHeight: 56, resize: "none" }}
@@ -59,7 +59,7 @@ export default function Chat() {
         <details style={{ marginTop: 10 }}>
           <summary className="muted" style={{ cursor: "pointer", fontSize: 12.5 }}>Options</summary>
           <div className="row" style={{ marginTop: 8, gap: 18 }}>
-            <label className="row"><input type="checkbox" checked={llm} disabled={!status.data?.configured} onChange={(e) => setLlm(e.target.checked)} />Write answers with {status.data?.model || "an LLM"}{!status.data?.configured && <span className="muted"> (set DEVMEM_VERTEX_PROJECT)</span>}</label>
+            <label className="row"><input type="checkbox" checked={llm} disabled={!status.data?.configured} onChange={(e) => setLlm(e.target.checked)} />Write answers with {status.data?.model || "an LLM"}{!status.data?.configured && <span className="muted"> (set DEVMEM_VERTEX_API_KEY or DEVMEM_VERTEX_PROJECT)</span>}</label>
             <label className="row"><input type="checkbox" checked={code} onChange={(e) => setCode(e.target.checked)} />Include source of existing code in agent prompts</label>
           </div>
           <div className="row" style={{ marginTop: 8 }}>
@@ -113,7 +113,7 @@ export default function Chat() {
                   <p key={s.n + "-" + i} style={{ margin: "0 0 6px" }}><Badge kind="warn">modernize</Badge> {x}</p>))}
                 {!r.counts.doc_excerpts && <p className="muted" style={{ fontSize: 12.5, margin: "4px 0" }}>No library docs matched. Add the libraries on the <a onClick={() => nav("docs")}>Library docs</a> page so the agent follows current APIs, not older org code.</p>}
                 <pre className="code" style={{ padding: 12, whiteSpace: "pre-wrap", margin: "8px 0 0", maxHeight: 460 }}>{r.prompt}</pre>
-                <p className="muted" style={{ marginBottom: 0, fontSize: 12.5 }}>Paste into Devin or any agent. Read-only: nothing was written to your repos.</p>
+                <p className="muted" style={{ marginBottom: 0, fontSize: 12.5 }}>Paste it into your coding agent. Read-only: nothing was written to your repos.</p>
               </>
             )}
             {r && !impl && (

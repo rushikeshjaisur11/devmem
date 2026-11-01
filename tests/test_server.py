@@ -94,6 +94,15 @@ def test_lineage_and_overview_graph(api):
     kinds = {n["data"]["kind"] for n in ov["nodes"]}
     assert {"repo", "module", "table"} <= kinds
     assert any(e["data"]["kind"] == "writes" for e in ov["edges"]) and any(e["data"]["kind"] == "reads" for e in ov["edges"])
+    # whole-workspace map: a table written by one repo and read by another links both repos' files through one shared node
+    for level in ("file", "symbol"):
+        g = api.get("/api/graph/all", params={"level": level}).json()
+        ids = {n["id"] for n in g["nodes"]}
+        assert all(l["source"] in ids and l["target"] in ids for l in g["links"])
+        t = "table:mart.sales_report"
+        repos = {next(n["repo"] for n in g["nodes"] if n["id"] == (l["source"] if l["target"] == t else l["target"]))
+                 for l in g["links"] if t in (l["source"], l["target"])}
+        assert {"lineage_app", "consumer_app"} <= repos
 
 
 def test_hygiene_and_metrics(api):
@@ -220,3 +229,28 @@ def test_connect_preview_activity_gaps_and_alerts(api):
     al = api.get("/api/alerts").json()
     assert any(a["repo"] == "conv_app" and "no agent connected" in a["text"] for a in al)
     assert not any(a["repo"] == "py_app" and "no agent connected" in a["text"] for a in al)
+
+
+def test_reuse_search_fits_other_repos_code(api):
+    r = api.get("/api/reuse", params={"need": "retry with backoff", "into": "conv_app"}).json()
+    assert r["peers"] >= 1 and r["hits"]
+    h = r["hits"][0]
+    assert h["entry"]["repo"] != "conv_app" and h["fit"]["effort"] in ("low", "medium", "high") and h["prompt"].startswith("Reuse `")
+    assert api.get("/api/reuse", params={"need": "x", "into": "nope"}).status_code == 404
+
+
+def test_map_links_a_service_to_the_shared_library_it_imports(api, tmp_path):
+    lib, svc = tmp_path / "sharedlib_repo", tmp_path / "svc_repo"
+    (lib / "sharedlib").mkdir(parents=True); (svc / "svc").mkdir(parents=True)
+    (lib / "sharedlib/__init__.py").write_text("")
+    (lib / "sharedlib/backoff.py").write_text("def with_backoff(fn, tries=3):\n    for _ in range(tries):\n        fn()\n")
+    (svc / "svc/__init__.py").write_text("")
+    (svc / "svc/main.py").write_text("from sharedlib.backoff import with_backoff\n\n\ndef run():\n    with_backoff(print)\n")
+    for d in (lib, svc):
+        assert api.post("/api/repos", json={"path": str(d)}, headers=H).status_code == 200
+    files = api.get("/api/graph/all").json()["links"]
+    assert {"source": "svc_repo:svc/main.py", "target": "sharedlib_repo:sharedlib/backoff.py", "kind": "imports", "weight": 1} in files
+    syms = api.get("/api/graph/all", params={"level": "symbol"}).json()["links"]
+    assert any(l["kind"] == "imports" and l["target"] == "sharedlib_repo:sharedlib/backoff.py#with_backoff" for l in syms)
+    # the fixtures' own `app` packages resolve at home, so same-named packages in different repos never cross-link
+    assert not any(l["kind"] == "imports" and l["source"].split(":")[0] in ("py_app", "conv_app") for l in files)

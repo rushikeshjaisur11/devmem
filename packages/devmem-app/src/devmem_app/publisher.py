@@ -42,7 +42,7 @@ DEFAULT_RULES = """# Rules (global + repo)
 # The PyPI name `devmem` belongs to another project: install the agent CLI from this repo (or the plugin's bundled wheel).
 INSTALL = 'pip install "devmem @ git+https://github.com/rushikeshjaisur11/devmem.git#subdirectory=packages/devmem"'
 
-PRECOMMIT = """# Merge into .pre-commit-config.yaml (runs inside Devin's session too, once the devmem CLI is installed)
+PRECOMMIT = """# Merge into .pre-commit-config.yaml (runs inside a cloud agent's session too, once the devmem CLI is installed)
 repos:
   - repo: local
     hooks:

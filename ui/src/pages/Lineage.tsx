@@ -44,7 +44,7 @@ export default function Lineage({ params }: { params: Record<string, string> }) 
 
   return (
     <>
-      <h2>Data flow</h2>
+      <h1>Data flow</h1>
       <p className="sub">Data flows left to right: the jobs that write a table, the table, and the jobs that read it, across repos. Pick a table to see its neighbourhood and column-level derivation.</p>
       <Err msg={data.error} />
       {!data.loading && !tables.length ? <div className="card"><Empty>No tables found yet. Lineage comes from SQL and Spark code that reads or writes tables; index a repo that has some.</Empty></div> : (

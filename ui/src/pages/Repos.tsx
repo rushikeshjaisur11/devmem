@@ -43,7 +43,7 @@ export default function Repos(_: any) {
 
   return (
     <>
-      <h2>Repos</h2>
+      <h1>Repos</h1>
       <p className="sub">Add a repo to index its code. Publish writes the map agents read (<code>.devmem/</code> and an <code>AGENTS.md</code> block) into the repo; nothing else is changed.</p>
       <div className="card">
         <h3>Onboard a repo</h3>

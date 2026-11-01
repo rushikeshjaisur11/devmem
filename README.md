@@ -78,6 +78,19 @@ imports one of these libraries, the matching section of the latest docs is liste
 **5. Hand work to an agent.** In **Chat**, describe a change ("add retry with backoff to the export job") or paste a plan. You get a
 compact prompt with the code your org already has, current library docs and the paths not to touch. Paste it into the agent.
 
+**See how it all connects.** **Code map** draws every file (or every function and class) of every repo as one force-directed
+graph, like Obsidian's graph view: bigger dots have more links, names fade in as you zoom, hovering lights up a node's connections,
+and clicking one lists what uses it and what it uses, with a 1-3 hop neighbourhood view. *Graph settings* has filters (tests,
+tables, unlinked files, link kinds, repos), colour groups (by repo or kind), display and force sliders; your settings are remembered.
+Repos connect through the tables they share and through imports: a file that imports a module another onboarded repo defines
+(a Python package, or a JS/TS package by its `package.json` name) gets a heavier *imports* link to it. Colour by folder gives the four
+biggest folders a hue; *Saved views* stores the level, filters, groups and forces under a name.
+
+**Check whether it already exists.** **Already built elsewhere** takes a plain description ("retry failed uploads with backoff") and a
+target repo, searches every other onboarded repo, and shows each match with the work needed to bring it over (packages to add,
+helpers to copy, tables it touches, similar code the target already has) and a ready-to-paste agent prompt. Agents run the same
+search with `devmem reuse` or the `reuse` MCP tool.
+
 **Not a developer?** You never need exact names. Wherever the UI asks for code (What breaks if…, Code map, Agents preview), type
 what the feature does in your own words ("retry failed upload") and pick from suggestions that show each function's description;
 hover any dotted term for a plain explanation, and use **Ask & plan** for questions. `DEVMEM_LOCAL_EMBED=1` adds meaning-based matching.
@@ -137,7 +150,8 @@ in the repo: it checks every layer, down to a real MCP round trip, and prints th
   with that library's docs; agents are pointed at them when versions differ. Set `GITHUB_TOKEN` to avoid API rate limits.
 - **Offline meaning-based search in Chat**: `pip install -e "packages/devmem-app[embed]"` and set `DEVMEM_LOCAL_EMBED=1` (downloads a
   small model once, then runs on CPU).
-- **Optional LLM features** (Vertex): `pip install google-genai`, set `DEVMEM_VERTEX_PROJECT` (and `DEVMEM_VERTEX_EMBED_MODEL`) for written
+- **Optional LLM features** (Vertex; see `docs/AI.md` for what needs AI and what works without it): `pip install google-genai`, set `DEVMEM_VERTEX_API_KEY` (Vertex express mode; `GOOGLE_API_KEY` also works)
+  or `DEVMEM_VERTEX_PROJECT` with gcloud ADC login (and `DEVMEM_VERTEX_EMBED_MODEL`) for written
   chat answers and embedding-based ranking; `hub push --summarize` has the LLM describe functions so offline keyword search matches by meaning.
 
 ## Commands

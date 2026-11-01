@@ -139,7 +139,7 @@ export default function Agents({ params }: { params: Record<string, string> }) {
   const [repo, setRepo] = useState(params.repo || "");
   return (
     <>
-      <div className="row"><h2>Agents</h2>{repos.data && <RepoSelect value={repo} onChange={setRepo} repos={repos.data} />}</div>
+      <div className="row"><h1>Agents</h1>{repos.data && <RepoSelect value={repo} onChange={setRepo} repos={repos.data} />}</div>
       <p className="sub">Connect the coding agents you use, see exactly what they read from devmem, and check what they asked for.</p>
       <Connect repo={repo} onDone={repos.reload} />
       <Doctor repo={repo} />

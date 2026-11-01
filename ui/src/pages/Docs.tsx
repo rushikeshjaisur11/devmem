@@ -26,7 +26,7 @@ export default function Docs(_: any) {
   const list: any[] = libs.data || [];
   return (
     <>
-      <h2>Library docs</h2>
+      <h1>Library docs</h1>
       <p className="sub">Agents without internet cannot look anything up. Fetch the current documentation here, where there is internet, and it travels to them inside the hub and the repos that use each library. Newer than the org's older code, so agents stop copying outdated patterns.</p>
       <Err msg={libs.error || err} />
       {msg && <div className="ok">{msg}</div>}

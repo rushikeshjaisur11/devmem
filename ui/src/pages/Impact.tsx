@@ -37,7 +37,7 @@ export default function Impact({ params }: { params: Record<string, string> }) {
   const link = (id: string) => editorHref(repos.data, repo, id.split("#")[0], res?.lines?.[id]);
   return (
     <>
-      <h2>What breaks if I change…</h2>
+      <h1>What breaks if I change…</h1>
       <p className="sub">Use this before editing a function, table or column: it lists everything that depends on it and the tests that would catch a mistake.</p>
       <div className="row" style={{ marginBottom: 12 }}>
         {repos.data && <RepoSelect value={repo} onChange={setRepo} repos={repos.data} />}

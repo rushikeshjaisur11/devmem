@@ -41,7 +41,7 @@ export default function Memory(_: any) {
   return (
     <>
       <div className="row" style={{ marginBottom: 6 }}>
-        <h2 style={{ margin: 0 }}>Lessons &amp; rules</h2>
+        <h1 style={{ margin: 0 }}>Lessons &amp; rules</h1>
         {repos.data && <RepoSelect value={repo} onChange={setRepo} repos={repos.data} indexedOnly={false} />}
         <button onClick={() => act(() => api.post("/api/memory/sync"), (r) => `Synced: ${r.new_lessons} new lesson(s) to the hub, ${r.lessons_pushed} pushed to repos, ${r.new_feedback} feedback entries`)}>Sync hub</button>
         <button className="primary" onClick={() => { setTab("lessons"); setEdit("new"); }}>New lesson</button>
@@ -55,7 +55,7 @@ export default function Memory(_: any) {
 
       {tab === "lessons" && <>
         {edit === "new" && <LessonForm initial={{}} onCancel={() => setEdit("")} onSave={async (v) => { const r = await api.post(`/api/repos/${repo}/lessons`, v); setEdit(""); setMsg(r.status === "duplicate" ? `A similar lesson already exists (${r.id})` : `Saved ${r.id}`); mem.reload(); }} />}
-        {!lessons.length && edit !== "new" && <Empty>No lessons for this repo yet. Devin adds them with <code>devmem remember</code>; you can add one with “New lesson”.</Empty>}
+        {!lessons.length && edit !== "new" && <Empty>No lessons for this repo yet. Agents add them with <code>devmem remember</code>; you can add one with “New lesson”.</Empty>}
         {lessons.map((l) => edit === l.id ? <LessonForm key={l.id} initial={l} onCancel={() => setEdit("")} onSave={async (v) => { await api.put(`/api/repos/${repo}/lessons/${l.id}`, v); setEdit(""); mem.reload(); }} /> : (
           <div className="card lesson" key={l.id}>
             <div className="row"><h4>{l.title}</h4>{(l.tags || []).map((t: string) => <span className="tag" key={t}>{t}</span>)}<span className="grow" /><span className="muted" title="How agents rated this lesson after recalling it">by {l.source} · rated useful {use(l.id)[0]}, not useful {use(l.id)[1]}</span><button className="quiet" onClick={() => setEdit(l.id)}>Edit</button></div>

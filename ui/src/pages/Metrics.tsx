@@ -20,7 +20,7 @@ function PrMetrics({ d, onUploaded }: { d: any; onUploaded: () => void }) {
     <>
       <div className="card"><h3>Agent changes {d.split ? `before vs after devmem (${d.split.slice(0, 10)})` : ""}</h3>
         {d.commits_scanned === 0 ? <Empty>No git history found for this repo.</Empty> : <>
-          <p className="muted" style={{ marginTop: 0 }}>{d.agent_commits} of the last {d.commits_scanned} commits look agent-made (author or Co-authored-by matches Devin, Copilot or a bot). Diff budget: {d.budget} lines. Set <span className="mono">metrics.agent_pattern</span> or <span className="mono">metrics.since</span> in .devmem/config.yaml to override.</p>
+          <p className="muted" style={{ marginTop: 0 }}>{d.agent_commits} of the last {d.commits_scanned} commits look agent-made (author or Co-authored-by matches Devin, Copilot, Claude or a bot). Diff budget: {d.budget} lines. Set <span className="mono">metrics.agent_pattern</span> or <span className="mono">metrics.since</span> in .devmem/config.yaml to override.</p>
           <table><thead><tr><th></th>{cols.map(([c]) => <th key={c} className="num">{c}</th>)}</tr></thead><tbody>
             {rows.map(([label, f]) => <tr key={label}><td>{label}</td>{cols.map(([c, x]) => <td key={c} className="num">{fmt(f(x))}</td>)}</tr>)}
           </tbody></table>
@@ -38,7 +38,7 @@ function PrMetrics({ d, onUploaded }: { d: any; onUploaded: () => void }) {
       <div className="card"><h3>Devin sessions</h3>
         {d.devin ? <table><thead><tr><th></th>{Object.keys(d.devin).map((k) => <th key={k} className="num">{k}</th>)}</tr></thead><tbody>
           {[["Sessions", "sessions"], ["With a PR", "with_pr"], ["Median ACUs", "acus_median"], ["Total ACUs", "acus_total"]].map(([l, k]) => <tr key={k}><td>{l}</td>{Object.values(d.devin).map((v: any, i) => <td key={i} className="num">{fmt(v[k])}</td>)}</tr>)}
-        </tbody></table> : <Empty>No session data. Export your sessions from Devin as JSON and upload them here; nothing is fetched over the network.</Empty>}
+        </tbody></table> : <Empty>No session data. If you use Devin, export its sessions as JSON and upload them here; nothing is fetched over the network.</Empty>}
         <div className="row" style={{ marginTop: 8 }}><label>Upload session export <input type="file" accept=".json" onChange={(e) => upload(e.target.files?.[0])} /></label><span className="muted">{msg}</span></div>
       </div>
     </>
@@ -55,7 +55,7 @@ export default function Metrics({ params }: { params: Record<string, string> }) 
   const agentNow = pm ? (pm.split ? pm.agent.after : pm.agent.all) : null;
   return (
     <>
-      <div className="row" style={{ marginBottom: 6 }}><h2>Results</h2>{repos.data && <RepoSelect value={repo} onChange={setRepo} repos={repos.data} />}</div>
+      <div className="row" style={{ marginBottom: 6 }}><h1>Results</h1>{repos.data && <RepoSelect value={repo} onChange={setRepo} repos={repos.data} />}</div>
       <p className="sub">Is devmem paying off? Smaller agent changes, fewer tokens, and lessons agents found useful.</p>
       <Err msg={m.error} />
       {d && <>

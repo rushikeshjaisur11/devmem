@@ -13,6 +13,7 @@ const Metrics = lazy(() => import("./pages/Metrics"));
 const Chat = lazy(() => import("./pages/Chat"));
 const Hub = lazy(() => import("./pages/Hub"));
 const Docs = lazy(() => import("./pages/Docs"));
+const Reuse = lazy(() => import("./pages/Reuse"));
 
 const ic = (d: string) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" dangerouslySetInnerHTML={{ __html: d }} />;
 const ICONS: Record<string, string> = {
@@ -28,21 +29,22 @@ const ICONS: Record<string, string> = {
   memory: '<path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-4 10.5c.7.7 1 1.5 1 2.5h6c0-1 .3-1.8 1-2.5A6 6 0 0 0 12 3z"/>',
   chat: '<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/>',
   metrics: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
+  reuse: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>',
 };
-const GROUPS: [string, string[]][] = [["Start here", ["overview", "agents", "repos"]], ["Before you change code", ["impact", "graph", "lineage"]], ["Guide agents", ["chat", "memory", "docs", "hub"]], ["Health", ["hygiene", "metrics"]]];
+const GROUPS: [string, string[]][] = [["Start here", ["overview", "agents", "repos"]], ["Before you change code", ["reuse", "impact", "graph", "lineage"]], ["Guide agents", ["chat", "memory", "docs", "hub"]], ["Health", ["hygiene", "metrics"]]];
 const PAGES: [string, string, any][] = [
-  ["overview", "Overview", Overview], ["agents", "Agents", Agents], ["repos", "Repos", Repos], ["impact", "What breaks if…", Impact], ["graph", "Code map", Graph],
+  ["overview", "Overview", Overview], ["agents", "Agents", Agents], ["repos", "Repos", Repos], ["impact", "What breaks if…", Impact], ["graph", "Code map", Graph], ["reuse", "Already built elsewhere", Reuse],
   ["lineage", "Data flow", Lineage], ["hygiene", "Code health", Hygiene], ["memory", "Lessons & rules", Memory], ["docs", "Library docs", Docs], ["hub", "Team hub", Hub],
   ["chat", "Ask & plan", Chat], ["metrics", "Results", Metrics],
 ];
 const LABEL = Object.fromEntries(PAGES.map((p) => [p[0], p[1]]));
 
-/** The mark: concentric blast-radius rings around a highlighted symbol. */
+/** The mark: a symbol and the blast radius around it, drawn in the one accent. */
 const Mark = () => (
-  <svg viewBox="0 0 34 34" aria-hidden="true">
-    <circle cx="17" cy="17" r="15" fill="none" stroke="currentColor" strokeWidth="1.6" strokeDasharray="2.5 3" opacity=".55" />
-    <circle cx="17" cy="17" r="10" fill="none" stroke="currentColor" strokeWidth="1.8" />
-    <circle cx="17" cy="17" r="5" fill="var(--hl)" stroke="currentColor" strokeWidth="1.8" />
+  <svg viewBox="0 0 24 24" aria-hidden="true">
+    <circle cx="12" cy="12" r="10.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeDasharray="2 2.6" />
+    <circle cx="12" cy="12" r="6.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
+    <circle cx="12" cy="12" r="3" fill="currentColor" />
   </svg>
 );
 
@@ -92,6 +94,9 @@ export default function App() {
   const { page, params } = useRoute();
   const { dark, toggle } = useTheme();
   const [palette, setPalette] = useState(false);
+  const [menu, setMenu] = useState(false);
+  const repos = useRepos();
+  useEffect(() => setMenu(false), [page, params.repo]);
   const [editor, setEditor] = useState(getEditor);
   const pickEditor = (v: string) => { try { localStorage.setItem("devmem-editor", v); } catch { /* private mode */ } setEditor(v); };
   useEffect(() => {
@@ -102,11 +107,11 @@ export default function App() {
   const Page = (PAGES.find((p) => p[0] === page) || PAGES[0])[2];
   const mac = /Mac|iPhone|iPad/.test(navigator.platform);
   return (
-    <div className="app">
+    <div className={`app ${menu ? "menu-open" : ""}`}>
       <nav className="side" aria-label="Main">
         <div className="brand">
           <div className="logo"><Mark /></div>
-          <div><h1>devmem</h1><small>memory for coding agents</small></div>
+          <span className="name">devmem</span><span className="scope">{(repos.data || []).length} repos</span>
         </div>
         {GROUPS.map(([g, ids]) => (
           <div key={g} style={{ display: "contents" }}>
@@ -117,19 +122,24 @@ export default function App() {
           </div>
         ))}
         <div className="side-foot">
-          <select value={editor} onChange={(e) => pickEditor(e.target.value)} aria-label="Open files in" title="Open files in">
-            {Object.entries(EDITORS).map(([k, [label]]) => <option key={k} value={k}>{k === "none" ? "Editor links off" : label}</option>)}
-          </select>
+          <label className="editor-pick" title="File and line links on every page open in this editor">
+            <span>Open files in</span>
+            <select value={editor} onChange={(e) => pickEditor(e.target.value)}>
+              {Object.entries(EDITORS).map(([k, [label]]) => <option key={k} value={k}>{k === "none" ? "nothing (links off)" : label}</option>)}
+            </select>
+          </label>
           <button className="icon-btn" onClick={toggle} aria-label={dark ? "Switch to light theme" : "Switch to dark theme"} title={dark ? "Light theme" : "Dark theme"}>
             {dark ? ic('<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>') : ic('<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>')}
           </button>
         </div>
       </nav>
-      <div style={{ minWidth: 0 }}>
-        <header className="topbar">
-          <span className="crumb">devmem / <b>{LABEL[page] || "Overview"}</b>{params.repo ? <> / {params.repo}</> : null}</span>
-          <button className="kbtn" onClick={() => setPalette(true)} aria-label="Go to a page or repo">{ic('<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>')}Go to…<kbd>{mac ? "⌘" : "Ctrl"} K</kbd></button>
-        </header>
+      <header className="topbar">
+        <button className="icon-btn menu-btn" onClick={() => setMenu((m) => !m)} aria-label={menu ? "Close menu" : "Open menu"} aria-expanded={menu}>{ic(menu ? '<path d="M6 6l12 12M18 6 6 18"/>' : '<path d="M4 7h16M4 12h16M4 17h16"/>')}</button>
+        <span className="crumb">{params.repo ? <>{params.repo} / </> : null}<b>{LABEL[page] || "Overview"}</b></span>
+        <button className="kbtn" onClick={() => setPalette(true)} aria-label="Go to a page or repo">{ic('<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>')}<span>Go to a page or repo</span><kbd>{mac ? "⌘" : "Ctrl"} K</kbd></button>
+        <span className="spacer" />
+      </header>
+      <div className="sheet">
         <main><ErrorBoundary key={page + JSON.stringify(params) + editor}><Suspense fallback={<p className="muted">Loading…</p>}><Page params={params} /></Suspense></ErrorBoundary></main>
       </div>
       {palette && <Palette onClose={() => setPalette(false)} />}

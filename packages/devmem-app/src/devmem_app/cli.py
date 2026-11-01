@@ -273,7 +273,7 @@ def _main(argv=None) -> int:
             from .chat import provider_from_env
             prov = provider_from_env() if a.summarize else None
             if a.summarize and prov is None:
-                sys.exit("--summarize needs DEVMEM_VERTEX_PROJECT (and pip install google-genai)")
+                sys.exit("--summarize needs DEVMEM_VERTEX_API_KEY or DEVMEM_VERTEX_PROJECT (and pip install google-genai)")
             print(json.dumps(hubmod.push(_ws()["repos"], a.per_repo, prov, True, a.push, a.prune), indent=1))
     elif a.cmd == "reuse":
         from devmem import reuse as core

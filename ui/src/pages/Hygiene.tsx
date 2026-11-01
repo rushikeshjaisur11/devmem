@@ -36,7 +36,7 @@ export default function Hygiene({ params }: { params: Record<string, string> }) 
   return (
     <>
       <div className="row">
-        <h2>Code health</h2>
+        <h1>Code health</h1>
         {repos.data && <RepoSelect value={repo} onChange={setRepo} repos={repos.data} />}
         <button className="primary" disabled={!repo || busy} onClick={run}>{busy ? "Running tools…" : "Run hygiene"}</button>
       </div>

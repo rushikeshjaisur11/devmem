@@ -48,7 +48,7 @@ function GettingStarted({ repos, mem, docs }: { repos: any[]; mem: any; docs: an
       <div className="checklist">
         {steps.map(([ok, title, why, page, cta], i) => (
           <div key={title} className={`check ${ok ? "done" : ""}`}>
-            <span className="dot" aria-hidden="true">{ok ? "✓" : i + 1}</span>
+            <span className="dot" aria-hidden="true">{ok ? <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m5 12.5 4.5 4.5L19 7.5" /></svg> : i + 1}</span>
             <div><b>{title}</b>{!ok && <span className="why">{why}</span>}</div>
             {!ok && <a className="chip" href={`#/${page}`}>{cta}</a>}
           </div>
@@ -79,14 +79,19 @@ export default function Overview(_: any) {
 
   return (
     <>
-      <h2>Overview</h2>
+      <h1>Overview</h1>
       {repos.loading ? <p className="sub">Loading…</p> : !list.length ? (
         <div className="card"><Empty>No repos yet. <a href="#/repos">Add a repo</a> to index its code and publish a map your agents can read instead of whole files.</Empty></div>
       ) : (
-        <p className="lede">
-          {indexed.length} of {list.length} repo{list.length === 1 ? "" : "s"} indexed, <b>{n(indexed.reduce((s, r) => s + (r.symbols || 0), 0))} symbols</b> mapped.{" "}
-          {always.length ? <>Agents start each session with <mark>{n(Math.max(...always))} tokens</mark> of devmem instructions and look up the rest on demand.</> : <>Publish a repo so its agents stop reading whole files.</>}
-        </p>
+        <>
+          <p className="lede">{always.length ? "Agents start each session with this much devmem context and look up the rest on demand." : "Publish a repo so its agents stop reading whole files."}</p>
+          <div className="kpis">
+            <div className="lead"><span>Tokens per agent session</span><b>{always.length ? n(Math.max(...always)) : "—"}</b></div>
+            <div><span>Repos indexed</span><b>{indexed.length}<small> of {list.length}</small></b></div>
+            <div><span>Symbols mapped</span><b>{n(indexed.reduce((s, r) => s + (r.symbols || 0), 0))}</b></div>
+            <div><span>Agent queries logged</span><b>{n(indexed.reduce((s, r) => s + (r.usage?.calls || 0), 0))}</b></div>
+          </div>
+        </>
       )}
       {(alerts.data || []).length > 0 && <div className="alerts" role="list" aria-label="Needs attention">
         {alerts.data.slice(0, 6).map((a: any, i: number) => <div key={i} role="listitem" className={`alert ${a.level}`}>{a.repo && <b>{a.repo}</b>}{a.text}<a href={`#/${a.page}${a.repo ? `?repo=${encodeURIComponent(a.repo)}` : ""}`}>Fix</a></div>)}

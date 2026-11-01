@@ -22,7 +22,7 @@ export default function Hub(_: any) {
   const snippet = h?.spec && h.agent_visible ? h.spec : "https://github.com/<org>/<hub-repo>.git";
   return (
     <>
-      <h2>Team hub</h2>
+      <h1>Team hub</h1>
       <p className="sub">Use this when you have several repos: one shared git repo collects what each of them knows, so an agent working in one repo can find and reuse code another repo already has.</p>
       <Err msg={st.error || err} />
       {msg && <div className="ok">{msg}</div>}
@@ -48,7 +48,7 @@ export default function Hub(_: any) {
           <h3>2 · Sync every onboarded repo into it</h3>
           <div className="row" style={{ gap: 18 }}>
             <label><input type="checkbox" checked={push} onChange={(e) => setPush(e.target.checked)} />Push to the remote after committing</label>
-            <label title={h.llm?.configured ? "" : "Set DEVMEM_VERTEX_PROJECT (and install google-genai) to enable"}><input type="checkbox" disabled={!h.llm?.configured} checked={summarize} onChange={(e) => setSummarize(e.target.checked)} />Describe functions with AI <span className="muted">(sends code snippets to Vertex)</span></label>
+            <label title={h.llm?.configured ? "" : "Set DEVMEM_VERTEX_API_KEY or DEVMEM_VERTEX_PROJECT (and install google-genai) to enable"}><input type="checkbox" disabled={!h.llm?.configured} checked={summarize} onChange={(e) => setSummarize(e.target.checked)} />Describe functions with AI <span className="muted">(sends code snippets to Vertex)</span></label>
             <label><input type="checkbox" checked={prune} onChange={(e) => setPrune(e.target.checked)} />Remove repos no longer onboarded</label>
           </div>
           <div className="row" style={{ marginTop: 12 }}>
@@ -78,13 +78,13 @@ export default function Hub(_: any) {
       <div className="card">
         <h3>{h?.configured ? 3 : 2} · Point your agents at it</h3>
         <ol style={{ margin: 0, paddingLeft: 20, lineHeight: 1.8 }}>
-          <li>Give the agent read access to the hub repo (in Devin: add it to the repositories Devin can use, or make sure its GitHub integration covers it).</li>
+          <li>Give the agent read access to the hub repo (for a cloud agent: add it to the repositories the agent can use, or make sure its GitHub integration covers it).</li>
           <li>Either run <b>Publish</b> on each repo and merge the PR, which commits <code>.devmem/hub.txt</code> containing the hub URL, or set an environment variable for every session:
             <div className="row" style={{ margin: "6px 0" }}><code>DEVMEM_HUB={snippet}</code><Copy text={`DEVMEM_HUB=${snippet}`} /></div>
           </li>
           <li>The devmem skill then runs <code>devmem hub sync</code> and <code>devmem reuse "&lt;need&gt;"</code> before writing new code. If the hub is unreachable it falls back to the catalog committed in the repo.</li>
         </ol>
-        <p className="muted" style={{ marginBottom: 0 }}>This is an instruction to the agent, not an enforced rule: Devin follows the skill and <code>AGENTS.md</code>, and can only read repos it has been given access to.</p>
+        <p className="muted" style={{ marginBottom: 0 }}>This is an instruction to the agent, not an enforced rule: the agent follows the skill and <code>AGENTS.md</code>, and can only read repos it has been given access to.</p>
       </div>
     </>
   );

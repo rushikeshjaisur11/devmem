@@ -18,6 +18,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from . import crossrepo
 from . import chat as chat_mod
 from . import hygiene as hyg
 from . import metrics as metrics_mod
@@ -373,7 +374,7 @@ def create_app() -> FastAPI:
             except Exception:
                 prov = None
             if prov is None:
-                raise HTTPException(422, "summaries need DEVMEM_VERTEX_PROJECT and google-genai installed")
+                raise HTTPException(422, "summaries need DEVMEM_VERTEX_API_KEY or DEVMEM_VERTEX_PROJECT, and google-genai installed")
         try:
             return hubmod.push(ws()["repos"], 400, prov, True, body.push, body.prune)
         except (RuntimeError, subprocess.TimeoutExpired) as e:
@@ -420,6 +421,53 @@ def create_app() -> FastAPI:
             for r in d["readers"]:
                 edges.append({"data": {"id": f"r:{t}>{r}", "source": f"table:{t}", "target": r, "kind": "reads"}})
         return {"nodes": nodes, "edges": edges}
+
+    @app.get("/api/graph/all")
+    def graph_all(level: str = "file"):
+        """Every file (or symbol) of every repo and every link between them, for the Obsidian-style map.
+        Tables are shared nodes, so repos that touch the same table connect through it."""
+        nodes, links, keys, loaded = {}, Counter(), {}, {}
+        for rname, rpath in ws()["repos"].items():
+            ip = Path(rpath) / ".devmem/index.json"
+            if not ip.exists():
+                continue
+            idx = json.loads(ip.read_text(encoding="utf-8"))
+            loaded[rname] = (Path(rpath), idx)
+            sym = {s["id"]: s for s in idx["symbols"]}
+            test_files = {s["file"] for s in idx["symbols"] if s["is_test"]}
+
+            def key(end: str, rname=rname, idx=idx, sym=sym, test_files=test_files) -> str | None:
+                if end.startswith("table:"):
+                    nodes.setdefault(end, {"id": end, "label": end[6:], "kind": "table", "repo": ""})
+                    return end
+                s, f = sym.get(end), end.split("#")[0]
+                if level == "symbol" and s:
+                    nid = f"{rname}:{end}"
+                    nodes.setdefault(nid, {"id": nid, "label": s["qualname"], "kind": "test" if s["is_test"] else s["kind"],
+                                           "repo": rname, "file": f, "sid": end})
+                    return nid
+                if f not in idx["files"]:
+                    return None
+                nid = f"{rname}:{f}"
+                nodes.setdefault(nid, {"id": nid, "label": f.rsplit("/", 1)[-1], "kind": "test" if f in test_files else "file",
+                                       "repo": rname, "file": f})
+                return nid
+
+            for x in (idx["files"] if level != "symbol" else [s["id"] for s in idx["symbols"] if s["kind"] != "module"]):
+                key(x)   # unlinked files/symbols too: the map shows orphans
+            for e in idx["edges"]:
+                a, b = key(e["src"]), key(e["dst"])
+                if a and b and a != b:
+                    links[(a, b, e["type"])] += 1
+            keys[rname] = key
+        for x in crossrepo.cross_links(loaded):   # a file importing a module another onboarded repo defines
+            a = keys[x["src_repo"]](x["src_file"])
+            dst = f"{x['dst_file']}#{x['name']}" if x["name"] else x["dst_file"]
+            b = keys[x["dst_repo"]](dst) or keys[x["dst_repo"]](x["dst_file"])
+            if a and b:
+                links[(a, b, "imports")] += 1
+        return {"nodes": list(nodes.values()),
+                "links": [{"source": a, "target": b, "kind": t, "weight": n} for (a, b, t), n in links.items()]}
 
     @app.get("/api/repos/{name}/graph")
     def graph_focus(name: str, focus: str, depth: int = 1, limit: int = 60):
@@ -720,6 +768,21 @@ def create_app() -> FastAPI:
         detail: str = "pointers"         # "code": also include source of existing solutions in an agent prompt
         fetch_docs: bool = True
 
+    @app.get("/api/reuse")
+    def reuse_search(need: str, into: str, limit: int = 5):
+        """What the other onboarded repos already built for `need`, each fitted against `into`: effort, notes, a port prompt."""
+        from .reuse import live
+        allr = {n: p for n, p in ws()["repos"].items() if (Path(p) / ".devmem/index.json").exists()}
+        if into not in allr:
+            raise HTTPException(404, f"unknown or unindexed repo {into}")
+        if len(allr) < 2:
+            return {"hits": [], "peers": 0}
+        try:
+            prov = chat_mod.provider_from_env()
+        except Exception:   # optional LLM ranking: a missing SDK or bad credentials fall back to keyword ranking
+            prov = None
+        return {"hits": live(need, into, allr, max(1, min(limit, 10)), provider=prov), "peers": len(allr) - 1}
+
     @app.get("/api/chat/status")
     def chat_status():
         return chat_mod.llm_status()
@@ -760,7 +823,7 @@ def create_app() -> FastAPI:
             except ValueError as e:
                 raise HTTPException(422, str(e))
         if body.llm and not chat_mod.llm_status()["configured"]:
-            raise HTTPException(409, "no LLM configured: set DEVMEM_VERTEX_PROJECT (and pip install google-genai)")
+            raise HTTPException(409, "no LLM configured: set DEVMEM_VERTEX_API_KEY or DEVMEM_VERTEX_PROJECT (and pip install google-genai)")
         try:
             return {**verdict, **chat_mod.ask(body.question, {n: Path(allr[n]) for n in names}, min(max(body.limit, 1), 20), use_llm=body.llm)}
         except ImportError as e:
