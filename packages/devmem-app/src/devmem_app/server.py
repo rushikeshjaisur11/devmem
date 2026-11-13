@@ -1,10 +1,19 @@
-"""Local API + static UI for the desktop app (`devmem-app ui`). Binds to 127.0.0.1 only; mutating calls need the
-X-Devmem header and Host must be localhost (blocks drive-by browser requests and DNS rebinding)."""
+"""API + static UI (`devmem-app ui`).
 
+Local (the default): binds to 127.0.0.1, Host must be localhost and mutating calls need the X-Devmem header, which blocks
+drive-by browser requests and DNS rebinding.
+Deployed (`devmem-app ui --host 0.0.0.0`, or DEVMEM_TOKEN set): every /api call also needs the access token, sent as the
+cookie the sign-in page sets or as `Authorization: Bearer`. Repos are then onboarded by upload or Git URL; naming a path
+on the server is off unless DEVMEM_ALLOW_PATHS=1."""
+
+import hmac
 import json
 import os
 import re
+import shutil
 import subprocess
+import tempfile
+import time
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -14,11 +23,15 @@ from devmem import usage as agent_usage
 from devmem.index import Index
 from devmem.knowledge import AGENTS_INDEX_BUDGET, MAP_BUDGET, check_knowledge, est_tokens, managed_block, parse_header
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import crossrepo
+from . import definitions as defs
+from . import settings as settings_mod
+from . import uploads
 from . import chat as chat_mod
 from . import hygiene as hyg
 from . import metrics as metrics_mod
@@ -31,6 +44,25 @@ from .publisher import _module_of, commit_branch, publish
 
 UI_DIST = Path(__file__).parent / "ui_dist"
 ALLOWED_HOSTS = {"127.0.0.1", "localhost", "testserver"}
+COOKIE = "devmem_token"
+OPEN_API = {"/api/config", "/api/login", "/api/logout"}   # reachable before sign-in
+
+
+def access_token() -> str:
+    """Set => deployed mode. Read per request, so a test or a process manager can set it after import."""
+    return os.environ.get("DEVMEM_TOKEN", "").strip()
+
+
+def paths_allowed() -> bool:
+    return not access_token() or os.environ.get("DEVMEM_ALLOW_PATHS") == "1"
+
+
+def _signed_in(request: Request, token: str) -> bool:
+    got = request.cookies.get(COOKIE) or ""
+    auth = request.headers.get("authorization") or ""
+    if auth.lower().startswith("bearer "):
+        got = auth[7:].strip()
+    return bool(got) and hmac.compare_digest(got.encode(), token.encode())
 
 
 def _is_plan(text: str) -> bool:
@@ -44,11 +76,51 @@ def create_app() -> FastAPI:
     @app.middleware("http")
     async def guard(request: Request, call_next):
         host = (request.headers.get("host") or "").split(":")[0]
-        if host not in ALLOWED_HOSTS:
+        token = access_token()
+        extra = {h.strip() for h in os.environ.get("DEVMEM_ALLOWED_HOSTS", "").split(",") if h.strip()}
+        # local: localhost only. Deployed: the token is the guard, so any host is fine unless DEVMEM_ALLOWED_HOSTS narrows it.
+        if host not in ALLOWED_HOSTS | extra and not (token and not extra):
             return JSONResponse({"detail": "bad host"}, status_code=403)
         if request.method in ("POST", "PUT", "DELETE") and request.headers.get("x-devmem") != "1":
             return JSONResponse({"detail": "missing X-Devmem header"}, status_code=403)
+        path = request.url.path
+        if token and path.startswith("/api/") and path not in OPEN_API and not _signed_in(request, token):
+            return JSONResponse({"detail": "sign in with the access token"}, status_code=401)
         return await call_next(request)
+
+    # ---------- deployment: sign-in and what this server allows ----------
+    class Login(BaseModel):
+        token: str
+
+    @app.get("/api/config")
+    def config(request: Request):
+        token = access_token()
+        from importlib import metadata
+        try:
+            ver = metadata.version("devmem-app")
+        except metadata.PackageNotFoundError:
+            ver = ""
+        return {"deployed": bool(token), "signed_in": not token or _signed_in(request, token), "paths_allowed": paths_allowed(),
+                "max_upload_mb": uploads.max_upload_bytes() // (1024 * 1024), "version": ver}
+
+    @app.post("/api/login")
+    def login(body: Login, request: Request):
+        token = access_token()
+        if not token:
+            return {"ok": True}
+        if not hmac.compare_digest(body.token.strip().encode(), token.encode()):
+            time.sleep(1)   # slows guessing; this handler runs in the thread pool, so other requests are not held up
+            raise HTTPException(401, "that is not the access token")
+        r = JSONResponse({"ok": True})
+        https = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+        r.set_cookie(COOKIE, token, httponly=True, samesite="strict", secure=https, max_age=30 * 24 * 3600, path="/")
+        return r
+
+    @app.post("/api/logout")
+    def logout():
+        r = JSONResponse({"ok": True})
+        r.delete_cookie(COOKIE, path="/")
+        return r
 
     def index_repo(root, name):
         try:
@@ -73,6 +145,7 @@ def create_app() -> FastAPI:
         return Path(repos[name])
 
     cache: dict[str, tuple[float, Index]] = {}
+    summary_cache: dict[str, tuple[tuple, dict]] = {}
 
     def ix_of(name: str) -> Index:
         root = root_of(name)
@@ -89,15 +162,21 @@ def create_app() -> FastAPI:
         root = Path(path)
         d = {"name": name, "path": path, "indexed": False}
         ip = root / ".devmem/index.json"
+        d["uploaded"] = uploads.uploads_dir().resolve() in root.resolve().parents
         if ip.exists():
-            idx = json.loads(ip.read_text(encoding="utf-8"))
+            st = ip.stat()
+            hit = summary_cache.get(str(ip))
+            if not hit or hit[0] != (st.st_mtime_ns, st.st_size):   # every page lists the repos: parse a large index.json once per change
+                idx = json.loads(ip.read_text(encoding="utf-8"))
+                langs = Counter(f["lang"] for f in idx["files"].values() if f["lang"] != "other")
+                hit = summary_cache[str(ip)] = ((st.st_mtime_ns, st.st_size), {
+                    "symbols": sum(1 for s in idx["symbols"] if s["kind"] != "module"), "files": len(idx["files"]), "edges": len(idx["edges"]),
+                    "commit": idx.get("commit"), "langs": dict(langs), "generated": idx.get("generated"),
+                    "accuracy": (idx.get("stats") or {}).get("accuracy")})
             head = git_head(root)
             problems = check_knowledge(root, head) if (root / ".devmem/knowledge").exists() else ["not published"]
-            langs = Counter(f["lang"] for f in idx["files"].values() if f["lang"] != "other")
-            d.update({"indexed": True, "symbols": sum(1 for s in idx["symbols"] if s["kind"] != "module"),
-                      "files": len(idx["files"]), "edges": len(idx["edges"]), "commit": idx.get("commit"),
-                      "head": head, "branch": git_branch(root), "stale": bool(head and idx.get("commit") != head), "langs": dict(langs),
-                      "knowledge_problems": problems, "generated": idx.get("generated"), "accuracy": (idx.get("stats") or {}).get("accuracy")})
+            d.update({"indexed": True, **hit[1], "head": head, "branch": git_branch(root), "stale": bool(head and hit[1]["commit"] != head),
+                      "knowledge_problems": problems})
             hp = root / ".devmem/hygiene.json"
             if hp.exists():
                 d["hygiene"] = json.loads(hp.read_text()).get("counts", {})
@@ -167,6 +246,8 @@ def create_app() -> FastAPI:
                 else:
                     raise HTTPException(400, f"unknown branch {body.branch}")
         elif body.path:
+            if not paths_allowed():
+                raise HTTPException(403, "this server does not read paths on its own disk: upload the repo or give a Git URL")
             root = Path(body.path).expanduser().resolve()
             if not root.is_dir():
                 raise HTTPException(400, "not a directory")
@@ -177,11 +258,161 @@ def create_app() -> FastAPI:
         w = ws(); w["repos"][name] = str(root); save_ws(w)
         return repo_summary(name, str(root))
 
+    @app.post("/api/repos/upload")
+    async def upload_repo(request: Request, name: str = "", filename: str = ""):
+        """Onboard a repo from an uploaded archive: the request body is the .zip / .tar.gz itself (the browser packs a
+        picked folder into a zip first). Uploading again under the same name replaces the code and re-indexes it."""
+        try:
+            rname = uploads.repo_name(name, filename)
+        except uploads.UploadError as e:
+            raise HTTPException(400, str(e))
+        known = ws()["repos"].get(rname)
+        dest = uploads.uploads_dir() / rname
+        if known and Path(known).resolve() != dest.resolve():
+            raise HTTPException(409, f"a repo called {rname} is already onboarded from {known}; give this upload another name")
+        limit = uploads.max_upload_bytes()
+        if int(request.headers.get("content-length") or 0) > limit:
+            raise HTTPException(413, f"upload is larger than {limit // (1024 * 1024)} MB (DEVMEM_MAX_UPLOAD_MB raises the limit)")
+        uploads.uploads_dir().mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=uploads.uploads_dir(), suffix=".upload")
+        try:
+            size = 0
+            with os.fdopen(fd, "wb") as out:
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > limit:
+                        raise HTTPException(413, f"upload is larger than {limit // (1024 * 1024)} MB (DEVMEM_MAX_UPLOAD_MB raises the limit)")
+                    out.write(chunk)
+            if not size:
+                raise HTTPException(400, "empty upload")
+
+            def unpack_and_index():
+                root = uploads.install(Path(tmp), rname)
+                try:
+                    index_repo(root, rname)
+                except Exception:
+                    if not known:   # a first upload that cannot be indexed leaves nothing behind
+                        shutil.rmtree(root, ignore_errors=True)
+                    raise
+                return root
+            try:
+                root = await run_in_threadpool(unpack_and_index)
+            except uploads.UploadError as e:
+                raise HTTPException(400, str(e))
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        w = ws(); w["repos"][rname] = str(root); save_ws(w)
+        cache.pop(rname, None)
+        return repo_summary(rname, str(root))
+
+    @app.get("/api/repos/{name}/knowledge.zip")
+    def knowledge_zip(name: str):
+        """The published knowledge as a zip to unpack at the root of the real repo: how an uploaded repo's `.devmem/` and
+        AGENTS.md get back to where agents work."""
+        root = root_of(name)
+        if not (root / ".devmem/knowledge").exists():
+            raise HTTPException(409, f"{name} is not published yet")
+        return Response(uploads.knowledge_zip(root), media_type="application/zip",
+                        headers={"Content-Disposition": f'attachment; filename="{name}-devmem-knowledge.zip"'})
+
     @app.delete("/api/repos/{name}")
     def remove_repo(name: str):
-        w = ws(); w["repos"].pop(name, None); save_ws(w)
+        w = ws(); path = w["repos"].pop(name, None); save_ws(w)
         cache.pop(name, None)
+        if path and uploads.uploads_dir().resolve() in Path(path).resolve().parents:
+            shutil.rmtree(path, ignore_errors=True)   # an upload is devmem's own copy; a path or clone is left alone
         return {"ok": True}
+
+    # ---------- AI setup ----------
+    class AiSettings(BaseModel):
+        provider: str | None = None
+        api_key: str | None = None     # "" or missing keeps the saved key
+        clear_key: bool = False
+        model: str | None = None
+        base_url: str | None = None
+        embed_model: str | None = None
+        project: str | None = None
+        location: str | None = None
+        local_embed: str | None = None
+
+    @app.get("/api/settings/ai")
+    def ai_settings():
+        return settings_mod.public()
+
+    @app.put("/api/settings/ai")
+    def ai_settings_save(body: AiSettings):
+        vals = {k: ("" if v is None else v) for k, v in body.model_dump(exclude={"clear_key", "api_key"}, exclude_unset=True).items()}
+        if body.provider and body.provider not in settings_mod.PROVIDERS:
+            raise HTTPException(400, f"unknown provider {body.provider}")
+        if body.base_url and not re.match(r"^https?://[^\s]+$", body.base_url.strip()):
+            raise HTTPException(400, "the server address must start with http:// or https://")
+        if body.clear_key:
+            vals["api_key"] = None
+        elif body.api_key:
+            vals["api_key"] = body.api_key
+        settings_mod.save(vals)
+        return settings_mod.public()
+
+    @app.post("/api/settings/ai/test")
+    def ai_settings_test():
+        """One tiny request to the configured model, so a wrong key or model name shows up here and not in the middle of a task."""
+        out: dict = {"ok": False}
+        t0 = time.time()
+        try:
+            prov = chat_mod.provider_from_env()
+            if prov is None:
+                out["error"] = "nothing to test yet: choose a provider and save a key (or a server address)"
+            else:
+                reply = prov.generate("Reply with the single word: ok")
+                out.update({"ok": bool(reply), "model": getattr(prov, "name", ""), "reply": reply[:80], "ms": int((time.time() - t0) * 1000)})
+                if not reply:
+                    out["error"] = "the model answered with nothing"
+        except ImportError as e:
+            out["error"] = f"{e}. Vertex needs: pip install google-genai"
+        except Exception as e:
+            out["error"] = str(e)[:400]
+        try:
+            emb = chat_mod.local_embedder()
+            out["local_embed"] = "ready" if emb else "off"
+        except ImportError:
+            out["local_embed"] = "not installed: pip install model2vec"
+        except Exception as e:
+            out["local_embed"] = f"failed: {str(e)[:200]}"
+        return out
+
+    # ---------- definitions devmem is unsure about ----------
+    class Describe(BaseModel):
+        id: str
+        text: str
+
+    class DescribeAi(BaseModel):
+        ids: list[str]
+
+    @app.get("/api/repos/{name}/definitions")
+    def definitions(name: str, level: str = "low", limit: int = 100, q: str = ""):
+        return {**defs.review(ix_of(name), level, max(1, min(limit, 500)), q), "llm": chat_mod.llm_status()}
+
+    @app.put("/api/repos/{name}/definitions")
+    def describe(name: str, body: Describe):
+        try:
+            return {"saved": defs.set_description(ix_of(name), body.id, body.text, "human")}
+        except KeyError:
+            raise HTTPException(404, f"unknown symbol {body.id}")
+
+    @app.post("/api/repos/{name}/definitions/ai")
+    def describe_ai(name: str, body: DescribeAi):
+        if not body.ids or len(body.ids) > 40:
+            raise HTTPException(400, "send 1 to 40 symbol ids per request")
+        try:
+            prov = chat_mod.provider_from_env()
+        except ImportError as e:
+            raise HTTPException(409, f"LLM client not installed: {e}")
+        if prov is None:
+            raise HTTPException(409, "no AI model is set up: open AI setup, or write the descriptions by hand")
+        return defs.describe_with_ai(ix_of(name), body.ids, prov)
 
     @app.post("/api/repos/{name}/index")
     def reindex(name: str):
@@ -237,6 +468,123 @@ def create_app() -> FastAPI:
         except RuntimeError as e:
             raise HTTPException(422, str(e))
         return {"counts": h["counts"], "tools": h["tools"]}
+
+    # ---------- code health: local checks + SonarQube, ranked by blast radius ----------
+    from . import health as health_mod
+    from . import sonar as sonar_mod
+
+    class SonarConn(BaseModel):
+        url: str | None = None
+        token: str | None = None      # "" or missing keeps the saved token
+        clear_token: bool = False
+
+    class SonarProject(BaseModel):
+        key: str
+        branch: str = ""
+
+    @app.get("/api/repos/{name}/health")
+    def health(name: str):
+        return {**health_mod.build(ix_of(name), name), "sonar_setup": {k: v for k, v in sonar_mod.public({name: str(root_of(name))}).items() if k != "projects"} |
+                {"project": sonar_mod.public({name: str(root_of(name))})["projects"][0]}}
+
+    @app.get("/api/integrations/sonar")
+    def sonar_status():
+        return sonar_mod.public(ws()["repos"])
+
+    @app.put("/api/integrations/sonar")
+    def sonar_save(body: SonarConn):
+        try:
+            sonar_mod.save_connection(body.url, body.token, body.clear_token)
+        except sonar_mod.SonarError as e:
+            raise HTTPException(400, str(e))
+        return sonar_mod.public(ws()["repos"])
+
+    @app.post("/api/integrations/sonar/test")
+    def sonar_test():
+        s = sonar_mod.effective()
+        try:
+            return sonar_mod.test(s["url"], s.get("token", ""))
+        except sonar_mod.SonarError as e:
+            return {"ok": False, "error": str(e)}
+
+    @app.get("/api/integrations/sonar/projects")
+    def sonar_projects(q: str = ""):
+        try:
+            return sonar_mod.search_projects(q)
+        except sonar_mod.SonarError as e:
+            raise HTTPException(422, str(e))
+
+    @app.put("/api/repos/{name}/sonar")
+    def sonar_map(name: str, body: SonarProject):
+        root_of(name)
+        if body.key and not re.fullmatch(r"[\w.:-]{1,400}", body.key.strip()) or body.branch and not re.fullmatch(r"[\w./-]{1,250}", body.branch.strip()):
+            raise HTTPException(400, "that does not look like a SonarQube project key or branch name")
+        sonar_mod.set_project(name, body.key, body.branch)
+        return {"ok": True}
+
+    @app.post("/api/repos/{name}/sonar/sync")
+    def sonar_sync(name: str):
+        ix = ix_of(name)
+        try:
+            d = sonar_mod.sync(name, root_of(name), set(ix.data["files"]))
+        except sonar_mod.SonarError as e:
+            raise HTTPException(422, str(e))
+        return {"issues": len(d["issues"]), "hotspots": len(d["hotspots"]), "total": d["total_issues"], "matched": d["matched"],
+                "truncated": d["truncated"], "notes": d["notes"], "gate": d.get("gate")}
+
+    # ---------- AI analysis: the optional first pass that writes descriptions, module summaries and an overview ----------
+    from . import analysis as an_mod
+    jobs: dict[str, an_mod.Job] = {}
+
+    class RunAnalysis(BaseModel):
+        steps: list[str] = list(an_mod.STEPS)
+        limit: int | None = 200     # how many weak definitions to describe this run; None = all of them
+
+    class AnalysisText(BaseModel):
+        module: str | None = None   # None = the repo overview
+        text: str
+
+    def _limit(v: int | None) -> int | None:
+        return None if not v or v <= 0 else min(v, 5000)
+
+    @app.get("/api/repos/{name}/analysis")
+    def analysis_status(name: str, limit: int = 200):
+        job = jobs.get(name)
+        return {**an_mod.status(ix_of(name), _limit(limit)), "job": job.public() if job else None, "llm": chat_mod.llm_status()}
+
+    @app.post("/api/repos/{name}/analysis")
+    def analysis_run(name: str, body: RunAnalysis):
+        import threading
+        steps = [s for s in an_mod.STEPS if s in body.steps]
+        if not steps:
+            raise HTTPException(400, "choose at least one of: " + ", ".join(an_mod.STEPS))
+        if name in jobs and jobs[name].state == "running":
+            raise HTTPException(409, f"an analysis of {name} is already running")
+        ix = ix_of(name)
+        try:
+            prov = chat_mod.provider_from_env()
+        except ImportError as e:
+            raise HTTPException(409, f"LLM client not installed: {e}")
+        if prov is None:
+            raise HTTPException(409, "no AI model is set up: open AI setup first")
+        job = jobs[name] = an_mod.Job(steps)
+        threading.Thread(target=an_mod.run, args=(ix, prov, steps, _limit(body.limit), job), daemon=True).start()
+        return job.public()
+
+    @app.delete("/api/repos/{name}/analysis")
+    def analysis_cancel(name: str):
+        job = jobs.get(name)
+        if job and job.state == "running":
+            job.cancel.set()   # the request in flight finishes; nothing further is sent
+        return {"ok": True}
+
+    @app.put("/api/repos/{name}/analysis")
+    def analysis_edit(name: str, body: AnalysisText):
+        try:
+            an_mod.set_text(ix_of(name), body.module, body.text)
+        except KeyError:
+            raise HTTPException(404, f"unknown module {body.module}")
+        return {"ok": True}
 
     # ---------- explorer ----------
     @app.get("/api/repos/{name}/search")
@@ -374,7 +722,7 @@ def create_app() -> FastAPI:
             except Exception:
                 prov = None
             if prov is None:
-                raise HTTPException(422, "summaries need DEVMEM_VERTEX_API_KEY or DEVMEM_VERTEX_PROJECT, and google-genai installed")
+                raise HTTPException(422, "no AI model is set up: open AI setup in the web UI, or set DEVMEM_AI_PROVIDER and DEVMEM_AI_KEY")
         try:
             return hubmod.push(ws()["repos"], 400, prov, True, body.push, body.prune)
         except (RuntimeError, subprocess.TimeoutExpired) as e:
@@ -823,7 +1171,7 @@ def create_app() -> FastAPI:
             except ValueError as e:
                 raise HTTPException(422, str(e))
         if body.llm and not chat_mod.llm_status()["configured"]:
-            raise HTTPException(409, "no LLM configured: set DEVMEM_VERTEX_API_KEY or DEVMEM_VERTEX_PROJECT (and pip install google-genai)")
+            raise HTTPException(409, "no AI model is set up: open AI setup in the web UI, or set DEVMEM_AI_PROVIDER and DEVMEM_AI_KEY")
         try:
             return {**verdict, **chat_mod.ask(body.question, {n: Path(allr[n]) for n in names}, min(max(body.limit, 1), 20), use_llm=body.llm)}
         except ImportError as e:

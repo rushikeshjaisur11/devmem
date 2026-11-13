@@ -16,6 +16,7 @@ import datetime as _dt
 
 INDEX_VERSION = 1
 INDEX_PATH = ".devmem/index.json"
+DESC_PATH = ".devmem/descriptions.json"   # {symbol id: {text, by: ai|human, code: hash of the source it describes}}
 DB_PATH = ".devmem/index.db"  # derived FTS5 cache of index.json; rebuilt when index.json changes
 IGNORE_FILE = ".devmemignore"
 

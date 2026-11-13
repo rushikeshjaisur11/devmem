@@ -59,7 +59,7 @@ export default function Chat() {
         <details style={{ marginTop: 10 }}>
           <summary className="muted" style={{ cursor: "pointer", fontSize: 12.5 }}>Options</summary>
           <div className="row" style={{ marginTop: 8, gap: 18 }}>
-            <label className="row"><input type="checkbox" checked={llm} disabled={!status.data?.configured} onChange={(e) => setLlm(e.target.checked)} />Write answers with {status.data?.model || "an LLM"}{!status.data?.configured && <span className="muted"> (set DEVMEM_VERTEX_API_KEY or DEVMEM_VERTEX_PROJECT)</span>}</label>
+            <label className="row"><input type="checkbox" checked={llm} disabled={!status.data?.configured} onChange={(e) => setLlm(e.target.checked)} />Write answers with {status.data?.model || "an LLM"}{!status.data?.configured && <span className="muted"> (<a href="#/ai">set up AI</a> to enable; optional)</span>}</label>
             <label className="row"><input type="checkbox" checked={code} onChange={(e) => setCode(e.target.checked)} />Include source of existing code in agent prompts</label>
           </div>
           <div className="row" style={{ marginTop: 8 }}>

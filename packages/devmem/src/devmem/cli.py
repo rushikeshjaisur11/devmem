@@ -24,8 +24,8 @@ def _capped(items: list[str], cap: int) -> str:
 
 def cmd_find(ix: Index, a) -> int:
     hits = ix.find(a.query, a.limit)
-    for _, s in hits:
-        print(_line(s))
+    for _, s in hits:   # code without a docstring shows its written description instead, when it has one
+        print(_line(s) + (f" — {ix.desc[s['id']][:100]}" if not s["doc"] and s["id"] in ix.desc else ""))
     if not hits:
         print("no matches: try other or fewer words, or `devmem outline <file>`")
     return 0
@@ -195,14 +195,26 @@ def cmd_check(ix: Index, a) -> int:
 
 
 def cmd_hygiene(ix: Index, a) -> int:
+    """Known problems in a file: devmem's own checks, and SonarQube's findings when the repo is synced with it."""
     import json
-    p = ix.root / ".devmem/hygiene.json"
-    if not p.exists():
+    issues, seen_any = [], False
+    for rel, keys in ((".devmem/hygiene.json", ("issues",)), (".devmem/sonar.json", ("issues", "hotspots"))):
+        p = ix.root / rel
+        if not p.exists():
+            continue
+        seen_any = True
+        try:
+            d = json.loads(p.read_text(encoding="utf-8"))
+        except ValueError:
+            continue
+        issues += [i for k in keys for i in d.get(k, []) if i.get("path") == a.file]
+    if not seen_any:
         print("no hygiene data (run `devmem-app hygiene <repo>`)")
         return 0
-    issues = [i for i in json.loads(p.read_text(encoding="utf-8"))["issues"] if i["path"] == a.file]
-    for i in sorted(issues, key=lambda i: i["line"]):
-        print(f"{i['path']}:{i['line']}  {i['tool']} {i['code']} {i['msg']}")
+    order = {"high": 0, "medium": 1, "low": 2}
+    for i in sorted(issues, key=lambda i: (order.get(i.get("severity"), 3) if i["tool"] == "sonar" else 3, i["line"])):
+        sev = f" [{i['severity']}]" if i["tool"] == "sonar" and i.get("severity") else ""
+        print(f"{i['path']}:{i['line']}  {i['tool']} {i['code']}{sev} {i['msg']}")
     if not issues:
         print("no known hygiene issues")
     return 0
@@ -507,7 +519,7 @@ def run(argv=None, via: str = "cli", root=None) -> int:
             ix = None
         return a.fn(ix, a)
     try:
-        ix = Index.load(root)
+        ix = Index.cached(root) if via == "mcp" else Index.load(root)   # the MCP server stays up: parse the index once
     except FileNotFoundError as e:
         print(e, file=sys.stderr)
         return 2

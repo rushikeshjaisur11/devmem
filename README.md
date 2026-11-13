@@ -14,6 +14,9 @@ files, and builds prompts for the agent that will do the work.
 - **Token budget**: the `AGENTS.md` block is ~150 tokens; agent commands print capped output (`show` 80 lines, `impact` 12 items per
   list) with a hint for the full version, and the skill tells agents how to keep tool output small.
 
+- **Runs on a server too**: `devmem-app ui --host 0.0.0.0` adds sign-in with an access token; repos are onboarded by upload or
+  Git URL instead of a path (`docs/DEPLOY.md`, `Dockerfile`).
+
 ## Requirements
 Python 3.10+, git, **Node.js 18+**, and network access the first time (npx downloads the SCIP indexers; docs are fetched from the web).
 
@@ -38,8 +41,9 @@ The UI is prebuilt. To change it: `cd ui && npm ci && npm run dev` (proxies to `
 ## Usage guide
 A first session, end to end. Outputs below are real, from `fixtures/py_app`.
 
-**1. Onboard and publish (you, once per repo).** Open the UI (`devmem-app ui`), go to **Repos**, paste a local path or Git URL, press
-*Add and index*, then *Publish*. Or from the CLI:
+**1. Onboard and publish (you, once per repo).** Open the UI (`devmem-app ui`), go to **Repos** and drop the project folder or a
+`.zip` on *Upload* (or give a Git URL, or a path on the machine that runs devmem), then press *Publish*. An uploaded repo has no git
+checkout to commit into: download its knowledge from the row menu and unpack it at the root of your repo. Or from the CLI:
 ```
 devmem-app add C:\work\orders-etl
 devmem-app publish C:\work\orders-etl --commit   # writes .devmem/ + AGENTS.md on branch devmem/knowledge-sync
@@ -95,6 +99,23 @@ search with `devmem reuse` or the `reuse` MCP tool.
 what the feature does in your own words ("retry failed upload") and pick from suggestions that show each function's description;
 hover any dotted term for a plain explanation, and use **Ask & plan** for questions. `DEVMEM_LOCAL_EMBED=1` adds meaning-based matching.
 
+**Let a model read the repo once (optional).** Indexing never needs AI. **AI analysis** is the optional pass on top: it describes
+unclear definitions, summarises each module in two sentences and writes one overview paragraph, showing beforehand roughly how many
+requests and tokens that takes. It runs in the background with progress, only sends what is new or changed on later runs, and every
+text can be corrected by hand. Publish puts the results into `overview.md` and the module cards; Ask & plan can cite them.
+
+**Describe what the index is unsure about.** Indexing uses no AI, so a function called `run` with no docstring can only be found by
+that name. **Improve descriptions** lists those definitions, most used first, with the reason for each rating. Type one sentence, or
+select some and let a model draft them (set one up once on **AI setup**: Claude, OpenAI-compatible, Gemini or Vertex), then correct and
+approve. They are saved in `.devmem/descriptions.json`, published with the rest, and searched like docstrings by `devmem find` and Chat.
+
+**Know what to fix first.** **Code health** merges devmem's own checks (lint, dead code, complexity, security, dependencies) with
+your **SonarQube** project's open issues, security hotspots, quality gate, coverage and duplication into one list. Each finding is
+placed in the function it sits in and ordered by severity, by how many places call that function and by whether a test reaches it;
+every row has a ready fix prompt and a link back to SonarQube. Connect the server once under **Integrations** (address, user token,
+project key per repo; a `sonar-project.properties` in the repo is picked up), then *Sync*. Agents get the same findings from
+`devmem hygiene <file>`. CLI and CI: `DEVMEM_SONAR_URL` / `DEVMEM_SONAR_TOKEN` (or Sonar's `SONAR_HOST_URL` / `SONAR_TOKEN`).
+
 **6. Keep it fresh.** While `devmem-app ui` runs it re-indexes any repo whose HEAD moved (pull, merge, commit, branch switch); add
 `--publish` to republish too, or `--no-watch` to turn it off. Without the UI: `devmem-app watch` (or `watch --once` from cron or a git
 hook). Overview flags an index behind HEAD and any knowledge file over its token budget.
@@ -105,7 +126,7 @@ PR record, so Metrics shows them per PR. Both sides are estimated as characters 
 
 ## Accuracy is not optional
 SCIP (type-resolved edges), Graphify (an independent tree-sitter call graph) and tree-sitter (JS/TS) always run: on `add`, `index` and
-`publish`, whenever files changed (cached per file hash, so an unchanged repo re-indexes in ~0.1 s). If one is missing or fails,
+`publish`, whenever files changed (cached per file hash, so an unchanged repo re-indexes in about a second even at 1,400 files). If one is missing or fails,
 indexing stops with the fix instead of quietly producing a worse index. `--fast` / `DEVMEM_ACCURACY=fast` is the explicit opt-out for CI;
 it is recorded in the index and shown as "reduced accuracy" in the UI. Measured on psf/requests, edge precision rose from 0.81 to
 0.92 with tightened name resolution and to 0.99 where Graphify agrees; with SCIP edges are type-resolved. Details: `docs/ACCURACY.md`.
@@ -150,9 +171,10 @@ in the repo: it checks every layer, down to a real MCP round trip, and prints th
   with that library's docs; agents are pointed at them when versions differ. Set `GITHUB_TOKEN` to avoid API rate limits.
 - **Offline meaning-based search in Chat**: `pip install -e "packages/devmem-app[embed]"` and set `DEVMEM_LOCAL_EMBED=1` (downloads a
   small model once, then runs on CPU).
-- **Optional LLM features** (Vertex; see `docs/AI.md` for what needs AI and what works without it): `pip install google-genai`, set `DEVMEM_VERTEX_API_KEY` (Vertex express mode; `GOOGLE_API_KEY` also works)
-  or `DEVMEM_VERTEX_PROJECT` with gcloud ADC login (and `DEVMEM_VERTEX_EMBED_MODEL`) for written
-  chat answers and embedding-based ranking; `hub push --summarize` has the LLM describe functions so offline keyword search matches by meaning.
+- **Optional LLM features** (see `docs/AI.md` for what needs AI and what works without it): set a model up on the **AI setup** page
+  (Claude, any OpenAI-compatible server including Ollama, Gemini, or Vertex) or with `DEVMEM_AI_PROVIDER` / `DEVMEM_AI_KEY` /
+  `DEVMEM_AI_MODEL`, for written chat answers, embedding-based ranking and drafted descriptions; `hub push --summarize` has the LLM
+  describe functions so offline keyword search matches by meaning. The older `DEVMEM_VERTEX_*` variables still work.
 
 ## Commands
 | `devmem-app` (your machine) | |

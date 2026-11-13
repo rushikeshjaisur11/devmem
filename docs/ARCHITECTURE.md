@@ -24,7 +24,12 @@ publisher --> .devmem/knowledge/*.md  (map, tests, commands, conventions, no-tou
 agent: devmem find / impact / tests-for / check / diffcheck / recall / reuse
 ```
 
-Re-indexing is incremental: files are cached by content hash (`stale_files`), so an unchanged repo re-indexes in about 0.1 s.
+Re-indexing is incremental: files are cached by content hash (`stale_files`), so an unchanged small repo re-indexes in about 0.1 s.
+Edges are rebuilt from the cached per-file records each time. Python imports are resolved through a path-suffix table
+(`jsresolve.module_files`) built once per run; on a 1,381-file, 21,000-symbol corpus that step takes 0.2 s and a re-index
+with nothing changed 1.2 s (it was 78 s when every import scanned every file). `Index` keeps `by_name` / `by_qual` /
+`by_file` tables, and the MCP server holds the parsed index between calls (`Index.cached`, reloaded when `index.json`,
+`history.json` or `descriptions.json` change): a `find` drops from about 250 ms to 11 ms after the first call.
 
 ## Index format
 
@@ -51,7 +56,7 @@ Budgets in `knowledge.py`: `AGENTS.md` index 300 tokens, `map.md` 1,500, any oth
 | Where | What |
 | --- | --- |
 | `<repo>/.devmem/` | index, knowledge, lessons (`failures.jsonl`, `feedback.jsonl`), `flaky.txt`, `no-touch.txt`, `hub.txt`; reviewed like code |
-| `~/.devmem` (`DEVMEM_HOME`) | workspace, library-docs store, hub clone, `clones/<name>` |
+| `~/.devmem` (`DEVMEM_HOME`) | workspace, library-docs store, hub clone, `clones/<name>`, `uploads/<name>` (repos onboarded by upload), `settings.json` (AI provider and key) |
 | hub git repo | every repo's reuse catalog and library docs, so agents can find code other repos already wrote |
 
 ## Where to start reading
@@ -62,5 +67,9 @@ Budgets in `knowledge.py`: `AGENTS.md` index 300 tokens, `map.md` 1,500, any oth
 - Agent integration: `devmem/mcp.py` (stdlib MCP server over stdio, stateless), `connect.py` (per-agent MCP configs), `doctor.py` (setup checks),
   `usage.py` (token log in `.devmem/usage.jsonl`); plugin launcher `plugins/devmem/skills/devmem/scripts/mcp_launch.mjs` -> `mcp_server.py`
 - Parsing beyond Python and JS/TS: `devmem_app/treeparse.py` (Go, Java, C#, Kotlin, Rust); edges for them in `graph._typed_edges`
+- Descriptions for weakly described code: `devmem_app/definitions.py` (rating, AI drafts) -> `.devmem/descriptions.json`, read by `devmem/index.py`
+- Optional AI pass: `devmem_app/analysis.py` (descriptions in bulk, module summaries, overview; background job with progress) -> `.devmem/analysis.json`, read by `publisher.py` and `chat.py`
+- Code health: `devmem_app/hygiene.py` (built-in tools), `sonar.py` (SonarQube Web API, read-only -> `.devmem/sonar.json`), `health.py` (merges both, maps findings to symbols, ranks by severity x callers x tested)
+- Server mode: `devmem_app/server.py` (token sign-in), `uploads.py` (safe unpacking), `settings.py` (AI settings); see `DEPLOY.md`
 - Freshness: `devmem_app/watch.py` (re-index when HEAD moves; runs inside `devmem-app ui`)
 - Web UI: `devmem_app/server.py` (API under `/api`), `ui/src` (React, built into `devmem_app/ui_dist`)

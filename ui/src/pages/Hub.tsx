@@ -48,7 +48,7 @@ export default function Hub(_: any) {
           <h3>2 · Sync every onboarded repo into it</h3>
           <div className="row" style={{ gap: 18 }}>
             <label><input type="checkbox" checked={push} onChange={(e) => setPush(e.target.checked)} />Push to the remote after committing</label>
-            <label title={h.llm?.configured ? "" : "Set DEVMEM_VERTEX_API_KEY or DEVMEM_VERTEX_PROJECT (and install google-genai) to enable"}><input type="checkbox" disabled={!h.llm?.configured} checked={summarize} onChange={(e) => setSummarize(e.target.checked)} />Describe functions with AI <span className="muted">(sends code snippets to Vertex)</span></label>
+            <label title={h.llm?.configured ? "" : "Set up a model on the AI setup page to enable"}><input type="checkbox" disabled={!h.llm?.configured} checked={summarize} onChange={(e) => setSummarize(e.target.checked)} />Describe functions with AI <span className="muted">{h.llm?.configured ? `(sends code snippets to ${h.llm.model})` : <>(needs <a href="#/ai">AI setup</a>)</>}</span></label>
             <label><input type="checkbox" checked={prune} onChange={(e) => setPrune(e.target.checked)} />Remove repos no longer onboarded</label>
           </div>
           <div className="row" style={{ marginTop: 12 }}>
