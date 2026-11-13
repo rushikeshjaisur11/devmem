@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 
+from devmem.jsresolve import module_files
 from devmem.jsresolve import resolve as _js_resolve
 from devmem.schema import CONF_AMBIGUOUS, CONF_STRUCTURAL
 
@@ -25,10 +26,7 @@ COMMON_METHODS = {"get", "send", "run", "start", "stop", "load", "dump", "dumps"
 
 def _module_files(files: dict, module: str) -> list[str]:
     """Files whose path ends with the dotted module (tolerates src/ roots)."""
-    if not module:
-        return []
-    suffixes = (module.replace(".", "/") + ".py", module.replace(".", "/") + "/__init__.py")
-    return [f for f in files if any(f == s or f.endswith("/" + s) for s in suffixes)]
+    return module_files(files, module)
 
 
 def _js_files(files: dict, importer: str, spec: str) -> list[str]:
@@ -166,6 +164,7 @@ def build_edges(idx: dict) -> list[dict]:
             if i["name"] and _module_files(files, f"{i['module']}.{i['name']}"):
                 mod_alias[i["alias"]] = f"{i['module']}.{i['name']}"
         local = by_file.get(path, {})
+        near: set[str] | None = None
 
         for c in rec.get("calls", []):
             src_id = f"{path}#{c['caller']}"
@@ -199,7 +198,8 @@ def build_edges(idx: dict) -> list[dict]:
                 if cands and name in BUILTIN_METHODS:
                     cands = []
                 elif cands and name in COMMON_METHODS:
-                    near = _imported_files(files, path, imports)
+                    if near is None:   # once per file, not once per call
+                        near = _imported_files(files, path, imports)
                     cands = [s for s in cands if s["file"] in near]
             if not cands:
                 continue

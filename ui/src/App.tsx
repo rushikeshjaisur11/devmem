@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useRoute, nav } from "./route";
-import { EDITORS, ErrorBoundary, getEditor, useRepos } from "./components";
+import { api } from "./api";
+import { EDITORS, ErrorBoundary, getEditor, Icon, useConfig, useRepos } from "./components";
 const Overview = lazy(() => import("./pages/Overview"));
 const Agents = lazy(() => import("./pages/Agents"));
 const Repos = lazy(() => import("./pages/Repos"));
@@ -14,6 +15,8 @@ const Chat = lazy(() => import("./pages/Chat"));
 const Hub = lazy(() => import("./pages/Hub"));
 const Docs = lazy(() => import("./pages/Docs"));
 const Reuse = lazy(() => import("./pages/Reuse"));
+const Ai = lazy(() => import("./pages/Ai"));
+const Definitions = lazy(() => import("./pages/Definitions"));
 
 const ic = (d: string) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" dangerouslySetInnerHTML={{ __html: d }} />;
 const ICONS: Record<string, string> = {
@@ -29,13 +32,15 @@ const ICONS: Record<string, string> = {
   memory: '<path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-4 10.5c.7.7 1 1.5 1 2.5h6c0-1 .3-1.8 1-2.5A6 6 0 0 0 12 3z"/>',
   chat: '<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/>',
   metrics: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
+  ai: '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 16l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7z"/>',
+  definitions: '<path d="M4 5h16M4 10h10M4 15h7"/><path d="m15 17 2 2 4-5"/>',
   reuse: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>',
 };
-const GROUPS: [string, string[]][] = [["Start here", ["overview", "agents", "repos"]], ["Before you change code", ["reuse", "impact", "graph", "lineage"]], ["Guide agents", ["chat", "memory", "docs", "hub"]], ["Health", ["hygiene", "metrics"]]];
+const GROUPS: [string, string[]][] = [["Start here", ["overview", "agents", "repos"]], ["Before you change code", ["reuse", "impact", "graph", "lineage"]], ["Guide agents", ["chat", "memory", "definitions", "docs", "hub"]], ["Health", ["hygiene", "metrics"]], ["Settings", ["ai"]]];
 const PAGES: [string, string, any][] = [
   ["overview", "Overview", Overview], ["agents", "Agents", Agents], ["repos", "Repos", Repos], ["impact", "What breaks if…", Impact], ["graph", "Code map", Graph], ["reuse", "Already built elsewhere", Reuse],
   ["lineage", "Data flow", Lineage], ["hygiene", "Code health", Hygiene], ["memory", "Lessons & rules", Memory], ["docs", "Library docs", Docs], ["hub", "Team hub", Hub],
-  ["chat", "Ask & plan", Chat], ["metrics", "Results", Metrics],
+  ["chat", "Ask & plan", Chat], ["metrics", "Results", Metrics], ["definitions", "Improve descriptions", Definitions], ["ai", "AI setup", Ai],
 ];
 const LABEL = Object.fromEntries(PAGES.map((p) => [p[0], p[1]]));
 
@@ -55,6 +60,30 @@ function useTheme() {
   const dark = t ? t === "dark" : window.matchMedia("(prefers-color-scheme: dark)").matches;
   const toggle = () => { const n = dark ? "light" : "dark"; try { localStorage.setItem("devmem-theme", n); } catch { /* private mode */ } setT(n); };
   return { dark, toggle };
+}
+
+/** Shown instead of the app when a deployed server has not seen this browser's access token yet. */
+function SignIn({ onDone }: { onDone: () => void }) {
+  const [token, setToken] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const go = async () => {
+    setBusy(true); setErr("");
+    try { await api.post("/api/login", { token }); onDone(); } catch (e: any) { setErr(e.message); }
+    setBusy(false);
+  };
+  return (
+    <div className="signin">
+      <form className="card" onSubmit={(e) => { e.preventDefault(); if (token.trim()) go(); }}>
+        <div className="brand"><div className="logo"><Mark /></div><span className="name">devmem</span></div>
+        <h1>Sign in</h1>
+        <p className="sub">This devmem runs on a server. Enter its access token: the value of <code>DEVMEM_TOKEN</code>, or the token printed when the server started.</p>
+        <label className="field">Access token<input type="password" autoFocus autoComplete="current-password" value={token} onChange={(e) => setToken(e.target.value)} /></label>
+        {err && <div className="err" role="alert">{err}</div>}
+        <button className="primary" type="submit" disabled={busy || !token.trim()} style={{ marginTop: 16, width: "100%" }}><Icon name="key" />{busy ? "Checking…" : "Sign in"}</button>
+      </form>
+    </div>
+  );
 }
 
 /** Ctrl/Cmd+K: jump to any page, or check impact in a repo. */
@@ -96,6 +125,10 @@ export default function App() {
   const [palette, setPalette] = useState(false);
   const [menu, setMenu] = useState(false);
   const repos = useRepos();
+  const cfg = useConfig();
+  const [locked, setLocked] = useState(false);
+  useEffect(() => { if (cfg.data) setLocked(!cfg.data.signed_in); }, [cfg.data]);
+  useEffect(() => { const f = () => setLocked(true); window.addEventListener("devmem-signin", f); return () => window.removeEventListener("devmem-signin", f); }, []);
   useEffect(() => setMenu(false), [page, params.repo]);
   const [editor, setEditor] = useState(getEditor);
   const pickEditor = (v: string) => { try { localStorage.setItem("devmem-editor", v); } catch { /* private mode */ } setEditor(v); };
@@ -106,6 +139,8 @@ export default function App() {
   }, []);
   const Page = (PAGES.find((p) => p[0] === page) || PAGES[0])[2];
   const mac = /Mac|iPhone|iPad/.test(navigator.platform);
+  if (locked) return <SignIn onDone={() => window.location.reload()} />;
+  const deployed = !!cfg.data?.deployed;
   return (
     <div className={`app ${menu ? "menu-open" : ""}`}>
       <nav className="side" aria-label="Main">
@@ -122,12 +157,14 @@ export default function App() {
           </div>
         ))}
         <div className="side-foot">
-          <label className="editor-pick" title="File and line links on every page open in this editor">
-            <span>Open files in</span>
-            <select value={editor} onChange={(e) => pickEditor(e.target.value)}>
-              {Object.entries(EDITORS).map(([k, [label]]) => <option key={k} value={k}>{k === "none" ? "nothing (links off)" : label}</option>)}
-            </select>
-          </label>
+          {deployed
+            ? <button className="ghost sm" onClick={() => api.post("/api/logout").then(() => window.location.reload())}><Icon name="out" />Sign out</button>
+            : <label className="editor-pick" title="File and line links on every page open in this editor">
+                <span>Open files in</span>
+                <select value={editor} onChange={(e) => pickEditor(e.target.value)}>
+                  {Object.entries(EDITORS).map(([k, [label]]) => <option key={k} value={k}>{k === "none" ? "nothing (links off)" : label}</option>)}
+                </select>
+              </label>}
           <button className="icon-btn" onClick={toggle} aria-label={dark ? "Switch to light theme" : "Switch to dark theme"} title={dark ? "Light theme" : "Dark theme"}>
             {dark ? ic('<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>') : ic('<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>')}
           </button>

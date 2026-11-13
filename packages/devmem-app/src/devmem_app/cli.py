@@ -66,7 +66,11 @@ def _main(argv=None) -> int:
     s = sub.add_parser("metrics", help="PR metrics: show a repo's before/after summary, or ingest a Devin session export")
     s.add_argument("action", choices=["show", "ingest-devin"]); s.add_argument("arg", help="repo name (show) or JSON file (ingest-devin)")
     s = sub.add_parser("ui", help="start the local web app")
-    s.add_argument("--port", type=int, default=8765); s.add_argument("--no-open", action="store_true")
+    s.add_argument("--port", type=int, default=int(os.environ.get("PORT") or os.environ.get("DEVMEM_PORT") or 8765))
+    s.add_argument("--no-open", action="store_true")
+    s.add_argument("--host", default=os.environ.get("DEVMEM_HOST", "127.0.0.1"),
+                   help="address to listen on; anything but 127.0.0.1 (e.g. 0.0.0.0 on a server) turns on sign-in with an access token "
+                        "(DEVMEM_TOKEN, or one is generated and printed)")
     s.add_argument("--no-watch", action="store_true", help="do not re-index repos whose HEAD moved while the app runs")
     s.add_argument("--publish", action="store_true", help="watcher also publishes after re-indexing")
     s = sub.add_parser("watch", help="re-index onboarded repos whenever their HEAD moves (pull, merge, commit, branch switch)")
@@ -209,12 +213,20 @@ def _main(argv=None) -> int:
         import webbrowser
 
         import uvicorn
-        if not a.no_open:
+        local = a.host in ("127.0.0.1", "localhost", "::1")
+        if not local and not os.environ.get("DEVMEM_TOKEN", "").strip():
+            import secrets
+            os.environ["DEVMEM_TOKEN"] = secrets.token_urlsafe(24)   # never serve a network address without sign-in
+            print(f"access token (set DEVMEM_TOKEN to choose your own): {os.environ['DEVMEM_TOKEN']}", flush=True)
+        if os.environ.get("DEVMEM_TOKEN", "").strip():
+            print(f"deployed mode: sign in at http://{a.host}:{a.port} with the access token; onboard repos by upload or Git URL", flush=True)
+        if local and not a.no_open:
             threading.Timer(1.0, lambda: webbrowser.open(f"http://127.0.0.1:{a.port}")).start()
         if not a.no_watch:
             from . import watch
             watch.start(lambda: _ws()["repos"], publish_too=a.publish)
-        uvicorn.run("devmem_app.server:app", host="127.0.0.1", port=a.port, log_level="warning")
+        uvicorn.run("devmem_app.server:app", host=a.host, port=a.port, log_level="warning",
+                    proxy_headers=True, forwarded_allow_ips=os.environ.get("FORWARDED_ALLOW_IPS", "127.0.0.1"))
     elif a.cmd == "watch":
         from . import watch
         if a.once:
@@ -273,7 +285,7 @@ def _main(argv=None) -> int:
             from .chat import provider_from_env
             prov = provider_from_env() if a.summarize else None
             if a.summarize and prov is None:
-                sys.exit("--summarize needs DEVMEM_VERTEX_API_KEY or DEVMEM_VERTEX_PROJECT (and pip install google-genai)")
+                sys.exit("--summarize: no AI model is set up: open AI setup in the web UI, or set DEVMEM_AI_PROVIDER and DEVMEM_AI_KEY")
             print(json.dumps(hubmod.push(_ws()["repos"], a.per_repo, prov, True, a.push, a.prune), indent=1))
     elif a.cmd == "reuse":
         from devmem import reuse as core

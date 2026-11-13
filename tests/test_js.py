@@ -111,7 +111,7 @@ def test_go_and_java_symbols_edges_and_test_commands(tmp_path):
     r = jx.impact(run)
     assert [h["id"] for h in r["hop1"]] == ["src/main/java/com/acme/UserService.java#UserService.load"]
     assert "src/test/java/com/acme/UserServiceTest.java#UserServiceTest.loadsUser" in r["tests"]
-    assert chk.tests_for(jx, ["src/main/java/com/acme/Retry.java"])[1] == "mvn -q test -Dtest=UserServiceTest#loadsUser"
+    assert chk.tests_for(jx, ["src/main/java/com/acme/Retry.java"])[1] == "mvn -q test -Dtest=" + quote_all(["UserServiceTest#loadsUser"])
 
 
 def test_rust_and_csharp_index_to_edges_and_test_commands(tmp_path):

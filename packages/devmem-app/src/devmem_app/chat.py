@@ -1,7 +1,7 @@
 """Chat: retrieval over every onboarded repo (symbols, files, tables, lessons, rules) plus an optional LLM answer.
 
-Retrieval is local BM25 and needs no network. An LLM is used only when configured (Vertex via DEVMEM_VERTEX_PROJECT)
-and only ever sees the retrieved snippets, never whole repos. Every answer carries code pointers (repo:path:line)."""
+Retrieval is local BM25 and needs no network. An LLM is used only when configured (AI setup page or environment, see
+settings.py) and only ever sees the retrieved snippets, never whole repos. Every answer carries code pointers (repo:path:line)."""
 
 import hashlib
 import json
@@ -43,7 +43,7 @@ def build_docs(repo: str, root: Path, ix: Index) -> list[dict]:
         name_toks = f"{s['name']} {s['qualname']} " * 3
         docs.append({"repo": repo, "kind": "test" if s.get("is_test") else "symbol", "ref": s["id"], "path": s["file"],
                      "line": s["line"], "title": f"{s['qualname']}{s.get('sig') or ''}" if s["kind"] != "class" else f"class {s['qualname']}",
-                     "text": f"{name_toks} {s['file']} {s.get('sig') or ''} {s.get('doc') or ''}"})
+                     "text": f"{name_toks} {s['file']} {s.get('sig') or ''} {s.get('doc') or ''} {ix.desc.get(s['id'], '')}"})
     for path, f in ix.data["files"].items():
         if f["lang"] == "other":
             continue
@@ -106,7 +106,8 @@ def corpus_for(repo: str, root: Path) -> tuple[Corpus, Index] | None:
     if not p.exists():
         return None
     mt = (p.stat().st_mtime, max([f.stat().st_mtime for f in (root / ".devmem/lessons").glob("*.md")] or [0]),
-          max([f.stat().st_mtime for f in (root / ".devmem/rules").glob("*.md")] or [0]))
+          max([f.stat().st_mtime for f in (root / ".devmem/rules").glob("*.md")] or [0]),
+          max([f.stat().st_mtime for f in (root / ".devmem").glob("descriptions.json")] or [0]))
     key = (repo, str(root))
     hit = _cache.get(key)
     if not hit or hit[0] != mt:
@@ -156,11 +157,72 @@ class LocalEmbedder:
         return [list(map(float, v)) for v in self.m.encode(texts)]
 
 
+class HttpProvider:
+    """Claude, OpenAI-compatible servers and Gemini (AI Studio key) over plain HTTPS: nothing to pip install.
+    `kind` picks the wire format; `base_url` lets the OpenAI format reach Ollama, LM Studio, OpenRouter or Azure."""
+    def __init__(self, kind: str, api_key: str | None, model: str, base_url: str | None = None, embed_model: str | None = None,
+                 timeout: int = 90):
+        self.kind, self.key, self.model, self.embed_model, self.timeout = kind, api_key or "", model, embed_model or None, timeout
+        default = {"anthropic": "https://api.anthropic.com", "openai": "https://api.openai.com/v1",
+                   "gemini": "https://generativelanguage.googleapis.com/v1beta"}[kind]
+        self.base = (base_url or default).rstrip("/")
+        self.name = f"{kind}:{model}"
+
+    def _post(self, path: str, body: dict, headers: dict) -> dict:
+        import urllib.error
+        import urllib.request
+        req = urllib.request.Request(self.base + path, data=json.dumps(body).encode(), method="POST",
+                                     headers={"Content-Type": "application/json", "User-Agent": "devmem", **headers})
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                return json.loads(r.read().decode("utf-8", "replace"))
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", "replace")[:300]
+            try:
+                err = json.loads(detail).get("error")
+                detail = err.get("message", detail) if isinstance(err, dict) else (err or detail)
+            except (ValueError, AttributeError):
+                pass
+            raise RuntimeError(f"{self.kind} answered HTTP {e.code}: {detail}") from None
+        except (urllib.error.URLError, OSError) as e:
+            raise RuntimeError(f"cannot reach {self.base}: {getattr(e, 'reason', e)}") from None
+
+    def generate(self, prompt: str) -> str:
+        if self.kind == "anthropic":
+            r = self._post("/v1/messages", {"model": self.model, "max_tokens": 2048, "messages": [{"role": "user", "content": prompt}]},
+                           {"x-api-key": self.key, "anthropic-version": "2023-06-01"})
+            return "".join(b.get("text", "") for b in r.get("content", []) if b.get("type") == "text").strip()
+        if self.kind == "gemini":
+            r = self._post(f"/models/{self.model}:generateContent", {"contents": [{"parts": [{"text": prompt}]}]}, {"x-goog-api-key": self.key})
+            parts = ((r.get("candidates") or [{}])[0].get("content") or {}).get("parts") or []
+            return "".join(p.get("text", "") for p in parts).strip()
+        r = self._post("/chat/completions", {"model": self.model, "messages": [{"role": "user", "content": prompt}]},
+                       {"Authorization": f"Bearer {self.key}"} if self.key else {})
+        return ((r.get("choices") or [{}])[0].get("message") or {}).get("content", "").strip()
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        if not self.embed_model or self.kind == "anthropic":
+            raise NotImplementedError
+        out: list[list[float]] = []
+        for i in range(0, len(texts), 50):
+            chunk = texts[i:i + 50]
+            if self.kind == "gemini":
+                m = f"models/{self.embed_model}"
+                r = self._post(f"/{m}:batchEmbedContents", {"requests": [{"model": m, "content": {"parts": [{"text": t}]}} for t in chunk]},
+                               {"x-goog-api-key": self.key})
+                out += [e["values"] for e in r["embeddings"]]
+            else:
+                r = self._post("/embeddings", {"model": self.embed_model, "input": chunk}, {"Authorization": f"Bearer {self.key}"} if self.key else {})
+                out += [d["embedding"] for d in sorted(r["data"], key=lambda d: d.get("index", 0))]
+        return out
+
+
 _local: dict = {}
 
 
 def local_embedder() -> LocalEmbedder | None:
-    spec = os.environ.get("DEVMEM_LOCAL_EMBED", "")
+    from . import settings
+    spec = settings.effective().get("local_embed", "")
     if not spec or spec == "0":
         return None
     model = "minishlab/potion-base-8M" if spec == "1" else spec
@@ -169,23 +231,25 @@ def local_embedder() -> LocalEmbedder | None:
     return _local[model]
 
 
-def _api_key() -> str | None:
-    return os.environ.get("DEVMEM_VERTEX_API_KEY") or os.environ.get("GOOGLE_API_KEY") or None
-
-
 def provider_from_env() -> Provider | None:
-    project, key = os.environ.get("DEVMEM_VERTEX_PROJECT"), _api_key()
-    if not (project or key):
+    """The LLM chosen on the AI setup page or through the environment (see settings.py); None when nothing is configured."""
+    from . import settings
+    cfg = settings.effective()
+    if not settings.configured(cfg):
         return None
-    return VertexProvider(project, os.environ.get("DEVMEM_VERTEX_LOCATION", "us-central1"),
-                          os.environ.get("DEVMEM_VERTEX_MODEL", "gemini-2.5-flash"),
-                          os.environ.get("DEVMEM_VERTEX_EMBED_MODEL") or None, key)
+    pid = cfg["provider"]
+    if pid == "vertex":
+        return VertexProvider(cfg.get("project"), cfg.get("location") or "us-central1", cfg["model"], cfg.get("embed_model") or None,
+                              cfg.get("api_key") or None)
+    return HttpProvider(pid, cfg.get("api_key"), cfg["model"], cfg.get("base_url") or None, cfg.get("embed_model") or None)
 
 
 def llm_status() -> dict:
-    p = os.environ.get("DEVMEM_VERTEX_PROJECT") or _api_key()
-    return {"configured": bool(p), "model": os.environ.get("DEVMEM_VERTEX_MODEL", "gemini-2.5-flash") if p else None,
-            "embeddings": bool(p and os.environ.get("DEVMEM_VERTEX_EMBED_MODEL")) or os.environ.get("DEVMEM_LOCAL_EMBED", "0") != "0"}
+    from . import settings
+    cfg = settings.effective()
+    ok = settings.configured(cfg)
+    return {"configured": ok, "model": cfg.get("model") if ok else None, "provider": cfg.get("provider") if ok else None,
+            "embeddings": bool(ok and cfg.get("embed_model") and cfg.get("provider") != "anthropic") or cfg.get("local_embed", "0") not in ("", "0")}
 
 
 def _cos(a, b) -> float:

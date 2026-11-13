@@ -180,3 +180,58 @@ export class ErrorBoundary extends Component<{ children: any }, { error: string 
     return this.state.error ? <div className="card"><div className="err" role="alert">This screen hit an error: {this.state.error}</div><button onClick={() => this.setState({ error: "" })}>Try again</button></div> : this.props.children;
   }
 }
+
+/* ---------- icons, menus, deployment config ---------- */
+const PATHS: Record<string, string> = {
+  upload: '<path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/>',
+  download: '<path d="M12 4v12M7 11l5 5 5-5"/><path d="M4 20h16"/>',
+  refresh: '<path d="M20 11a8 8 0 0 0-14.3-4.3L4 8"/><path d="M4 4v4h4"/><path d="M4 13a8 8 0 0 0 14.3 4.3L20 16"/><path d="M20 20v-4h-4"/>',
+  send: '<path d="M4 12 20 4l-6 16-3-7z"/>',
+  more: '<circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/>',
+  trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-12M9 7V4h6v3"/>',
+  shield: '<path d="M12 3 4 6v6c0 4.5 3.2 7.8 8 9 4.8-1.2 8-4.5 8-9V6z"/><path d="m9 12 2 2 4-4"/>',
+  folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+  file: '<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/>',
+  spark: '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 16l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7z"/>',
+  check: '<path d="m5 12 5 5 9-10"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  git: '<circle cx="6" cy="6" r="2.2"/><circle cx="6" cy="18" r="2.2"/><circle cx="18" cy="9" r="2.2"/><path d="M6 8.2v7.6M18 11.2c0 3-3 3.8-6 3.8H8.2"/>',
+  plug: '<path d="M9 3v5M15 3v5M7 8h10v3a5 5 0 0 1-10 0zM12 16v5"/>',
+  key: '<circle cx="8" cy="14" r="4"/><path d="m11 11 9-9M16 6l3 3"/>',
+  out: '<path d="M10 4H5a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h5M15 8l4 4-4 4M19 12H9"/>',
+};
+export const Icon = ({ name }: { name: string }) => (
+  <svg className="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" dangerouslySetInnerHTML={{ __html: PATHS[name] || "" }} />
+);
+
+export interface MenuItem { label: string; icon?: string; danger?: boolean; disabled?: boolean; hint?: string; onClick?: () => void; href?: string }
+/** A "more actions" button: keeps a row to one or two visible buttons and puts the rest behind it. */
+export function Menu({ items, label = "More actions", disabled }: { items: MenuItem[]; label?: string; disabled?: boolean }) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    const key = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    window.addEventListener("click", close); window.addEventListener("keydown", key);
+    return () => { window.removeEventListener("click", close); window.removeEventListener("keydown", key); };
+  }, [open]);
+  return (
+    <span className="menu-wrap" onClick={(e) => e.stopPropagation()}>
+      <button className="icon-btn bordered" aria-label={label} title={label} aria-haspopup="menu" aria-expanded={open} disabled={disabled} onClick={() => setOpen((o) => !o)}><Icon name="more" /></button>
+      {open && (
+        <div className="menu" role="menu">
+          {items.map((it) => it.href
+            ? <a key={it.label} role="menuitem" href={it.href} onClick={() => setOpen(false)}>{it.icon && <Icon name={it.icon} />}<span>{it.label}{it.hint && <small>{it.hint}</small>}</span></a>
+            : <button key={it.label} role="menuitem" className={it.danger ? "danger" : ""} disabled={it.disabled} onClick={() => { setOpen(false); it.onClick?.(); }}>{it.icon && <Icon name={it.icon} />}<span>{it.label}{it.hint && <small>{it.hint}</small>}</span></button>)}
+        </div>
+      )}
+    </span>
+  );
+}
+
+/** What this server allows: deployed servers require sign-in and onboard repos by upload or Git URL. */
+export function useConfig() {
+  return useAsync<Json>(() => api.get("/api/config"), []);
+}
+
+export const fmtBytes = (n: number) => n >= 1024 ** 3 ? `${(n / 1024 ** 3).toFixed(1)} GB` : n >= 1024 ** 2 ? `${(n / 1024 ** 2).toFixed(1)} MB` : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} B`;

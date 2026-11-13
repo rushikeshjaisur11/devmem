@@ -9,9 +9,9 @@ import zlib
 from collections import defaultdict, deque
 from pathlib import Path
 
-from .jsresolve import is_js
+from .jsresolve import is_js, module_files
 from .jsresolve import resolve as js_resolve
-from .schema import DB_PATH, INDEX_PATH, MAX_HOPS, UTILITY_CALLER_CAP
+from .schema import DB_PATH, DESC_PATH, INDEX_PATH, MAX_HOPS, UTILITY_CALLER_CAP
 
 
 def find_repo_root(start: Path | None = None) -> Path:
@@ -20,6 +20,13 @@ def find_repo_root(start: Path | None = None) -> Path:
         if (d / INDEX_PATH).exists():
             return d
     raise FileNotFoundError("no .devmem/index.json found; run `devmem-app index <repo>` first")
+
+
+def _stat(p: Path):
+    try:
+        return p.stat()
+    except OSError:
+        return None
 
 
 class Index:
@@ -37,21 +44,51 @@ class Index:
                     self.cochange[c["b"]].append((c["a"], c["count"]))
             except Exception:
                 pass
+        # plain-language descriptions written on the Improve descriptions page (by a person or an LLM) for code whose name and
+        # docstring say too little; search treats them like a docstring
+        self.desc: dict[str, str] = {}
+        try:
+            for sid, d in json.loads((Path(root) / DESC_PATH).read_text(encoding="utf-8")).items():
+                if sid in self.symbols and d.get("text"):
+                    self.desc[sid] = d["text"]
+        except (OSError, ValueError, AttributeError):
+            pass
         self.out = defaultdict(list)  # src -> edges
         self.inc = defaultdict(list)  # dst -> edges
         for e in data["edges"]:
             self.out[e["src"]].append(e)
             self.inc[e["dst"]].append(e)
+        # lookup tables (real symbols only, in index order), so resolve / outline / tests-for never scan every symbol
+        self.by_name: dict[str, list[dict]] = defaultdict(list)
+        self.by_qual: dict[str, list[dict]] = defaultdict(list)
+        self.by_file: dict[str, list[dict]] = defaultdict(list)
+        for s in data["symbols"]:
+            if s["kind"] != "module":
+                self.by_name[s.get("name", "")].append(s)      # .get: callers build partial indexes for one query
+                self.by_qual[s.get("qualname", "")].append(s)
+                self.by_file[s["file"]].append(s)
 
     @classmethod
     def load(cls, root: Path | None = None) -> "Index":
         root = find_repo_root(root)
         return cls(json.loads((root / INDEX_PATH).read_text(encoding="utf-8")), root)
 
+    _loaded: dict[str, tuple[tuple, "Index"]] = {}
+
+    @classmethod
+    def cached(cls, root: Path | None = None) -> "Index":
+        """Like load, but a long-lived process (the MCP server) parses index.json once and again only when it changes."""
+        root = find_repo_root(root)
+        stamp = tuple((st.st_mtime_ns, st.st_size) if (st := _stat(root / f)) else None
+                      for f in (INDEX_PATH, ".devmem/history.json", DESC_PATH))
+        hit = cls._loaded.get(str(root))
+        if not hit or hit[0] != stamp:
+            cls._loaded[str(root)] = hit = (stamp, cls.load(root))
+        return hit[1]
+
     # ---- lookup ----
     def resolve(self, ref: str) -> list[dict]:
         """Symbol by id, 'file:qualname', qualname, or bare name. Real symbols only."""
-        real = [s for s in self.symbols.values() if s["kind"] != "module"]
         if ref in self.symbols:
             return [self.symbols[ref]]
         if ":" in ref and "#" not in ref:
@@ -59,14 +96,13 @@ class Index:
             ref_id = f"{f}#{q}"
             if ref_id in self.symbols:
                 return [self.symbols[ref_id]]
-        exact = [s for s in real if s["qualname"] == ref]
-        return exact or [s for s in real if s["name"] == ref]
+        return list(self.by_qual.get(ref) or self.by_name.get(ref) or [])
 
     def find(self, query: str, limit: int = 10) -> list[tuple[float, dict]]:
         q = _tokens(query)
         if not q:
             return []
-        scored = [(sc, s) for s in map(self.symbols.get, self._candidates(q, query, limit)) if (sc := _score(q, query, s)) > 0]
+        scored = [(sc, s) for s in map(self.symbols.get, self._candidates(q, query, limit)) if (sc := _score(q, query, s, self.desc.get(s["id"], ""))) > 0]
         scored.sort(key=lambda x: (-x[0], x[1]["file"], x[1]["line"]))
         return scored[:limit]
 
@@ -97,8 +133,7 @@ class Index:
         return out
 
     def outline(self, path: str) -> list[dict]:
-        return sorted((s for s in self.symbols.values() if s["file"] == path and s["kind"] != "module"),
-                      key=lambda s: s["line"])
+        return sorted(self.by_file.get(path, []), key=lambda s: s["line"])
 
     # ---- impact ----
     def impact(self, ref: str) -> dict:
@@ -158,27 +193,22 @@ class Index:
 
     # ---- tests ----
     def _module_paths(self, module: str) -> list[str]:
-        suf = (module.replace(".", "/") + ".py", module.replace(".", "/") + "/__init__.py")
-        return [f for f in self.data["files"] if any(f == x or f.endswith("/" + x) for x in suf)]
+        return module_files(self.data["files"], module)
 
     def tests_for_files(self, paths: list[str]) -> dict[str, list[str]]:
         """{test_file: [test qualnames]} covering the given changed files (direct + impact tests; import fallback)."""
-        tests_by_file = defaultdict(list)
-        for s in self.symbols.values():
-            if s["is_test"]:
-                tests_by_file[s["file"]].append(s)
+        tests_by_file = {f: ts for f, syms in self.by_file.items() if (ts := [s for s in syms if s["is_test"]])}
         picked: dict[str, set[str]] = defaultdict(set)
         for path in paths:
             if path in tests_by_file:
                 picked[path] |= {s["qualname"] for s in tests_by_file[path]}
                 continue
             found = False
-            for s in self.symbols.values():
-                if s["file"] == path and s["kind"] != "module":
-                    for t in self.impact(s["id"]).get("tests", []):
-                        f, q = t.split("#", 1)
-                        picked[f].add(q)
-                        found = True
+            for s in self.by_file.get(path, []):
+                for t in self.impact(s["id"]).get("tests", []):
+                    f, q = t.split("#", 1)
+                    picked[f].add(q)
+                    found = True
             if not found:  # fallback: test files that import this module
                 for tf, ts in tests_by_file.items():
                     for imp in self.data["files"][tf].get("imports", []):
@@ -235,8 +265,8 @@ def _tokens(text: str) -> set[str]:
     return {_stem(t.lower()) for t in re.split(r"[^A-Za-z0-9]+", text) if len(t) > 1}
 
 
-def _score(q: set[str], query: str, s: dict) -> float:
-    score = 3.0 * len(q & _tokens(s["qualname"])) + 1.0 * len(q & _tokens(s["doc"])) + 0.5 * len(q & _tokens(s["file"]))
+def _score(q: set[str], query: str, s: dict, desc: str = "") -> float:
+    score = 3.0 * len(q & _tokens(s["qualname"])) + 1.0 * len(q & _tokens(f"{s['doc']} {desc}")) + 0.5 * len(q & _tokens(s["file"]))
     if query.lower() in s["qualname"].lower():
         score += 2
     return score * 0.5 if s["is_test"] else score
@@ -255,13 +285,15 @@ def _rebuild_fts(db: sqlite3.Connection, ix: "Index") -> None:
     for s in ix.symbols.values():
         if s["kind"] != "module":
             db.execute("INSERT INTO sym VALUES (?,?,?,?)",
-                       (s["id"], *(" ".join(sorted(_tokens(s[k]))) for k in ("qualname", "doc", "file"))))
+                       (s["id"], *(" ".join(sorted(_tokens(t))) for t in (s["qualname"], f"{s['doc']} {ix.desc.get(s['id'], '')}", s["file"]))))
             db.execute("INSERT INTO qual VALUES (?,?)", (s["id"], s["qualname"].lower()))
 
 
 def _stamp(src: Path) -> int:
-    st = src.stat()
-    return zlib.crc32(f"{FTS_FORMAT}:{st.st_size}:{st.st_mtime_ns}".encode()) & 0x7FFFFFFF  # fits PRAGMA user_version
+    """Identifies what the search tables were built from: index.json and, when present, the descriptions file."""
+    st, ds = src.stat(), _stat(src.parent / Path(DESC_PATH).name)
+    extra = f":{ds.st_size}:{ds.st_mtime_ns}" if ds else ""
+    return zlib.crc32(f"{FTS_FORMAT}:{st.st_size}:{st.st_mtime_ns}{extra}".encode()) & 0x7FFFFFFF  # fits PRAGMA user_version
 
 
 def write_db(ix: "Index") -> None:

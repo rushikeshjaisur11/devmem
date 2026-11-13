@@ -24,8 +24,8 @@ def _capped(items: list[str], cap: int) -> str:
 
 def cmd_find(ix: Index, a) -> int:
     hits = ix.find(a.query, a.limit)
-    for _, s in hits:
-        print(_line(s))
+    for _, s in hits:   # code without a docstring shows its written description instead, when it has one
+        print(_line(s) + (f" — {ix.desc[s['id']][:100]}" if not s["doc"] and s["id"] in ix.desc else ""))
     if not hits:
         print("no matches: try other or fewer words, or `devmem outline <file>`")
     return 0
@@ -507,7 +507,7 @@ def run(argv=None, via: str = "cli", root=None) -> int:
             ix = None
         return a.fn(ix, a)
     try:
-        ix = Index.load(root)
+        ix = Index.cached(root) if via == "mcp" else Index.load(root)   # the MCP server stays up: parse the index once
     except FileNotFoundError as e:
         print(e, file=sys.stderr)
         return 2
