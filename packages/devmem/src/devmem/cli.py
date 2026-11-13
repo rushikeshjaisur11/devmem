@@ -195,14 +195,26 @@ def cmd_check(ix: Index, a) -> int:
 
 
 def cmd_hygiene(ix: Index, a) -> int:
+    """Known problems in a file: devmem's own checks, and SonarQube's findings when the repo is synced with it."""
     import json
-    p = ix.root / ".devmem/hygiene.json"
-    if not p.exists():
+    issues, seen_any = [], False
+    for rel, keys in ((".devmem/hygiene.json", ("issues",)), (".devmem/sonar.json", ("issues", "hotspots"))):
+        p = ix.root / rel
+        if not p.exists():
+            continue
+        seen_any = True
+        try:
+            d = json.loads(p.read_text(encoding="utf-8"))
+        except ValueError:
+            continue
+        issues += [i for k in keys for i in d.get(k, []) if i.get("path") == a.file]
+    if not seen_any:
         print("no hygiene data (run `devmem-app hygiene <repo>`)")
         return 0
-    issues = [i for i in json.loads(p.read_text(encoding="utf-8"))["issues"] if i["path"] == a.file]
-    for i in sorted(issues, key=lambda i: i["line"]):
-        print(f"{i['path']}:{i['line']}  {i['tool']} {i['code']} {i['msg']}")
+    order = {"high": 0, "medium": 1, "low": 2}
+    for i in sorted(issues, key=lambda i: (order.get(i.get("severity"), 3) if i["tool"] == "sonar" else 3, i["line"])):
+        sev = f" [{i['severity']}]" if i["tool"] == "sonar" and i.get("severity") else ""
+        print(f"{i['path']}:{i['line']}  {i['tool']} {i['code']}{sev} {i['msg']}")
     if not issues:
         print("no known hygiene issues")
     return 0

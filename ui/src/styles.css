@@ -529,3 +529,40 @@ ul.plain { margin: 0; padding-left: 18px; color: var(--text-2); } ul.plain li { 
 .an-mod:last-child { border-bottom: 0; padding-bottom: 0; }
 .an-mod > .mono { font-weight: 500; overflow-wrap: anywhere; padding-top: 4px; }
 @media (max-width: 900px) { .an-mod { grid-template-columns: 1fr; gap: 4px; } .an-text, .callout { flex-direction: column; align-items: stretch; } }
+
+/* ---------- code health ---------- */
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 18px 24px; margin-bottom: 20px; }
+.kpi { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.kpi .k { color: var(--text-2); font-size: 13px; font-weight: 500; }
+.kpi b { font: 400 30px/38px var(--sans); font-variant-numeric: tabular-nums; letter-spacing: -.01em; color: var(--text); }
+.kpi b.bad { color: var(--bad); } .kpi b.good { color: var(--good); }
+.kpi .t { color: var(--text-3); font-size: 12.5px; }
+/* severity is a status scale: high and medium use the reserved status colours, low stays neutral; every use carries its label */
+.seg-high { background: var(--bad); } .seg-medium { background: var(--sev-medium); } .seg-low { background: var(--sev-low); }
+:root { --sev-medium: #c77a12; --sev-low: #868b90; }
+:root[data-theme="dark"] { --sev-medium: #e0a04a; --sev-low: #6d7175; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]):not([data-theme="dark"]) { --sev-medium: #e0a04a; --sev-low: #6d7175; } }
+.sevbar { display: flex; gap: 2px; height: 10px; border-radius: 5px; overflow: hidden; background: var(--surface-3); }
+.sevbar span { min-width: 4px; border-radius: 2px; }
+.sevbar.sm { height: 6px; }
+.sevlegend { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.sevlegend .chip { gap: 7px; }
+.chip.on { border-color: var(--text); background: var(--surface-2); }
+.seg.big .count { color: var(--text-3); font-weight: 400; font-variant-numeric: tabular-nums; margin-left: 2px; }
+.finds { display: grid; }
+.find { display: grid; grid-template-columns: 92px minmax(0, 1fr) auto; gap: 14px; padding: 14px 0; border-bottom: 1px solid var(--rule); align-items: start; }
+.find:last-child { border-bottom: 0; padding-bottom: 0; }
+.badge.sev { justify-self: start; margin-top: 1px; }
+.find-main { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.find-msg { font-weight: 500; overflow-wrap: anywhere; }
+.find-where { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 13px; }
+.find-where .sym { font-weight: 500; }
+.find-act { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.tag.warn { background: var(--pill-warn-bg); color: var(--pill-warn-ink); }
+button.tag.link { height: auto; border: 0; box-shadow: none; padding: 0 6px; cursor: pointer; font-weight: 400; }
+button.tag.link:hover { background: var(--surface-3); color: var(--text); }
+.btn-link { font-size: 13px; white-space: nowrap; padding: 0 8px; }
+.delta { font-style: normal; font-weight: 600; margin-left: 6px; font-size: 12.5px; } .delta.up { color: var(--bad); } .delta.down { color: var(--good); }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 8px 18px; } .kv > span:nth-child(odd) { color: var(--text-3); }
+@media (max-width: 900px) { .find { grid-template-columns: 1fr; gap: 8px; } .find-act { flex-direction: row; align-items: center; } }

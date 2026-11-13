@@ -109,6 +109,13 @@ that name. **Improve descriptions** lists those definitions, most used first, wi
 select some and let a model draft them (set one up once on **AI setup**: Claude, OpenAI-compatible, Gemini or Vertex), then correct and
 approve. They are saved in `.devmem/descriptions.json`, published with the rest, and searched like docstrings by `devmem find` and Chat.
 
+**Know what to fix first.** **Code health** merges devmem's own checks (lint, dead code, complexity, security, dependencies) with
+your **SonarQube** project's open issues, security hotspots, quality gate, coverage and duplication into one list. Each finding is
+placed in the function it sits in and ordered by severity, by how many places call that function and by whether a test reaches it;
+every row has a ready fix prompt and a link back to SonarQube. Connect the server once under **Integrations** (address, user token,
+project key per repo; a `sonar-project.properties` in the repo is picked up), then *Sync*. Agents get the same findings from
+`devmem hygiene <file>`. CLI and CI: `DEVMEM_SONAR_URL` / `DEVMEM_SONAR_TOKEN` (or Sonar's `SONAR_HOST_URL` / `SONAR_TOKEN`).
+
 **6. Keep it fresh.** While `devmem-app ui` runs it re-indexes any repo whose HEAD moved (pull, merge, commit, branch switch); add
 `--publish` to republish too, or `--no-watch` to turn it off. Without the UI: `devmem-app watch` (or `watch --once` from cron or a git
 hook). Overview flags an index behind HEAD and any knowledge file over its token budget.

@@ -56,3 +56,9 @@ the hub clone and `settings.json` (AI provider and key, mode 0600). Mount it as 
 Set it on the **AI setup** page after signing in, or pin it with environment variables, which win over the page:
 `DEVMEM_AI_PROVIDER` (`anthropic`, `openai`, `gemini`, `vertex`), `DEVMEM_AI_KEY`, `DEVMEM_AI_MODEL`, and for
 OpenAI-compatible servers `DEVMEM_AI_BASE_URL`. See `docs/AI.md`.
+
+## SonarQube on a server
+
+The devmem server calls your SonarQube server itself, so it needs a network route to it. Set the connection on the
+**Integrations** page or with `DEVMEM_SONAR_URL` and `DEVMEM_SONAR_TOKEN`. The token is kept in `settings.json`
+under `DEVMEM_HOME`; synced findings are written to `.devmem/sonar.json` in each repo.

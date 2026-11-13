@@ -469,6 +469,69 @@ def create_app() -> FastAPI:
             raise HTTPException(422, str(e))
         return {"counts": h["counts"], "tools": h["tools"]}
 
+    # ---------- code health: local checks + SonarQube, ranked by blast radius ----------
+    from . import health as health_mod
+    from . import sonar as sonar_mod
+
+    class SonarConn(BaseModel):
+        url: str | None = None
+        token: str | None = None      # "" or missing keeps the saved token
+        clear_token: bool = False
+
+    class SonarProject(BaseModel):
+        key: str
+        branch: str = ""
+
+    @app.get("/api/repos/{name}/health")
+    def health(name: str):
+        return {**health_mod.build(ix_of(name), name), "sonar_setup": {k: v for k, v in sonar_mod.public({name: str(root_of(name))}).items() if k != "projects"} |
+                {"project": sonar_mod.public({name: str(root_of(name))})["projects"][0]}}
+
+    @app.get("/api/integrations/sonar")
+    def sonar_status():
+        return sonar_mod.public(ws()["repos"])
+
+    @app.put("/api/integrations/sonar")
+    def sonar_save(body: SonarConn):
+        try:
+            sonar_mod.save_connection(body.url, body.token, body.clear_token)
+        except sonar_mod.SonarError as e:
+            raise HTTPException(400, str(e))
+        return sonar_mod.public(ws()["repos"])
+
+    @app.post("/api/integrations/sonar/test")
+    def sonar_test():
+        s = sonar_mod.effective()
+        try:
+            return sonar_mod.test(s["url"], s.get("token", ""))
+        except sonar_mod.SonarError as e:
+            return {"ok": False, "error": str(e)}
+
+    @app.get("/api/integrations/sonar/projects")
+    def sonar_projects(q: str = ""):
+        try:
+            return sonar_mod.search_projects(q)
+        except sonar_mod.SonarError as e:
+            raise HTTPException(422, str(e))
+
+    @app.put("/api/repos/{name}/sonar")
+    def sonar_map(name: str, body: SonarProject):
+        root_of(name)
+        if body.key and not re.fullmatch(r"[\w.:-]{1,400}", body.key.strip()) or body.branch and not re.fullmatch(r"[\w./-]{1,250}", body.branch.strip()):
+            raise HTTPException(400, "that does not look like a SonarQube project key or branch name")
+        sonar_mod.set_project(name, body.key, body.branch)
+        return {"ok": True}
+
+    @app.post("/api/repos/{name}/sonar/sync")
+    def sonar_sync(name: str):
+        ix = ix_of(name)
+        try:
+            d = sonar_mod.sync(name, root_of(name), set(ix.data["files"]))
+        except sonar_mod.SonarError as e:
+            raise HTTPException(422, str(e))
+        return {"issues": len(d["issues"]), "hotspots": len(d["hotspots"]), "total": d["total_issues"], "matched": d["matched"],
+                "truncated": d["truncated"], "notes": d["notes"], "gate": d.get("gate")}
+
     # ---------- AI analysis: the optional first pass that writes descriptions, module summaries and an overview ----------
     from . import analysis as an_mod
     jobs: dict[str, an_mod.Job] = {}
