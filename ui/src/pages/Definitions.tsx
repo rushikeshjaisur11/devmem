@@ -75,7 +75,7 @@ export default function Definitions({ params }: { params: Record<string, string>
   return (
     <>
       <div className="row"><h1>Improve descriptions</h1>{repos.data && <RepoSelect value={repo} onChange={setRepo} repos={repos.data} />}</div>
-      <p className="sub">devmem builds its index without AI, so code with a vague name and no docstring can only be found by that name. This page lists the definitions it is least sure about, the most used first. Write one sentence for each, or let a model draft them and correct what is off. Descriptions are saved in <code>.devmem/descriptions.json</code> and searched like docstrings by agents.</p>
+      <p className="sub">devmem builds its index without AI, so code with a vague name and no docstring can only be found by that name. This page lists the definitions it is least sure about, the most used first. Write one sentence for each, or let a model draft them and correct what is off. Descriptions are saved in <code>.devmem/descriptions.json</code> and searched like docstrings by agents. To draft them all in one go, with module summaries and an overview, use <a href={`#/analysis${repo ? `?repo=${repo}` : ""}`}>AI analysis</a>.</p>
       <Err msg={repos.error || d.error || err} />
       {msg && <div className="ok">{msg}</div>}
       {repos.data && !repos.data.some((r) => r.indexed) && <div className="card"><Empty>No indexed repo yet. <a href="#/repos">Add one</a> first.</Empty></div>}

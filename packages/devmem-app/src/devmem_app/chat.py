@@ -58,6 +58,17 @@ def build_docs(repo: str, root: Path, ix: Index) -> list[dict]:
         docs.append({"repo": repo, "kind": "table", "ref": f"table:{t}", "path": src[0].split("#")[0], "line": 1,
                      "title": f"table {t}", "text": f"{t} {t} {t} table {' '.join(src)}",
                      "note": ", ".join(f"{u[1]} by {u[0]}" for u in sorted(users))[:300]})
+    try:
+        an = json.loads((root / ".devmem/analysis.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        an = {}
+    if (an.get("overview") or {}).get("text"):
+        docs.append({"repo": repo, "kind": "overview", "ref": "overview", "path": ".devmem/analysis.json", "line": 1, "title": f"what {repo} does",
+                     "text": f"{repo} repo repository overview purpose summary {an['overview']['text']}", "body": an["overview"]["text"]})
+    for mod, v in (an.get("modules") or {}).items():
+        if isinstance(v, dict) and v.get("text"):
+            docs.append({"repo": repo, "kind": "module", "ref": f"module:{mod}", "path": ".devmem/analysis.json", "line": 1, "title": f"module {mod}",
+                         "text": f"{mod} {mod} module {v['text']}", "body": v["text"]})
     for l in m.load_lessons(root):
         docs.append({"repo": repo, "kind": "lesson", "ref": l["id"], "path": Path(l["path"]).name, "line": 1,
                      "title": l.get("title", l["id"]),
@@ -107,7 +118,8 @@ def corpus_for(repo: str, root: Path) -> tuple[Corpus, Index] | None:
         return None
     mt = (p.stat().st_mtime, max([f.stat().st_mtime for f in (root / ".devmem/lessons").glob("*.md")] or [0]),
           max([f.stat().st_mtime for f in (root / ".devmem/rules").glob("*.md")] or [0]),
-          max([f.stat().st_mtime for f in (root / ".devmem").glob("descriptions.json")] or [0]))
+          max([f.stat().st_mtime for f in (root / ".devmem").glob("descriptions.json")] or [0]),
+          max([f.stat().st_mtime for f in (root / ".devmem").glob("analysis.json")] or [0]))
     key = (repo, str(root))
     hit = _cache.get(key)
     if not hit or hit[0] != mt:
@@ -273,7 +285,7 @@ def _embed_cached(provider: Provider, texts: list[str]) -> list[list[float]]:
 
 # ---------- retrieval + answer ----------
 def snippet(ix: Index, d: dict) -> str:
-    if d["kind"] in ("lesson", "rule"):
+    if d["kind"] in ("lesson", "rule", "module", "overview"):
         return d["body"]
     if d["kind"] in ("symbol", "test"):
         s = ix.symbols.get(d["ref"])

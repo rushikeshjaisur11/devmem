@@ -513,3 +513,19 @@ ul.plain { margin: 0; padding-left: 18px; color: var(--text-2); } ul.plain li { 
 .signin .sub { margin-bottom: 18px; }
 .side-foot button.sm { padding: 0 8px; }
 @media (max-width: 900px) { .form-grid { grid-template-columns: 1fr; } .def-edit { flex-wrap: wrap; } .toolbar-end { margin-left: 0; } }
+
+/* ---------- AI analysis ---------- */
+.callout { display: flex; align-items: center; gap: 16px; background: var(--surface-2); }
+.an-steps { display: grid; gap: 8px; }
+.an-step { display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; color: var(--text); cursor: pointer; }
+.an-step.on { border-color: var(--line-2); background: var(--surface-2); }
+.an-step input { margin-top: 3px; flex: none; }
+.an-step .badge { margin-top: 1px; }
+.an-text { display: flex; gap: 12px; align-items: flex-start; justify-content: space-between; }
+.an-text > span:first-child { max-width: 90ch; }
+.an-meta { display: flex; gap: 6px; align-items: center; flex: none; }
+.an-mods { display: grid; }
+.an-mod { display: grid; grid-template-columns: minmax(120px, 200px) 1fr; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--rule); align-items: start; }
+.an-mod:last-child { border-bottom: 0; padding-bottom: 0; }
+.an-mod > .mono { font-weight: 500; overflow-wrap: anywhere; padding-top: 4px; }
+@media (max-width: 900px) { .an-mod { grid-template-columns: 1fr; gap: 4px; } .an-text, .callout { flex-direction: column; align-items: stretch; } }

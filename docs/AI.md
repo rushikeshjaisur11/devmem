@@ -28,6 +28,7 @@ prose, ranks results by meaning, and drafts one-line descriptions of code that h
 | **Written answers** in Ask & plan | The matching snippets, quoted with file and line | A prose answer that cites those snippets as [1], [2]; citations that point at nothing are removed | An LLM key (below), then tick *Write answers with …* |
 | **Search by meaning** (Ask & plan, reuse, plan prompts) | Keyword match: "retry" finds `retry`, not "make flaky calls reliable" | Keyword and meaning scores blended, so other wordings still match | Either `DEVMEM_LOCAL_EMBED=1` (small local model, **no API, runs offline on CPU** after one download) or `DEVMEM_VERTEX_EMBED_MODEL` with an LLM key |
 | **Descriptions for low-confidence definitions** | Code with a vague name and no docstring is found only by its name; you can type a description yourself on *Improve descriptions* | The model drafts one sentence per selected function; you correct and approve them. Saved in `.devmem/descriptions.json` and searched like docstrings by `devmem find`, Ask & plan and agents | An LLM, then *Improve descriptions* → select → *Draft with …* |
+| **AI analysis** (one pass per repo) | `overview.md` lists languages, entry points and modules by name | Adds a paragraph on what the repo does and two sentences per module, and drafts the descriptions above in bulk. Cached per code hash: a later run sends only what changed. Saved in `.devmem/analysis.json` | An LLM, then *AI analysis* → *Run analysis* |
 | **Function descriptions in the team hub** | Hub search uses names, signatures and docstrings | The LLM writes a one-line description per function, so hub search matches what the code does | `hub push --summarize` (or *Describe functions with AI* on the Team hub page) with an LLM key |
 
 If the LLM call fails (no network, bad key, missing package), each feature falls back to its offline result instead of
@@ -59,6 +60,8 @@ Nothing, unless you configure an LLM. With one configured:
 - written answers send your question and the retrieved snippets (code and docs) to the configured provider;
 - meaning-based search with a provider's embedding model sends the question and short text of each candidate (name, signature,
   docstring, and in Ask & plan the first ~300 characters of the code or doc);
+- *AI analysis* sends, per module, its file names, the signatures of its most used definitions and the names of the modules
+  it calls; for the overview, the module summaries, languages, entry points and table names.
 - `--summarize` and *Improve descriptions* send the first lines of each selected function, plus the names of what calls it
   and what it calls.
 

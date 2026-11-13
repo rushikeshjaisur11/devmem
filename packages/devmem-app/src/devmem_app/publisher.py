@@ -128,6 +128,17 @@ def publish(root: str | Path, idx: dict, peers: dict | None = None) -> list[str]
     _write(root, f"{k}/map.md", f"# Repo map: {idx['repo']}\nTop symbols by importance (line: signature). "
            f"Use `devmem show <name>` for bodies.\n\n```\n{map_text}\n```", commit, written)
 
+    # what the optional AI analysis (analysis.py) and Improve descriptions wrote; empty when neither was used
+    def _read(rel):
+        try:
+            d = json.loads((root / rel).read_text(encoding="utf-8"))
+            return d if isinstance(d, dict) else {}
+        except (OSError, ValueError):
+            return {}
+    analysis, described = _read(".devmem/analysis.json"), _read(".devmem/descriptions.json")
+    mod_text = {m: v.get("text", "") for m, v in (analysis.get("modules") or {}).items() if isinstance(v, dict)}
+    said = lambda s: s["doc"] or (described.get(s["id"]) or {}).get("text", "")
+
     # overview.md
     langs = Counter(f["lang"] for f in idx["files"].values() if f["lang"] != "other")
     tests = [s for s in idx["symbols"] if s["is_test"]]
@@ -137,13 +148,15 @@ def publish(root: str | Path, idx: dict, peers: dict | None = None) -> list[str]
           f"- Symbols: {sum(1 for s in idx['symbols'] if s['kind'] != 'module')}; tests: {len(tests)}"]
     if mains:
         ov.append("- Entry points: " + ", ".join(f"`{s['id']}`" for s in mains[:5]))
+    if (analysis.get("overview") or {}).get("text"):
+        ov += ["", "## What this repo does", analysis["overview"]["text"]]
     ov += ["", "## Modules"]
     mods = defaultdict(list)
     for s in idx["symbols"]:
         if s["kind"] != "module" and not s["is_test"]:
             mods[_module_of(s["file"])].append(s)
     for m in sorted(mods):
-        ov.append(f"- `{m}`: {len(mods[m])} symbols → modules/{m.strip('()')}.md")
+        ov.append(f"- `{m}`: {len(mods[m])} symbols → modules/{m.strip('()')}.md" + (f" — {mod_text[m]}" if mod_text.get(m) else ""))
     if tables:
         ov += ["", "## Tables touched"] + [f"- `{t}`" for t, _ in tables.most_common(15)]
     _write(root, f"{k}/overview.md", "\n".join(ov), commit, written)
@@ -166,8 +179,8 @@ def publish(root: str | Path, idx: dict, peers: dict | None = None) -> list[str]
                 ext_out[md] += 1
             if md == m and ms != m and not s_["is_test"]:
                 ext_in[ms] += 1
-        card = [f"# Module `{m}`", f"Files: {', '.join(sorted(mod_files[m])[:12])}", "", "## Key symbols"]
-        card += [f"- `{s['file']}:{s['line']}` {s['sig']}" + (f" — {s['doc']}" if s["doc"] else "") for s in top]
+        card = [f"# Module `{m}`", *([mod_text[m]] if mod_text.get(m) else []), f"Files: {', '.join(sorted(mod_files[m])[:12])}", "", "## Key symbols"]
+        card += [f"- `{s['file']}:{s['line']}` {s['sig']}" + (f" — {said(s)}" if said(s) else "") for s in top]
         if ext_out:
             card.append("\nDepends on: " + ", ".join(f"`{x}`" for x in ext_out))
         if ext_in:

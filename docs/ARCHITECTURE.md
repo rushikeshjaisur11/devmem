@@ -68,6 +68,7 @@ Budgets in `knowledge.py`: `AGENTS.md` index 300 tokens, `map.md` 1,500, any oth
   `usage.py` (token log in `.devmem/usage.jsonl`); plugin launcher `plugins/devmem/skills/devmem/scripts/mcp_launch.mjs` -> `mcp_server.py`
 - Parsing beyond Python and JS/TS: `devmem_app/treeparse.py` (Go, Java, C#, Kotlin, Rust); edges for them in `graph._typed_edges`
 - Descriptions for weakly described code: `devmem_app/definitions.py` (rating, AI drafts) -> `.devmem/descriptions.json`, read by `devmem/index.py`
+- Optional AI pass: `devmem_app/analysis.py` (descriptions in bulk, module summaries, overview; background job with progress) -> `.devmem/analysis.json`, read by `publisher.py` and `chat.py`
 - Server mode: `devmem_app/server.py` (token sign-in), `uploads.py` (safe unpacking), `settings.py` (AI settings); see `DEPLOY.md`
 - Freshness: `devmem_app/watch.py` (re-index when HEAD moves; runs inside `devmem-app ui`)
 - Web UI: `devmem_app/server.py` (API under `/api`), `ui/src` (React, built into `devmem_app/ui_dist`)

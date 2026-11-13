@@ -469,6 +469,60 @@ def create_app() -> FastAPI:
             raise HTTPException(422, str(e))
         return {"counts": h["counts"], "tools": h["tools"]}
 
+    # ---------- AI analysis: the optional first pass that writes descriptions, module summaries and an overview ----------
+    from . import analysis as an_mod
+    jobs: dict[str, an_mod.Job] = {}
+
+    class RunAnalysis(BaseModel):
+        steps: list[str] = list(an_mod.STEPS)
+        limit: int | None = 200     # how many weak definitions to describe this run; None = all of them
+
+    class AnalysisText(BaseModel):
+        module: str | None = None   # None = the repo overview
+        text: str
+
+    def _limit(v: int | None) -> int | None:
+        return None if not v or v <= 0 else min(v, 5000)
+
+    @app.get("/api/repos/{name}/analysis")
+    def analysis_status(name: str, limit: int = 200):
+        job = jobs.get(name)
+        return {**an_mod.status(ix_of(name), _limit(limit)), "job": job.public() if job else None, "llm": chat_mod.llm_status()}
+
+    @app.post("/api/repos/{name}/analysis")
+    def analysis_run(name: str, body: RunAnalysis):
+        import threading
+        steps = [s for s in an_mod.STEPS if s in body.steps]
+        if not steps:
+            raise HTTPException(400, "choose at least one of: " + ", ".join(an_mod.STEPS))
+        if name in jobs and jobs[name].state == "running":
+            raise HTTPException(409, f"an analysis of {name} is already running")
+        ix = ix_of(name)
+        try:
+            prov = chat_mod.provider_from_env()
+        except ImportError as e:
+            raise HTTPException(409, f"LLM client not installed: {e}")
+        if prov is None:
+            raise HTTPException(409, "no AI model is set up: open AI setup first")
+        job = jobs[name] = an_mod.Job(steps)
+        threading.Thread(target=an_mod.run, args=(ix, prov, steps, _limit(body.limit), job), daemon=True).start()
+        return job.public()
+
+    @app.delete("/api/repos/{name}/analysis")
+    def analysis_cancel(name: str):
+        job = jobs.get(name)
+        if job and job.state == "running":
+            job.cancel.set()   # the request in flight finishes; nothing further is sent
+        return {"ok": True}
+
+    @app.put("/api/repos/{name}/analysis")
+    def analysis_edit(name: str, body: AnalysisText):
+        try:
+            an_mod.set_text(ix_of(name), body.module, body.text)
+        except KeyError:
+            raise HTTPException(404, f"unknown module {body.module}")
+        return {"ok": True}
+
     # ---------- explorer ----------
     @app.get("/api/repos/{name}/search")
     def search(name: str, q: str, limit: int = 20):

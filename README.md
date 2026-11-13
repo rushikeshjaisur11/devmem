@@ -99,6 +99,11 @@ search with `devmem reuse` or the `reuse` MCP tool.
 what the feature does in your own words ("retry failed upload") and pick from suggestions that show each function's description;
 hover any dotted term for a plain explanation, and use **Ask & plan** for questions. `DEVMEM_LOCAL_EMBED=1` adds meaning-based matching.
 
+**Let a model read the repo once (optional).** Indexing never needs AI. **AI analysis** is the optional pass on top: it describes
+unclear definitions, summarises each module in two sentences and writes one overview paragraph, showing beforehand roughly how many
+requests and tokens that takes. It runs in the background with progress, only sends what is new or changed on later runs, and every
+text can be corrected by hand. Publish puts the results into `overview.md` and the module cards; Ask & plan can cite them.
+
 **Describe what the index is unsure about.** Indexing uses no AI, so a function called `run` with no docstring can only be found by
 that name. **Improve descriptions** lists those definitions, most used first, with the reason for each rating. Type one sentence, or
 select some and let a model draft them (set one up once on **AI setup**: Claude, OpenAI-compatible, Gemini or Vertex), then correct and

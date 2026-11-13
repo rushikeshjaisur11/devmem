@@ -276,3 +276,88 @@ def test_index_is_cached_for_the_mcp_server_until_it_changes(tmp_path):
     indexer.index_repo(root, "py_app", accuracy="fast")
     b = Index.cached(root)
     assert b is not a and b.resolve("extra")
+
+
+# ---------- AI analysis ----------
+class AnalystLLM:
+    name = "fake:analyst"
+
+    def __init__(self):
+        self.prompts = []
+
+    def generate(self, prompt):
+        self.prompts.append(prompt)
+        if "short paragraph" in prompt:
+            return "A small payments service: the app package charges cards through a retry helper."
+        n = prompt.count("\n### ")
+        return json.dumps([{"i": i, "text": f"Handles ledger reconciliation part {i}."} for i in range(n)])
+
+
+def test_ai_analysis_writes_once_resumes_and_feeds_publish_and_chat(tmp_path, api, monkeypatch):
+    from devmem_app import analysis
+    from devmem_app.publisher import publish
+    root = tmp_path / "conv_app"
+    shutil.copytree(FIX / "conv_app", root)
+    idx = indexer.index_repo(root, "conv_app", accuracy="fast")
+    ix = Index.load(root)
+    st = analysis.status(ix)
+    assert st["describe"]["todo"] > 0 and st["modules"]["todo"] == st["modules"]["total"] == 1 and st["overview"]["todo"] == 1
+    assert [m["name"] for m in st["modules"]["items"]] == ["app"] and st["last_run"] is None        # the tests folder is not summarised
+    assert st["describe"]["requests"] >= 1 and st["describe"]["tokens"] > 0
+
+    llm = AnalystLLM()
+    job = analysis.run(ix, llm, list(analysis.STEPS), None, analysis.Job(list(analysis.STEPS)))
+    assert job.state == "done" and job.failed == 0 and job.done == job.total
+    assert job.written == {"describe": st["describe"]["todo"], "modules": 1, "overview": 1}
+    assert "Handles ledger reconciliation" in llm.prompts[-1] and "Handles ledger reconciliation" in llm.prompts[-2]   # each step reads the one before
+    after = analysis.status(Index.load(root))
+    assert (after["describe"]["todo"], after["modules"]["todo"], after["overview"]["todo"]) == (0, 0, 0)
+    assert after["last_run"]["model"] == "fake:analyst" and after["overview"]["by"] == "ai"
+
+    n = len(llm.prompts)                                                    # nothing changed: a second run sends nothing
+    again = analysis.run(Index.load(root), llm, list(analysis.STEPS), None, analysis.Job(list(analysis.STEPS)))
+    assert again.state == "done" and len(llm.prompts) == n and again.total == 1 and sum(again.written.values()) == 0
+
+    publish(root, idx, {})
+    ov = (root / ".devmem/knowledge/overview.md").read_text()
+    assert "## What this repo does\nA small payments service" in ov and "modules/app.md — Handles ledger reconciliation part 0." in ov
+    assert "Handles ledger reconciliation part 0." in (root / ".devmem/knowledge/modules/app.md").read_text().splitlines()[2]
+    hits = chat.retrieve("what does this repo do", {"conv_app": root})
+    assert hits and hits[0]["kind"] == "overview" and "payments service" in hits[0]["snippet"]
+
+    # a person's correction survives code changes; an AI text is redone when its code changes
+    analysis.set_text(Index.load(root), "app", "  Service layer and  config. ")
+    (root / "app/extra.py").write_text("def settle_ledger(batch):\n    return batch\n")
+    indexer.index_repo(root, "conv_app", accuracy="fast")
+    st = analysis.status(Index.load(root))
+    assert st["modules"]["items"][0] == {"name": "app", "text": "Service layer and config.", "by": "human", "stale": True}
+    assert st["modules"]["todo"] == 0 and st["overview"]["todo"] == 1 and st["describe"]["todo"] == 1     # the new, undocumented function
+
+    class Down:
+        name = "down"
+
+        def generate(self, prompt):
+            raise RuntimeError("cannot reach the model")
+    (root / "app/more.py").write_text("def run(x):\n    return x\n")
+    indexer.index_repo(root, "conv_app", accuracy="fast")
+    bad = analysis.run(Index.load(root), Down(), ["describe", "overview"], None, analysis.Job(["describe", "overview"]))
+    assert bad.state == "failed" and "cannot reach" in bad.error
+    assert analysis.load(root)["overview"]["text"].startswith("A small payments")                     # earlier results are kept
+
+    # API: needs a model, reports progress, accepts corrections
+    assert api.post("/api/repos", json={"path": str(root)}, headers=H).status_code == 200
+    assert api.post("/api/repos/conv_app/analysis", json={}, headers=H).status_code == 409
+    assert api.post("/api/repos/conv_app/analysis", json={"steps": ["nope"]}, headers=H).status_code == 400
+    monkeypatch.setattr(chat, "provider_from_env", lambda: AnalystLLM())
+    r = api.post("/api/repos/conv_app/analysis", json={"steps": ["describe"], "limit": 50}, headers=H)
+    assert r.status_code == 200 and r.json()["steps"] == ["describe"]
+    import time
+    for _ in range(100):
+        s = api.get("/api/repos/conv_app/analysis").json()
+        if s["job"]["state"] != "running":
+            break
+        time.sleep(0.05)
+    assert s["job"]["state"] == "done" and s["job"]["written"]["describe"] == 2 and s["describe"]["todo"] == 0
+    assert api.put("/api/repos/conv_app/analysis", json={"text": "Payments service."}, headers=H).status_code == 200
+    assert api.get("/api/repos/conv_app/analysis").json()["overview"] == {**s["overview"], "text": "Payments service.", "by": "human", "stale": False, "todo": 0}
+    assert api.put("/api/repos/conv_app/analysis", json={"module": "ghost", "text": "x"}, headers=H).status_code == 404
