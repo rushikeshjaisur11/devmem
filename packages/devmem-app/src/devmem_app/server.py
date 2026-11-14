@@ -164,6 +164,9 @@ def create_app() -> FastAPI:
         d = {"name": name, "path": path, "indexed": False}
         ip = root / ".devmem/index.json"
         d["uploaded"] = uploads.uploads_dir().resolve() in root.resolve().parents
+        running = [j for j in jobs.values() if j["repo"] == name and j["state"] == "running"]
+        if running:
+            d["working"] = {"kind": running[0]["kind"], "job": running[0]["id"], "seconds": round(time.time() - running[0]["started"])}
         if ip.exists():
             st = ip.stat()
             hit = summary_cache.get(str(ip))
@@ -197,6 +200,58 @@ def create_app() -> FastAPI:
             files[f.name] = h["tokens"] if h else None
         return {"always": est_tokens(blk) if blk else None, "always_budget": AGENTS_INDEX_BUDGET, "map_budget": MAP_BUDGET, "files": files}
 
+
+    # ---------- background jobs: long work outlives the request, so a proxy timeout cannot cut it off ----------
+    import threading
+    import uuid
+    jobs: dict[str, dict] = {}
+    jobs_lock = threading.Lock()
+    REPO_WORK = {"add", "index", "branch", "publish", "hygiene"}     # write the repo's index: one at a time per repo
+
+    def start_job(kind: str, repo: str, fn) -> JSONResponse:
+        with jobs_lock:
+            if repo and kind in REPO_WORK and any(j["repo"] == repo and j["state"] == "running" and j["kind"] in REPO_WORK for j in jobs.values()):
+                raise HTTPException(409, f"{repo} is already being worked on; wait for that to finish")
+            jid = uuid.uuid4().hex[:12]
+            job = {"id": jid, "kind": kind, "repo": repo, "state": "running", "started": time.time(), "finished": None,
+                   "result": None, "error": None, "status": 200}
+            jobs[jid] = job
+            for old in sorted((j for j in jobs.values() if j["state"] != "running"), key=lambda j: j["started"])[:-50]:
+                jobs.pop(old["id"], None)                    # keep the last 50 finished jobs
+
+        def work():
+            try:
+                job["result"] = fn()
+                job["state"] = "done"
+            except HTTPException as e:
+                job.update(state="failed", error=e.detail if isinstance(e.detail, str) else json.dumps(e.detail), status=e.status_code)
+            except Exception as e:
+                job.update(state="failed", error=f"{type(e).__name__}: {e}", status=500)
+                from .paths import diagnose
+                diagnose(kind, f"{type(e).__name__}: {e}", repo)
+            finally:
+                job["finished"] = time.time()
+                cache.pop(repo, None)
+        threading.Thread(target=work, daemon=True, name=f"devmem-{kind}-{repo}").start()
+        return JSONResponse({"job": jid, "kind": kind, "repo": repo, "state": "running"}, status_code=202)
+
+    def maybe_job(background: bool, kind: str, repo: str, fn):
+        return start_job(kind, repo, fn) if background else fn()
+
+    def job_view(j: dict) -> dict:
+        end = j["finished"] or time.time()
+        return {k: j[k] for k in ("id", "kind", "repo", "state", "result", "error", "status")} | {"seconds": round(end - j["started"], 1)}
+
+    @app.get("/api/jobs/{jid}")
+    def job_status(jid: str):
+        j = jobs.get(jid)
+        if not j:
+            raise HTTPException(404, "unknown job (the server may have restarted)")
+        return job_view(j)
+
+    @app.get("/api/jobs")
+    def job_list(active: bool = True):
+        return [job_view(j) for j in sorted(jobs.values(), key=lambda j: -j["started"]) if not active or j["state"] == "running"]
 
     # ---------- repos ----------
     class AddRepo(BaseModel):
@@ -236,31 +291,33 @@ def create_app() -> FastAPI:
         return [repo_summary(n, p) for n, p in sorted(ws()["repos"].items())]
 
     @app.post("/api/repos")
-    def add_repo(body: AddRepo):
-        if body.url:
-            name, root = clone_url(body.url, body.name, body.branch)
-            if body.branch and git_branch(root) != body.branch:
-                if body.branch in git_branches(root):
-                    r = _git(root, "checkout", body.branch, "--")
-                    if r.returncode:
-                        raise HTTPException(422, (r.stderr or r.stdout).strip()[-300:])
-                else:
-                    raise HTTPException(400, f"unknown branch {body.branch}")
-        elif body.path:
-            if not paths_allowed():
-                raise HTTPException(403, "this server does not read paths on its own disk: upload the repo or give a Git URL")
-            root = Path(body.path).expanduser().resolve()
-            if not root.is_dir():
-                raise HTTPException(400, "not a directory")
-            name = body.name or root.name
-        else:
-            raise HTTPException(400, "give a local path or a git URL")
-        index_repo(root, name)                      # register only after a full-accuracy index succeeded
-        w = ws(); w["repos"][name] = str(root); save_ws(w)
-        return repo_summary(name, str(root))
+    def add_repo(body: AddRepo, background: bool = False):
+        def _work():
+            if body.url:
+                name, root = clone_url(body.url, body.name, body.branch)
+                if body.branch and git_branch(root) != body.branch:
+                    if body.branch in git_branches(root):
+                        r = _git(root, "checkout", body.branch, "--")
+                        if r.returncode:
+                            raise HTTPException(422, (r.stderr or r.stdout).strip()[-300:])
+                    else:
+                        raise HTTPException(400, f"unknown branch {body.branch}")
+            elif body.path:
+                if not paths_allowed():
+                    raise HTTPException(403, "this server does not read paths on its own disk: upload the repo or give a Git URL")
+                root = Path(body.path).expanduser().resolve()
+                if not root.is_dir():
+                    raise HTTPException(400, "not a directory")
+                name = body.name or root.name
+            else:
+                raise HTTPException(400, "give a local path or a git URL")
+            index_repo(root, name)                      # register only after a full-accuracy index succeeded
+            w = ws(); w["repos"][name] = str(root); save_ws(w)
+            return repo_summary(name, str(root))
+        return maybe_job(background, "add", body.name or (Path(body.path).name if body.path else ""), _work)
 
     @app.post("/api/repos/upload")
-    async def upload_repo(request: Request, name: str = "", filename: str = ""):
+    async def upload_repo(request: Request, name: str = "", filename: str = "", background: bool = False):
         """Onboard a repo from an uploaded archive: the request body is the .zip / .tar.gz itself (the browser packs a
         picked folder into a zip first). Uploading again under the same name replaces the code and re-indexes it."""
         try:
@@ -287,7 +344,15 @@ def create_app() -> FastAPI:
             if not size:
                 raise HTTPException(400, "empty upload")
 
-            def unpack_and_index():
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+
+        def unpack_and_index():
+            try:
                 root = uploads.install(Path(tmp), rname)
                 try:
                     index_repo(root, rname)
@@ -295,19 +360,19 @@ def create_app() -> FastAPI:
                     if not known:   # a first upload that cannot be indexed leaves nothing behind
                         shutil.rmtree(root, ignore_errors=True)
                     raise
-                return root
-            try:
-                root = await run_in_threadpool(unpack_and_index)
             except uploads.UploadError as e:
                 raise HTTPException(400, str(e))
-        finally:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-        w = ws(); w["repos"][rname] = str(root); save_ws(w)
-        cache.pop(rname, None)
-        return repo_summary(rname, str(root))
+            finally:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+            w = ws(); w["repos"][rname] = str(root); save_ws(w)
+            cache.pop(rname, None)
+            return repo_summary(rname, str(root))
+        if background:
+            return start_job("add", rname, unpack_and_index)
+        return await run_in_threadpool(unpack_and_index)
 
     @app.get("/api/repos/{name}/knowledge.zip")
     def knowledge_zip(name: str):
@@ -416,10 +481,12 @@ def create_app() -> FastAPI:
         return defs.describe_with_ai(ix_of(name), body.ids, prov)
 
     @app.post("/api/repos/{name}/index")
-    def reindex(name: str):
-        root = root_of(name)
-        idx = index_repo(root, name)
-        return {**repo_summary(name, str(root)), "stats": idx["stats"]}
+    def reindex(name: str, background: bool = False):
+        def _work():
+            root = root_of(name)
+            idx = index_repo(root, name)
+            return {**repo_summary(name, str(root)), "stats": idx["stats"]}
+        return maybe_job(background, "index", name, _work)
 
     @app.get("/api/repos/{name}/branches")
     def branches(name: str):
@@ -430,45 +497,51 @@ def create_app() -> FastAPI:
         branch: str
 
     @app.post("/api/repos/{name}/branch")
-    def switch_branch(name: str, body: Branch):
-        """git checkout <branch> in the clone, then re-index it. Refuses when tracked files have uncommitted changes."""
-        root = root_of(name)
-        if body.branch not in git_branches(root):
-            raise HTTPException(400, f"unknown branch {body.branch}")
-        dirty = git_dirty(root)
-        if dirty:
-            raise HTTPException(409, "uncommitted changes would be affected; commit or stash first: " + ", ".join(dirty[:5]))
-        if body.branch != git_branch(root):
-            r = _git(root, "checkout", body.branch, "--")
-            if r.returncode:
-                raise HTTPException(422, (r.stderr or r.stdout).strip()[-300:])
-        idx = index_repo(root, name)
-        return {**repo_summary(name, str(root)), "stats": idx["stats"]}
+    def switch_branch(name: str, body: Branch, background: bool = False):
+        def _work():
+            """git checkout <branch> in the clone, then re-index it. Refuses when tracked files have uncommitted changes."""
+            root = root_of(name)
+            if body.branch not in git_branches(root):
+                raise HTTPException(400, f"unknown branch {body.branch}")
+            dirty = git_dirty(root)
+            if dirty:
+                raise HTTPException(409, "uncommitted changes would be affected; commit or stash first: " + ", ".join(dirty[:5]))
+            if body.branch != git_branch(root):
+                r = _git(root, "checkout", body.branch, "--")
+                if r.returncode:
+                    raise HTTPException(422, (r.stderr or r.stdout).strip()[-300:])
+            idx = index_repo(root, name)
+            return {**repo_summary(name, str(root)), "stats": idx["stats"]}
+        return maybe_job(background, "branch", name, _work)
 
     class Publish(BaseModel):
         commit: bool = False
 
     @app.post("/api/repos/{name}/publish")
-    def do_publish(name: str, body: Publish):
-        root = root_of(name)
-        idx = index_repo(root, name)
-        try:
-            files = publish(root, idx, ws()["repos"])
-        except RuntimeError as e:
-            raise HTTPException(422, str(e))
-        branch = commit_branch(root) if body.commit else None
-        return {"written": files, "branch": branch}
+    def do_publish(name: str, body: Publish, background: bool = False):
+        def _work():
+            root = root_of(name)
+            idx = index_repo(root, name)
+            try:
+                files = publish(root, idx, ws()["repos"])
+            except RuntimeError as e:
+                raise HTTPException(422, str(e))
+            branch = commit_branch(root) if body.commit else None
+            return {"written": files, "branch": branch}
+        return maybe_job(background, "publish", name, _work)
 
     @app.post("/api/repos/{name}/hygiene")
-    def run_hygiene(name: str):
-        root = root_of(name)
-        idx = index_repo(root, name)
-        h = hyg.run_hygiene(root, idx, name)
-        try:
-            publish(root, idx, ws()["repos"])
-        except RuntimeError as e:
-            raise HTTPException(422, str(e))
-        return {"counts": h["counts"], "tools": h["tools"]}
+    def run_hygiene(name: str, background: bool = False):
+        def _work():
+            root = root_of(name)
+            idx = index_repo(root, name)
+            h = hyg.run_hygiene(root, idx, name)
+            try:
+                publish(root, idx, ws()["repos"])
+            except RuntimeError as e:
+                raise HTTPException(422, str(e))
+            return {"counts": h["counts"], "tools": h["tools"]}
+        return maybe_job(background, "hygiene", name, _work)
 
     # ---------- code health: local checks + SonarQube, ranked by blast radius ----------
     from . import health as health_mod
@@ -524,14 +597,16 @@ def create_app() -> FastAPI:
         return {"ok": True}
 
     @app.post("/api/repos/{name}/sonar/sync")
-    def sonar_sync(name: str):
-        ix = ix_of(name)
-        try:
-            d = sonar_mod.sync(name, root_of(name), set(ix.data["files"]))
-        except sonar_mod.SonarError as e:
-            raise HTTPException(422, str(e))
-        return {"issues": len(d["issues"]), "hotspots": len(d["hotspots"]), "total": d["total_issues"], "matched": d["matched"],
-                "truncated": d["truncated"], "notes": d["notes"], "gate": d.get("gate")}
+    def sonar_sync(name: str, background: bool = False):
+        def _work():
+            ix = ix_of(name)
+            try:
+                d = sonar_mod.sync(name, root_of(name), set(ix.data["files"]))
+            except sonar_mod.SonarError as e:
+                raise HTTPException(422, str(e))
+            return {"issues": len(d["issues"]), "hotspots": len(d["hotspots"]), "total": d["total_issues"], "matched": d["matched"],
+                    "truncated": d["truncated"], "notes": d["notes"], "gate": d.get("gate")}
+        return maybe_job(background, "sonar", name, _work)
 
     # ---------- modernize: hand-written code that the language or a library now provides ----------
     class ModernizeAi(BaseModel):
@@ -546,19 +621,21 @@ def create_app() -> FastAPI:
         latest: bool = True     # also fetch latest versions, docs and release notes for the repo's libraries (needs the network)
 
     @app.post("/api/repos/{name}/modernize")
-    def modernize_scan(name: str, body: ModernizeScan = ModernizeScan()):
-        from . import modernize as mz
-        ix = ix_of(name)
-        info = mz.refresh_latest(ix) if body.latest else None
-        mz.scan(ix, info)
-        if info and info["docs_fetched"]:
-            try:   # the docs just fetched travel to agents with the next publish; copy them into the repo now so search finds them
-                from . import docs as dm
-                dm.copy_relevant(root_of(name))
-            except Exception as e:
-                from .paths import diagnose
-                diagnose("docs", f"fetched docs could not be copied into the repo: {e}", name)
-        return {**mz.view(ix), "llm": chat_mod.llm_status()}
+    def modernize_scan(name: str, body: ModernizeScan = ModernizeScan(), background: bool = False):
+        def _work():
+            from . import modernize as mz
+            ix = ix_of(name)
+            info = mz.refresh_latest(ix) if body.latest else None
+            mz.scan(ix, info)
+            if info and info["docs_fetched"]:
+                try:   # the docs just fetched travel to agents with the next publish; copy them into the repo now so search finds them
+                    from . import docs as dm
+                    dm.copy_relevant(root_of(name))
+                except Exception as e:
+                    from .paths import diagnose
+                    diagnose("docs", f"fetched docs could not be copied into the repo: {e}", name)
+            return {**mz.view(ix), "llm": chat_mod.llm_status()}
+        return maybe_job(background, "modernize", name, _work)
 
     @app.post("/api/repos/{name}/modernize/discover")
     def modernize_discover(name: str):
@@ -619,9 +696,11 @@ def create_app() -> FastAPI:
         return {"available": bool(d), **(d or {})}
 
     @app.post("/api/repos/{name}/selfcheck")
-    def selfcheck_run(name: str):
-        from . import selfcheck
-        return {"available": True, **selfcheck.run(ix_of(name))}
+    def selfcheck_run(name: str, background: bool = False):
+        def _work():
+            from . import selfcheck
+            return {"available": True, **selfcheck.run(ix_of(name))}
+        return maybe_job(background, "selfcheck", name, _work)
 
     class PromptReq(BaseModel):
         kind: str

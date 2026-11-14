@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api } from "../api";
+import { api, job } from "../api";
 import { Badge, Empty, Err, Term, useAsync, useRepos } from "../components";
 import { nav } from "../route";
 
@@ -33,7 +33,7 @@ function Footprint({ t }: { t: any }) {
 function Trust({ repo }: { repo: string }) {
   const d = useAsync<any>(() => api.get(`/api/repos/${repo}/selfcheck`), [repo]);
   const [busy, setBusy] = useState(false);
-  const run = async () => { setBusy(true); try { await api.post(`/api/repos/${repo}/selfcheck`); d.reload(); } catch { /* shown on next load */ } setBusy(false); };
+  const run = async () => { setBusy(true); try { await job(`/api/repos/${repo}/selfcheck`); d.reload(); } catch { /* shown on next load */ } setBusy(false); };
   const r = d.data;
   const pct = (x: number | null | undefined) => (x === null || x === undefined ? "-" : `${Math.round(x * 100)}%`);
   if (!r) return null;
@@ -99,7 +99,7 @@ export default function Overview(_: any) {
   const rules = (r: string) => mem.data?.repos[r]?.rules.length ?? 0;
   const publish = async (name: string) => {
     setBusy(name); setErr(""); setMsg("");
-    try { const x = await api.post(`/api/repos/${name}/publish`, {}); setMsg(`Published ${name}: wrote ${x.written.length} files.`); repos.reload(); } catch (e: any) { setErr(e.message); }
+    try { const x = await job(`/api/repos/${name}/publish`, {}); setMsg(`Published ${name}: wrote ${x.written.length} files.`); repos.reload(); } catch (e: any) { setErr(e.message); }
     setBusy("");
   };
 

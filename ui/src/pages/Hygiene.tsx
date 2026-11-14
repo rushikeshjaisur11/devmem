@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, upload } from "../api";
+import { api, job, upload } from "../api";
 import { nav } from "../route";
 import { Badge, CopyPrompt, EditorLink, Empty, Err, Icon, LineChart, useRepo, Term, editorHref, useAsync, useRepos } from "../components";
 
@@ -63,8 +63,8 @@ export default function Hygiene({ params }: { params: Record<string, string> }) 
   const run = async (what: "local" | "sonar") => {
     setBusy(what); setErr(""); setMsg("");
     try {
-      if (what === "local") { await api.post(`/api/repos/${repo}/hygiene`); setMsg("Checks finished."); }
-      else { const r = await api.post(`/api/repos/${repo}/sonar/sync`); setMsg(`Read ${r.issues.toLocaleString()} open issue${r.issues === 1 ? "" : "s"} and ${r.hotspots} hotspot${r.hotspots === 1 ? "" : "s"} from SonarQube.${r.notes.length ? " Note: " + r.notes.join("; ") : ""}`); }
+      if (what === "local") { await job(`/api/repos/${repo}/hygiene`); setMsg("Checks finished."); }
+      else { const r = await job(`/api/repos/${repo}/sonar/sync`); setMsg(`Read ${r.issues.toLocaleString()} open issue${r.issues === 1 ? "" : "s"} and ${r.hotspots} hotspot${r.hotspots === 1 ? "" : "s"} from SonarQube.${r.notes.length ? " Note: " + r.notes.join("; ") : ""}`); }
       h.reload();
     } catch (e: any) { setErr(e.message); }
     setBusy("");

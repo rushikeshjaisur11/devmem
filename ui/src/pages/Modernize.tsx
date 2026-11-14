@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { api } from "../api";
+import { api, job } from "../api";
 import { nav } from "../route";
 import { Badge, CopyPrompt, EditorLink, Empty, Err, Icon, editorHref, useAsync, useRepo, useRepos } from "../components";
 
@@ -25,7 +25,7 @@ export default function Modernize(_: any) {
   const [latest, setLatest] = useState(true);
   useEffect(() => { setFresh(null); setSel(new Set()); setMsg(""); setErr(""); setShow("ready"); setText(""); }, [repo]);
 
-  const scan = async () => { setBusy("scan"); setErr(""); setMsg(""); try { const r = await api.post(`/api/repos/${repo}/modernize`, { latest }); setFresh(r);
+  const scan = async () => { setBusy("scan"); setErr(""); setMsg(""); try { const r = await job(`/api/repos/${repo}/modernize`, { latest }); setFresh(r);
     const li = r.latest_info || {};
     setMsg(`Scanned ${r.scanned.toLocaleString()} functions and classes: ${r.findings.length} candidate${r.findings.length === 1 ? "" : "s"}.`
       + (li.docs_fetched?.length ? ` Fetched the latest docs for ${li.docs_fetched.map((x: any) => `${x.name} ${x.version}`.trim()).join(", ")}.` : "")

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "../api";
+import { api, job } from "../api";
 import { Badge, Empty, Err, Icon, Menu, Term, useConfig, useRepos } from "../components";
 import { UploadBox } from "../UploadBox";
 
@@ -28,6 +28,8 @@ type Src = "upload" | "git" | "path";
 
 export default function Repos(_: any) {
   const { data, error, loading, reload } = useRepos();
+  const working = !!data?.some((r: any) => r.working);
+  useEffect(() => { if (!working) return; const t = setInterval(reload, 2500); return () => clearInterval(t); }, [working, reload]);
   const cfg = useConfig().data;
   const [busy, setBusy] = useState("");
   const [msg, setMsg] = useState("");
@@ -67,7 +69,7 @@ export default function Repos(_: any) {
               <input className="grow" placeholder="https://github.com/org/repo.git  or  git@github.com:org/repo.git" value={url} onChange={(e) => setUrl(e.target.value)} aria-label="Git URL" />
               <input placeholder="Branch (default)" value={branch} onChange={(e) => setBranch(e.target.value)} aria-label="Branch" style={{ width: 150 }} />
               <input placeholder="Name (optional)" value={name} onChange={(e) => setName(e.target.value)} aria-label="Repo name" style={{ width: 160 }} />
-              <button className="primary" disabled={!url || busy === "add"} onClick={() => act("add", () => api.post("/api/repos", { url, branch: branch || undefined, name: name || undefined }), (r) => `Onboarded ${r.name}: ${r.symbols} symbols`)}>
+              <button className="primary" disabled={!url || busy === "add"} onClick={() => act("add", () => job("/api/repos", { url, branch: branch || undefined, name: name || undefined }), (r) => `Onboarded ${r.name}: ${r.symbols} symbols`)}>
                 <Icon name="git" />{busy === "add" ? "Cloning and indexing…" : "Clone and index"}
               </button>
             </div>
@@ -79,7 +81,7 @@ export default function Repos(_: any) {
             <div className="row">
               <input className="grow" placeholder={cfg?.deployed ? "Path on the server, e.g. /srv/repos/orders-etl" : "Path to a local clone, e.g. C:\\work\\orders-etl"} value={path} onChange={(e) => setPath(e.target.value)} aria-label="Repo path" />
               <input placeholder="Name (optional)" value={name} onChange={(e) => setName(e.target.value)} aria-label="Repo name" style={{ width: 160 }} />
-              <button className="primary" disabled={!path || busy === "add"} onClick={() => act("add", () => api.post("/api/repos", { path, name: name || undefined }), (r) => `Onboarded ${r.name}: ${r.symbols} symbols`)}>
+              <button className="primary" disabled={!path || busy === "add"} onClick={() => act("add", () => job("/api/repos", { path, name: name || undefined }), (r) => `Onboarded ${r.name}: ${r.symbols} symbols`)}>
                 <Icon name="plus" />{busy === "add" ? "Indexing…" : "Add and index"}
               </button>
             </div>
@@ -97,8 +99,9 @@ export default function Repos(_: any) {
               {data.map((r) => (
                 <tr key={r.name}>
                   <td className="repo-name"><b>{r.name}</b>{r.uploaded ? <div className="path">uploaded copy</div> : <div className="path" title={r.path}>{r.path}</div>}</td>
-                  <td>{r.uploaded ? <span className="muted">-</span> : <BranchPicker repo={r} disabled={!!busy} onSwitch={(b) => confirm(`Check out ${b} in ${r.path} and re-index it?`) ? act("b" + r.name, () => api.post(`/api/repos/${r.name}/branch`, { branch: b }), (x) => `${r.name}: now on ${x.branch}, ${x.symbols} symbols (parsed ${x.stats.parsed}, reused ${x.stats.reused})`) : reload()} />}</td>
+                  <td>{r.uploaded ? <span className="muted">-</span> : <BranchPicker repo={r} disabled={!!busy} onSwitch={(b) => confirm(`Check out ${b} in ${r.path} and re-index it?`) ? act("b" + r.name, () => job(`/api/repos/${r.name}/branch`, { branch: b }), (x) => `${r.name}: now on ${x.branch}, ${x.symbols} symbols (parsed ${x.stats.parsed}, reused ${x.stats.reused})`) : reload()} />}</td>
                   <td><div className="tags">
+                    {r.working && <Badge kind="warn">{({ add: "indexing", index: "re-indexing", branch: "switching branch", publish: "publishing", hygiene: "running checks", sonar: "reading SonarQube", modernize: "scanning", selfcheck: "measuring" } as Record<string, string>)[r.working.kind] || "working"}… {r.working.seconds}s</Badge>}
                     {!r.indexed ? <Badge kind="bad">not indexed</Badge> : r.stale ? <Badge kind="warn">index behind HEAD</Badge> : <Badge kind="good">index fresh</Badge>}
                     {r.indexed && (r.knowledge_problems.length === 0 ? <Badge kind="good">published</Badge> :
                       r.knowledge_problems[0] === "not published" ? <Badge>not published</Badge> :
@@ -110,10 +113,10 @@ export default function Repos(_: any) {
                   <td>{r.hygiene ? <div className="tags">{Object.entries(r.hygiene).map(([k, v]) => <span className="tag" key={k}>{k} <b>{String(v)}</b></span>)}</div> : <span className="muted">not run</span>}</td>
                   <td>
                     <div className="row actions">
-                      <button className="primary sm" disabled={!!busy || !r.indexed} title="Write .devmem/ and the AGENTS.md block that agents read" onClick={() => act("p" + r.name, () => api.post(`/api/repos/${r.name}/publish`, { commit: commit && !r.uploaded }), (x) => `${r.name}: wrote ${x.written.length} files${x.branch ? ` on branch ${x.branch}` : ""}${r.uploaded ? ". Download the knowledge from the row menu and unpack it in your repo." : ""}`)}><Icon name="send" />{busy === "p" + r.name ? "Publishing…" : "Publish"}</button>
-                      <button className="icon-btn bordered" disabled={!!busy} aria-label={`Re-index ${r.name}`} title="Re-index: read the files again" onClick={() => act("i" + r.name, () => api.post(`/api/repos/${r.name}/index`), (x) => `${r.name}: parsed ${x.stats.parsed}, reused ${x.stats.reused}`)}><span className={busy === "i" + r.name ? "spin" : ""}><Icon name="refresh" /></span></button>
+                      <button className="primary sm" disabled={!!busy || !r.indexed} title="Write .devmem/ and the AGENTS.md block that agents read" onClick={() => act("p" + r.name, () => job(`/api/repos/${r.name}/publish`, { commit: commit && !r.uploaded }), (x) => `${r.name}: wrote ${x.written.length} files${x.branch ? ` on branch ${x.branch}` : ""}${r.uploaded ? ". Download the knowledge from the row menu and unpack it in your repo." : ""}`)}><Icon name="send" />{busy === "p" + r.name ? "Publishing…" : "Publish"}</button>
+                      <button className="icon-btn bordered" disabled={!!busy} aria-label={`Re-index ${r.name}`} title="Re-index: read the files again" onClick={() => act("i" + r.name, () => job(`/api/repos/${r.name}/index`), (x) => `${r.name}: parsed ${x.stats.parsed}, reused ${x.stats.reused}`)}><span className={busy === "i" + r.name ? "spin" : ""}><Icon name="refresh" /></span></button>
                       <Menu disabled={!!busy} label={`More actions for ${r.name}`} items={[
-                        { label: busy === "h" + r.name ? "Running…" : "Run code health", icon: "shield", hint: "lint, dead code, complexity", disabled: !r.indexed, onClick: () => act("h" + r.name, () => api.post(`/api/repos/${r.name}/hygiene`), (x) => `${r.name} code health: ${JSON.stringify(x.counts)}`) },
+                        { label: busy === "h" + r.name ? "Running…" : "Run code health", icon: "shield", hint: "lint, dead code, complexity", disabled: !r.indexed, onClick: () => act("h" + r.name, () => job(`/api/repos/${r.name}/hygiene`), (x) => `${r.name} code health: ${JSON.stringify(x.counts)}`) },
                         ...(r.indexed ? [{ label: "AI analysis", icon: "spark", hint: "descriptions, module summaries, overview", href: `#/analysis?repo=${r.name}` }] : []),
                         ...(r.indexed && r.knowledge_problems[0] !== "not published" ? [{ label: "Download knowledge (.zip)", icon: "download", hint: "unpack at the root of your repo", href: `/api/repos/${r.name}/knowledge.zip` }] : []),
                         { label: "Remove", icon: "trash", danger: true, hint: r.uploaded ? "deletes the uploaded copy" : "your files stay untouched", onClick: () => { if (confirm(r.uploaded ? `Remove ${r.name} and delete its uploaded copy?` : `Remove ${r.name} from devmem? (files stay untouched)`)) act("d" + r.name, () => api.del(`/api/repos/${r.name}`), () => `Removed ${r.name}`); } },

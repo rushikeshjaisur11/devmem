@@ -30,6 +30,11 @@ export const q = (o: Record<string, string | number | undefined | null>) =>
 
 /** POST a file as the request body, reporting progress (fetch cannot report upload progress). */
 export function upload(url: string, body: Blob, onProgress: (fraction: number) => void): Promise<Json> {
+  // the bytes go up in the request; unpacking and indexing continue as a job on the server (see job / waitJob)
+  return uploadOnly(url + (url.includes("?") ? "&" : "?") + "background=1", body, onProgress).then(waitJob);
+}
+
+function uploadOnly(url: string, body: Blob, onProgress: (fraction: number) => void): Promise<Json> {
   return new Promise((resolve, reject) => {
     const x = new XMLHttpRequest();
     x.open("POST", url);
@@ -47,4 +52,24 @@ export function upload(url: string, body: Blob, onProgress: (fraction: number) =
     };
     x.send(body);
   });
+}
+
+/** POST to an endpoint that can run as a background job (`?background=1`): the server answers at once with a job id and
+ * keeps working even if this page is left or a proxy would have timed out. Polls until the job finishes and returns its
+ * result, or throws its error. Endpoints that finish immediately return their result directly. */
+export async function job(url: string, body: Json = {}): Promise<Json> {
+  const r = await req("POST", url + (url.includes("?") ? "&" : "?") + "background=1", body);
+  return waitJob(r);
+}
+
+export async function waitJob(r: Json): Promise<Json> {
+  if (!r || typeof r !== "object" || !r.job) return r;
+  for (let wait = 600; ; wait = Math.min(wait * 1.4, 3000)) {
+    await new Promise((res) => setTimeout(res, wait));
+    let j: Json;
+    try { j = await req("GET", `/api/jobs/${r.job}`); }
+    catch (e: any) { throw new Error(/unknown job/.test(e.message) ? "The server restarted while this was running. Run it again." : e.message); }
+    if (j.state === "done") return j.result;
+    if (j.state === "failed") throw new Error(j.error || "failed");
+  }
 }
