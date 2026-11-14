@@ -18,9 +18,6 @@ files, and builds prompts for the agent that will do the work.
 - **Runs on a server too**: `devmem-app ui --host 0.0.0.0` adds sign-in with an access token; repos are onboarded by upload or
   Git URL instead of a path (`docs/DEPLOY.md`, `Dockerfile`).
 
-- **Runs on a server too**: `devmem-app ui --host 0.0.0.0` adds sign-in with an access token; repos are onboarded by upload or
-  Git URL instead of a path (`docs/DEPLOY.md`, `Dockerfile`).
-
 ## Requirements
 Python 3.10+, git, **Node.js 18+**, and network access the first time (npx downloads the SCIP indexers; docs are fetched from the web).
 
