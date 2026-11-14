@@ -147,10 +147,16 @@ def build(ix: Index, task: str, files: list[str] | None = None, budget: int = DE
         facts.append(" usually changes with: " + ", ".join(imp["cochange"][:3]))
     add("\n".join(facts), force=True)
 
+    note = ""
     try:
-        body = ix.source(s).splitlines()
-    except OSError:
+        text, start, _end, note = ix.read(s)
+        body = text.splitlines()
+    except LookupError as e:
         body = []
+        add(f"NOTE: {e}", force=True)
+    stale = [f for f in ix.changed_files(imp["files"]) if f != s["file"] or not note]
+    if note or stale:
+        add("NOTE: " + (note + " " if note else "") + (f"Also changed since indexing: {', '.join(stale[:5])}; callers there may differ." if stale else ""), force=True)
     if body:
         room = max(budget - used - 40, 0) * 4       # characters left for the body, keeping room for the last line
         keep, size = 0, 0

@@ -38,12 +38,19 @@ def cmd_show(ix: Index, a) -> int:
             print(f"  {s['id']}")
         return 1
     s = syms[0]
-    print(f"# {s['file']}:{s['line']}-{s['end_line']}")
-    body = ix.source(s).splitlines()
+    try:
+        text, start, end, note = ix.read(s)
+    except LookupError as e:
+        print(str(e))
+        return 1
+    if note:
+        print(f"NOTE: {note}")
+    print(f"# {s['file']}:{start}-{end}")
+    body = text.splitlines()
     if not a.full and len(body) > SHOW_LINES:
         print("\n".join(body[:SHOW_LINES]))
         print(f"... {len(body) - SHOW_LINES} more lines: `devmem show {s['id']} --full`, or read {s['file']} "
-              f"from line {s['line'] + SHOW_LINES}")
+              f"from line {start + SHOW_LINES}")
     else:
         print("\n".join(body))
     callees = ix.callees(s)
@@ -111,6 +118,10 @@ def cmd_impact(ix: Index, a) -> int:
     print("tests: " + grouped(r["tests"], cap))
     for c in r["capped"]:
         print(f"capped: {c['symbol']} has {c['callers']} callers (widely used utility)")
+    stale = ix.changed_files(r["files"])
+    if stale:   # the lists above were computed when the index was built: say which of the files they name have moved on
+        print(f"NOTE: changed since the index was built: {', '.join(stale[:6])}{' …' if len(stale) > 6 else ''}. "
+              "Calls added or removed there are not reflected above: check those files, or re-index.")
     if r.get("cochange"):
         print("usually changes together with: " + ", ".join(r["cochange"]))
     return 0

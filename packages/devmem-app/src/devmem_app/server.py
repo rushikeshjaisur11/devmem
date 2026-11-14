@@ -41,6 +41,7 @@ from .indexer import AccuracyError, _git, git_branch, git_branches, git_dirty, g
 from .indexer import index_repo as _index_repo
 from .paths import devmem_home
 from .publisher import _module_of, commit_branch, publish
+from devmem.schema import atomic_write
 
 UI_DIST = Path(__file__).parent / "ui_dist"
 ALLOWED_HOSTS = {"127.0.0.1", "localhost", "testserver"}
@@ -136,7 +137,7 @@ def create_app() -> FastAPI:
     def save_ws(d: dict):
         w = devmem_home() / "workspace.json"
         w.parent.mkdir(parents=True, exist_ok=True)
-        w.write_text(json.dumps(d, indent=1))
+        atomic_write(w, json.dumps(d, indent=1))
 
     def root_of(name: str) -> Path:
         repos = ws()["repos"]
@@ -554,8 +555,9 @@ def create_app() -> FastAPI:
             try:   # the docs just fetched travel to agents with the next publish; copy them into the repo now so search finds them
                 from . import docs as dm
                 dm.copy_relevant(root_of(name))
-            except Exception:
-                pass
+            except Exception as e:
+                from .paths import diagnose
+                diagnose("docs", f"fetched docs could not be copied into the repo: {e}", name)
         return {**mz.view(ix), "llm": chat_mod.llm_status()}
 
     @app.post("/api/repos/{name}/modernize/discover")
@@ -1216,7 +1218,20 @@ def create_app() -> FastAPI:
             if (lib.get("age_days") or 0) > 120:
                 out.append({"level": "warn", "repo": None, "text": f"{lib['name']} docs are {lib['age_days']} days old: refresh them", "page": "docs"})
         rank = {"bad": 0, "warn": 1, "info": 2}
+        import datetime as _dt
+        from .paths import diagnostics
+        day_ago = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        seen = set()
+        for d in diagnostics(50):            # things that failed quietly in the last day: once each, newest first
+            if d["ts"] >= day_ago and (d["area"], d["repo"], d["message"]) not in seen:
+                seen.add((d["area"], d["repo"], d["message"]))
+                out.append({"level": "warn", "repo": d["repo"] or None, "text": f"{d['area']}: {d['message']}", "page": {"docs": "docs", "sonar": "integrations"}.get(d["area"], "repos")})
         return sorted(out, key=lambda x: rank[x["level"]])
+
+    @app.get("/api/diagnostics")
+    def diagnostics_list():
+        from .paths import diagnostics
+        return diagnostics(100)
 
     class UpgradeIn(BaseModel):
         repo: str

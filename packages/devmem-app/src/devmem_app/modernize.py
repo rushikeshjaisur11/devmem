@@ -21,6 +21,7 @@ from devmem.index import Index
 from . import docs as docs_mod
 from .definitions import TEST_FILE
 from .reuse import _entry, _internal_names
+from devmem.schema import atomic_write
 
 PATH = ".devmem/modernize.json"
 FETCH_DOCS_CAP, NOTES_CAP = 20, 12     # libraries per scan whose latest docs / release notes are fetched
@@ -318,7 +319,7 @@ def discover_with_ai(ix: Index, provider, max_libs: int = 6) -> dict:
                 added += 1
         except Exception as e:
             error = str(e)[:300]
-    (Path(ix.root) / PATH).write_text(json.dumps(d, indent=1), encoding="utf-8")
+    atomic_write(Path(ix.root) / PATH, json.dumps(d, indent=1))
     return {"added": added, "libraries": asked, "error": error}
 
 
@@ -333,6 +334,8 @@ def refresh_latest(ix: Index) -> dict:
         rows = docs_mod.write_libs(root, online=True)
     except Exception as e:
         out["error"] = f"could not check the package registries: {str(e)[:160]}"
+        from .paths import diagnose
+        diagnose("modernize", out["error"], ix.data.get("repo", ""))
         return out
     used = _usage(ix, rows)
     out["latest"] = {_norm(r["name"]): r["latest"] for r in rows if r.get("latest")}
@@ -535,7 +538,7 @@ def scan(ix: Index, latest: dict | None = None) -> dict:
             "scanned": sum(1 for s in ix.symbols.values() if s["kind"] != "module" and not s.get("is_test")), "docs_checked": min(len(cands), DOCS_SCAN_CAP)}
     p = root / PATH
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(data, indent=1), encoding="utf-8")
+    atomic_write(p, json.dumps(data, indent=1))
     return data
 
 
@@ -585,5 +588,5 @@ def verify_with_ai(ix: Index, keys: list[str], provider) -> dict:
                 f["ai"] = {"verdict": "yes" if str(item.get("verdict", "")).lower().startswith("y") else "no", "note": " ".join(str(item.get("note", "")).split())[:240]}
         except Exception as e:
             error = str(e)[:300]
-    (Path(ix.root) / PATH).write_text(json.dumps(d, indent=1), encoding="utf-8")
+    atomic_write(Path(ix.root) / PATH, json.dumps(d, indent=1))
     return {"checked": sum(1 for f in todo if f.get("ai")), "error": error}

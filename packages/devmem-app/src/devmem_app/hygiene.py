@@ -13,6 +13,7 @@ from pathlib import Path
 from devmem.runner import find_tool, run_argv
 
 from .clones import clones_for_repo
+from devmem.schema import atomic_write
 
 HYGIENE_PATH = ".devmem/hygiene.json"
 HISTORY_DIR = Path.home() / ".devmem" / "hygiene"
@@ -252,7 +253,7 @@ def run_hygiene(root: str | Path, idx: dict, name: str | None = None, history: b
             pass
     res["prev_counts"] = prev
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(res, indent=1), encoding="utf-8")
+    atomic_write(p, json.dumps(res, indent=1))
     if history:
         HISTORY_DIR.mkdir(parents=True, exist_ok=True)
         with open(HISTORY_DIR / f"{name or root.name}.jsonl", "a", encoding="utf-8") as fh:

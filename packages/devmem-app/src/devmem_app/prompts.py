@@ -52,19 +52,24 @@ def symbol_block(ix: Index, s: dict, lines: int = BODY_LINES, mark: int | None =
     for c in imp["capped"]:
         out.append(f"  Widely used ({c['callers']} callers): do not change its signature.")
     try:
-        body = ix.source(s).splitlines()
-    except OSError:
-        body = []
+        text, first, last, note = ix.read(s)       # as the file is now, not as it was when indexed
+        body = text.splitlines()
+    except LookupError as e:
+        body, first, note = [], s["line"], ""
+        out.append(f"  WARNING: {e}")
+    if note:
+        out[0] = f"- `{s['file']}` lines {first}-{last}: `{s.get('sig') or s['qualname']}`"
+        out.append(f"  Note: {note}")
     if body:
         start = 0
         if mark and len(body) > lines:      # a long function: show the part around the line in question
-            start = max(0, min(mark - s["line"] - lines // 2, len(body) - lines))
+            start = max(0, min(mark - first - lines // 2, len(body) - lines))
         part = body[start:start + lines]
         out.append("  ```")
-        out += [f"  {s['line'] + start + n:>5}  {ln}" for n, ln in enumerate(part)]
+        out += [f"  {first + start + n:>5}  {ln}" for n, ln in enumerate(part)]
         out.append("  ```")
         if len(body) > len(part):
-            out.append(f"  (lines {s['line'] + start}-{s['line'] + start + len(part) - 1} of {len(body)}; read the rest of this function in the file if you need it)")
+            out.append(f"  (lines {first + start}-{first + start + len(part) - 1} of {len(body)}; read the rest of this function in the file if you need it)")
     return out
 
 

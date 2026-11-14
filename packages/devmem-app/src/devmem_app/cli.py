@@ -13,6 +13,7 @@ from devmem.index import Index
 
 from .indexer import AccuracyError, index_repo
 from .paths import devmem_home
+from devmem.schema import atomic_write
 
 
 _GIT_URL = re.compile(r"^(https?://|ssh://|git://|git@[\w.-]+:)[^\s]+$")
@@ -30,7 +31,7 @@ def _ws() -> dict:
 def _save(ws: dict):
     w = _workspace()
     w.parent.mkdir(parents=True, exist_ok=True)
-    w.write_text(json.dumps(ws, indent=1))
+    atomic_write(w, json.dumps(ws, indent=1))
 
 
 def _main(argv=None) -> int:
@@ -228,13 +229,18 @@ def _main(argv=None) -> int:
         def keep_docs_fresh():   # online library docs are re-fetched when older than the interval set on the Library docs page
             import time
             from . import docs as dm
+            from .paths import diagnose
             while True:
                 time.sleep(120)
                 try:
                     done = dm.refresh_due(_ws()["repos"])
                     if done:
                         print("docs refreshed: " + "; ".join(f"{k}: {v}" for k, v in done.items()), flush=True)
+                    for k, v in (done or {}).items():
+                        if str(v).startswith("failed"):
+                            diagnose("docs", f"{k} could not be refreshed: {v}")
                 except Exception as e:
+                    diagnose("docs", f"automatic refresh failed: {e}")
                     print(f"docs refresh failed: {e}", flush=True)
                 time.sleep(6 * 3600)
         threading.Thread(target=keep_docs_fresh, daemon=True).start()

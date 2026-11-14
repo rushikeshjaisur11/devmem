@@ -8,6 +8,7 @@ import json
 import os
 
 from .paths import devmem_home
+from devmem.schema import atomic_write
 
 # provider id -> (label, default model, default embedding model, key needed, environment keys that also select it)
 PROVIDERS = {
@@ -56,7 +57,7 @@ def save(values: dict) -> dict:
     except (OSError, ValueError):
         pass
     data["ai"] = cur
-    p.write_text(json.dumps(data, indent=1), encoding="utf-8")
+    atomic_write(p, json.dumps(data, indent=1))
     try:
         os.chmod(p, 0o600)
     except OSError:

@@ -1,6 +1,8 @@
 """Load and query .devmem/index.json. Pure stdlib; used by the agent CLI and the app."""
 from __future__ import annotations
 
+import ast
+import hashlib
 import json
 import re
 import sqlite3
@@ -11,7 +13,7 @@ from pathlib import Path
 
 from .jsresolve import is_js, module_files
 from .jsresolve import resolve as js_resolve
-from .schema import DB_PATH, DESC_PATH, INDEX_PATH, MAX_HOPS, UTILITY_CALLER_CAP
+from .schema import DB_PATH, DESC_PATH, INDEX_PATH, INDEX_VERSION, MAX_HOPS, UTILITY_CALLER_CAP
 
 
 def find_repo_root(start: Path | None = None) -> Path:
@@ -32,6 +34,7 @@ def _stat(p: Path):
 class Index:
     def __init__(self, data: dict, root: Path):
         self.data, self.root = data, root
+        self._states: dict[str, tuple[tuple, str]] = {}
         self._fts: sqlite3.Connection | None = None
         self._fts_lock = threading.Lock()   # one connection, queried from the web app's thread pool: one query at a time
         self.symbols = {s["id"]: s for s in data["symbols"]}
@@ -71,7 +74,16 @@ class Index:
     @classmethod
     def load(cls, root: Path | None = None) -> "Index":
         root = find_repo_root(root)
-        return cls(json.loads((root / INDEX_PATH).read_text(encoding="utf-8")), root)
+        try:
+            data = json.loads((root / INDEX_PATH).read_text(encoding="utf-8"))
+        except ValueError as e:
+            raise FileNotFoundError(f"{INDEX_PATH} is not readable ({e}); rebuild it with `devmem-app index <repo>`") from None
+        if not isinstance(data, dict) or "symbols" not in data or "edges" not in data:
+            raise FileNotFoundError(f"{INDEX_PATH} is not a devmem index; rebuild it with `devmem-app index <repo>`")
+        if int(data.get("version") or 1) > INDEX_VERSION:
+            raise FileNotFoundError(f"{INDEX_PATH} was written by a newer devmem (format {data.get('version')}, this CLI reads up to {INDEX_VERSION}); "
+                                    "update the devmem CLI before using it")
+        return cls(data, root)
 
     _loaded: dict[str, tuple[tuple, "Index"]] = {}
 
@@ -124,9 +136,56 @@ class Index:
             substr = self._fts.execute("SELECT id FROM qual WHERE instr(q, ?) > 0 LIMIT ?", (query.lower(), cap)).fetchall()
         return list(dict.fromkeys(r[0] for r in ranked + substr))
 
-    def source(self, s: dict) -> str:
+    # ---- freshness: the index stores line numbers, and files move on after it was built ----
+    def file_state(self, path: str) -> str:
+        """'fresh' (same bytes as when indexed), 'changed', or 'missing'. Checked against the content hash the indexer stored;
+        cached per file on its size and mtime, so repeated questions do not re-hash."""
+        fp = self.root / path
+        try:
+            st = fp.stat()
+        except OSError:
+            return "missing"
+        key = (st.st_mtime_ns, st.st_size)
+        hit = self._states.get(path)
+        if hit and hit[0] == key:
+            return hit[1]
+        want = (self.data["files"].get(path) or {}).get("hash")
+        try:
+            state = "fresh" if not want or hashlib.sha1(fp.read_bytes()).hexdigest() == want else "changed"
+        except OSError:
+            state = "missing"
+        self._states[path] = (key, state)
+        return state
+
+    def changed_files(self, paths) -> list[str]:
+        """Of the given files, the ones edited or deleted since the index was built, in a stable order."""
+        return [p for p in dict.fromkeys(paths) if p in self.data["files"] and self.file_state(p) != "fresh"]
+
+    def read(self, s: dict) -> tuple[str, int, int, str]:
+        """(source, first line, last line, note) of a symbol as it is in the file NOW. When the file changed since indexing
+        the symbol is found again rather than read from stale line numbers; the note says so. Raises LookupError when it
+        cannot be found: printing the wrong lines would be worse than printing none."""
+        state = self.file_state(s["file"])
+        if state == "missing":
+            raise LookupError(f"{s['file']} no longer exists (the index is older than the code): re-index the repo")
         lines = (self.root / s["file"]).read_text(encoding="utf-8", errors="replace").splitlines()
-        return "\n".join(lines[s["line"] - 1 : s["end_line"]])
+        start, end = s["line"], s.get("end_line", s["line"])
+        if state == "fresh":
+            return "\n".join(lines[start - 1: end]), start, end, ""
+        found = _relocate(s, lines)
+        if not found:
+            raise LookupError(f"{s['qualname']} is no longer in {s['file']} (the file changed since it was indexed; it may have been renamed "
+                              f"or removed): re-index the repo, or `devmem outline {s['file']}` shows what the index knew")
+        start, end, exact = found
+        note = (f"{s['file']} changed since it was indexed: `{s['qualname']}` is now at lines {start}-{end}"
+                + ("" if exact else " (found by its name; the end line is an estimate)") + ". Callers and tests listed for it may be out of date.")
+        return "\n".join(lines[start - 1: end]), start, end, note
+
+    def source(self, s: dict) -> str:
+        try:
+            return self.read(s)[0]
+        except LookupError as e:
+            raise OSError(str(e)) from None
 
     def callees(self, s: dict) -> list[dict]:
         seen, out = set(), []
@@ -250,6 +309,53 @@ class Index:
                 out.append((s, len(files)))
         out.sort(key=lambda x: (-x[1], x[0]["id"]))
         return out[:limit]
+
+
+_DEF = re.compile(r"\b(def|class|function|func|fn|fun|interface|struct|enum|trait|impl|const|let|var|public|private|protected|static|async|export)\b")
+
+
+def _relocate(s: dict, lines: list[str]) -> tuple[int, int, bool] | None:
+    """Where a symbol is in the current text of its file: (first line, last line, exact?). Python is re-parsed, so the answer
+    is exact. Other languages: the definition line nearest to where it used to be, and the block that follows it."""
+    name, qual = s["name"], s["qualname"]
+    if s["file"].endswith(".py"):
+        try:
+            tree = ast.parse("\n".join(lines))
+        except SyntaxError:
+            tree = None
+        if tree is not None:
+            def walk(body, prefix):
+                for n in body:
+                    if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                        q = f"{prefix}{n.name}"
+                        if q == qual:
+                            return n
+                        if isinstance(n, ast.ClassDef):
+                            hit = walk(n.body, q + ".")
+                            if hit is not None:
+                                return hit
+                return None
+            node = walk(tree.body, "")
+            return (node.lineno, getattr(node, "end_lineno", node.lineno), True) if node is not None else None
+    pat = re.compile(rf"(?<![\w$]){re.escape(name)}(?![\w$])\s*(\(|=|:|<|\{{|$)")
+    cands = [i for i, ln in enumerate(lines, 1) if pat.search(ln) and (_DEF.search(ln) or re.match(rf"\s*{re.escape(name)}\s*\(", ln)) and not ln.lstrip().startswith(("//", "#", "*", "/*"))]
+    if not cands:
+        return None
+    start = min(cands, key=lambda i: abs(i - s["line"]))
+    length = max(s.get("end_line", s["line"]) - s["line"], 0)
+    depth, seen_open, end = 0, False, None
+    for i in range(start, min(len(lines), start + max(length * 3, 400)) + 1):
+        for ch in lines[i - 1]:
+            if ch == "{":
+                depth += 1; seen_open = True
+            elif ch == "}":
+                depth -= 1
+        if seen_open and depth <= 0:
+            end = i
+            break
+        if not seen_open and i - start > 3:
+            break
+    return start, end or min(len(lines), start + length), False
 
 
 _SUFFIX = ("ators", "ations", "ator", "ation", "ating", "ated", "ate", "ings", "ing", "ers", "er", "ed", "es", "ion", "s")

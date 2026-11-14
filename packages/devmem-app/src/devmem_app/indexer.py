@@ -16,7 +16,7 @@ from pathlib import Path
 
 from devmem.ignore import Ignore
 from devmem.index import Index, write_db
-from devmem.schema import INDEX_PATH, new_index
+from devmem.schema import atomic_write, INDEX_PATH, new_index
 
 from . import graph, jsparse, treeparse
 from . import graphify as graphify_mod
@@ -329,6 +329,16 @@ def parse_sql_file(src: str) -> dict:
 # ---------- driver ----------
 def index_repo(root: str | Path, name: str | None = None, write: bool = True, scip: bool | list | None = None,
                graphify: bool | Path | str | None = None, accuracy: str | None = None) -> dict:
+    """Index under a per-repo lock, so two indexing runs (watcher, UI, CLI) never interleave their writes."""
+    if not write:
+        return _index_repo(root, name, write, scip, graphify, accuracy)
+    from .paths import repo_lock
+    with repo_lock(Path(root).resolve()):
+        return _index_repo(root, name, write, scip, graphify, accuracy)
+
+
+def _index_repo(root: str | Path, name: str | None = None, write: bool = True, scip: bool | list | None = None,
+                graphify: bool | Path | str | None = None, accuracy: str | None = None) -> dict:
     """Accuracy is not optional. By default (accuracy "strict", or DEVMEM_ACCURACY unset) SCIP type-resolved edges and the Graphify
     cross-check run whenever files they have not seen changed (cached per file hash, so unchanged repos re-index instantly), and
     a missing/failed tool or parser raises AccuracyError. accuracy="fast" skips them and records that in stats.
@@ -427,6 +437,6 @@ def index_repo(root: str | Path, name: str | None = None, write: bool = True, sc
     idx["stats"] = stats
     if write:
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(idx, indent=1, sort_keys=True), encoding="utf-8")
+        atomic_write(p, json.dumps(idx, indent=1, sort_keys=True))    # readers never see a half-written index
         write_db(Index(idx, root))
     return idx

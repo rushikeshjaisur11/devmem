@@ -15,6 +15,7 @@ from pathlib import Path
 
 from devmem.index import Index, write_db
 from devmem.schema import DESC_PATH
+from devmem.schema import atomic_write
 
 # names that say what kind of thing happens but not what it is done to
 GENERIC = {"get", "set", "run", "do", "go", "main", "handle", "handler", "process", "execute", "exec", "call", "apply", "invoke",
@@ -50,7 +51,7 @@ def save(ix: Index, entries: dict) -> None:
     """Write the file (sorted, so diffs stay small) and refresh the search cache so the new text is searchable at once."""
     p = Path(ix.root) / DESC_PATH
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(entries, indent=1, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
+    atomic_write(p, json.dumps(entries, indent=1, sort_keys=True, ensure_ascii=False) + "\n")
     ix.desc = {sid: d["text"] for sid, d in entries.items() if sid in ix.symbols and d.get("text")}
     try:
         write_db(ix)
