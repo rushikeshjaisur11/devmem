@@ -12,7 +12,7 @@ export default function Chat() {
   const status = useAsync(() => api.get("/api/chat/status"), []);
   const [text, setText] = useState("");
   const [llm, setLlm] = useState(false);
-  const [code, setCode] = useState(false);
+  const [code, setCode] = useState(true);
   const [scope, setScope] = useState<string[]>([]);
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [copied, setCopied] = useState(-1);
@@ -60,7 +60,7 @@ export default function Chat() {
           <summary className="muted" style={{ cursor: "pointer", fontSize: 12.5 }}>Options</summary>
           <div className="row" style={{ marginTop: 8, gap: 18 }}>
             <label className="row"><input type="checkbox" checked={llm} disabled={!status.data?.configured} onChange={(e) => setLlm(e.target.checked)} />Write answers with {status.data?.model || "an LLM"}{!status.data?.configured && <span className="muted"> (<a href="#/ai">set up AI</a> to enable; optional)</span>}</label>
-            <label className="row"><input type="checkbox" checked={code} onChange={(e) => setCode(e.target.checked)} />Include source of existing code in agent prompts</label>
+            <label className="row"><input type="checkbox" checked={code} onChange={(e) => setCode(e.target.checked)} />Step-by-step prompts for a small agent: include the code to start from, its callers and the existing solutions (untick for a shorter prompt, for an agent that explores well on its own)</label>
           </div>
           <div className="row" style={{ marginTop: 8 }}>
             <span className="muted">Limit to repos:</span>

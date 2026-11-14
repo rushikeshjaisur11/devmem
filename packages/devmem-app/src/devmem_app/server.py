@@ -532,6 +532,21 @@ def create_app() -> FastAPI:
         return {"issues": len(d["issues"]), "hotspots": len(d["hotspots"]), "total": d["total_issues"], "matched": d["matched"],
                 "truncated": d["truncated"], "notes": d["notes"], "gate": d.get("gate")}
 
+    class PromptReq(BaseModel):
+        kind: str
+        data: dict = {}
+
+    @app.post("/api/repos/{name}/prompt")
+    def make_prompt(name: str, body: PromptReq):
+        """A self-contained prompt for a coding agent (see prompts.py). Text only: devmem does not run it."""
+        from . import prompts
+        if body.kind not in prompts.KINDS:
+            raise HTTPException(400, "kind must be one of: " + ", ".join(prompts.KINDS))
+        try:
+            return prompts.build(ix_of(name), body.kind, body.data)
+        except KeyError as e:
+            raise HTTPException(400, f"missing or unknown {e}")
+
     # ---------- AI analysis: the optional first pass that writes descriptions, module summaries and an overview ----------
     from . import analysis as an_mod
     jobs: dict[str, an_mod.Job] = {}
@@ -661,9 +676,50 @@ def create_app() -> FastAPI:
         from . import docs as dm
         return dm.list_libs()
 
+    @app.post("/api/docs/upload")
+    async def docs_upload(request: Request, name: str = "", filename: str = ""):
+        """Add documentation from an uploaded .zip / .tar.gz, or a folder the browser packed (Markdown, text, HTML files)."""
+        from . import docs as dm
+        try:
+            lib = uploads.repo_name(name, filename)
+        except uploads.UploadError as e:
+            raise HTTPException(400, str(e))
+        limit = uploads.max_upload_bytes()
+        work = Path(tempfile.mkdtemp(prefix="devmem-docs-"))
+        try:
+            size = 0
+            with open(work / "upload.bin", "wb") as out:
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > limit:
+                        raise HTTPException(413, f"upload is larger than {limit // (1024 * 1024)} MB")
+                    out.write(chunk)
+            if not size:
+                raise HTTPException(400, "empty upload")
+
+            def unpack_and_add():
+                uploads.extract(work / "upload.bin", work / lib)
+                m = dm.add(str(work / lib), lib)
+                mf = dm.docs_dir() / m["name"] / "manifest.json"     # the unpacked folder is temporary: record where it came from
+                man = json.loads(mf.read_text(encoding="utf-8"))
+                man.update({"source": f"uploaded: {filename or lib}", "kind": "upload"})
+                mf.write_text(json.dumps(man, indent=1), encoding="utf-8")
+                return m
+            try:
+                m = await run_in_threadpool(unpack_and_add)
+            except uploads.UploadError as e:
+                raise HTTPException(400, str(e))
+            except Exception as e:
+                raise HTTPException(422, f"could not read these docs: {e}")
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        return {"name": m["name"], "version": m["version"], "pages": len(m["pages"]), "bytes": m["bytes"]}
+
     @app.post("/api/docs")
     def docs_add(body: DocAdd):
         from . import docs as dm
+        if not re.match(r"^(https?|pypi|npm):", body.spec.strip()) and not paths_allowed():
+            raise HTTPException(403, "this server does not read paths on its own disk: upload the docs folder or a zip")
         try:
             m = dm.add(body.spec.strip(), body.name or None, body.follow)
         except Exception as e:

@@ -16,15 +16,29 @@ from devmem.index import Index
 from . import docs as docs_mod
 from .reuse import _entry, _internal_names, _peers, build_entries, rank
 
-RULES = """## How to work
-- This prompt is final. Where sources disagree, follow: the task/plan > the current library docs below > existing org code > your own preferences.
-- Smallest possible diff. Reuse what already exists. Do not redesign, rename, swap libraries, add dependencies or add scope unless the task says so.
-- Use the library APIs shown in the docs below (they are the current versions). Older code in the repos may predate what the libraries offer now.
-- Do not edit protected paths. If something cannot be done as written, or the docs/code contradict the task: stop and report it; never guess an API.
-- If the `devmem` CLI is available: `devmem impact <symbol>` before editing a symbol, `devmem check` and `devmem diffcheck` before committing."""
+RULES = """## Rules
+- Follow, in this order: the task above > the current library docs below > existing org code > your own preferences.
+- Smallest possible diff. Reuse what already exists. No redesign, renames, library swaps, new dependencies or extra scope unless the task says so.
+- Use the library APIs shown in the docs below (they are the current versions). Older code in the repos may predate them.
+- Do not edit protected paths. If a step cannot be done as written, or the docs or code contradict the task: stop and report it. Never guess an API."""
 
-FINISH = """## When done
-Summarise per step: which docs and which existing code you used, anything that deviated from the task (there should be nothing), and what you verified."""
+HOW = """## How to work (do these in order)
+1. Read the task and the "What to use" section. Open only the files named there.
+2. Before editing an existing function, run `devmem impact <path#name>` and keep its callers working.
+3. Make the change. One step at a time if there are several steps.
+4. Run `devmem check` (lint and only the affected tests). Fix what fails; do not edit a test to make it pass.
+5. Run `devmem diffcheck`. If it blocks, make the change smaller.
+6. Write the report described at the end."""
+
+FINISH = """## Done when
+- [ ] Every step of the task is implemented, or named in the report with the reason it was not.
+- [ ] `devmem check` and `devmem diffcheck` pass.
+- [ ] No protected path and no unrelated file is changed.
+
+## Report back
+- Per step: what you changed (file and function), which docs and existing code you used.
+- The commands you ran and whether they passed.
+- Anything that deviated from the task. There should be nothing."""
 
 
 def _tokens(text: str) -> int:
@@ -43,7 +57,7 @@ def _step_findings(tix: Index, pool: list[dict], ixs: dict[str, Index], q: str, 
     local = [s for sc, s in tix.find(q[:200], 4) if sc >= 3 and not s["is_test"]]   # >= 3: a word of the task is in the symbol's name
     pats = notouch.patterns(tix.root)
     protected = sorted({p for p in re.findall(r"[\w./-]+\.\w{1,5}\b", q) if notouch.matches(p, pats)})
-    return {"docs": docs_hits, "org": org, "local": local, "protected": protected}
+    return {"docs": docs_hits, "org": org, "local": local, "protected": protected, "tix": tix}
 
 
 def _render_findings(f: dict, detail: str, doc_chars: int) -> list[str]:
@@ -59,7 +73,14 @@ def _render_findings(f: dict, detail: str, doc_chars: int) -> list[str]:
         out += [f"  - {m}" for m in h["fit"]["notes"][:3]]
         if detail == "code" and e.get("code"):
             out += ["  ```", *("  " + ln for ln in e["code"].splitlines()[:25]), "  ```"]
-    if f["local"]:
+    if f["local"] and detail == "code" and f.get("tix") is not None:
+        from .prompts import symbol_block
+        out.append("- Already in this repo. Start here: extend this code, do not write a second version of it.")
+        for s in f["local"][:2]:
+            out += ["  " + ln for ln in symbol_block(f["tix"], s, 40)]
+        if f["local"][2:]:
+            out.append("  Also related: " + "; ".join(f"{s['file']}:{s['line']} {s['qualname']}" for s in f["local"][2:]))
+    elif f["local"]:
         out.append("- Already in this repo (extend, do not duplicate): " + "; ".join(f"{s['file']}:{s['line']} {s['qualname']}" for s in f["local"]))
     if f["protected"]:
         out.append("- PROTECTED, do not edit: " + ", ".join(f["protected"]))
@@ -68,7 +89,8 @@ def _render_findings(f: dict, detail: str, doc_chars: int) -> list[str]:
 
 def build(target: str, repos: dict[str, str | Path], requirement: str = "", plan_text: str = "", detail: str = "pointers",
           fetch_docs: bool = True, provider=None) -> dict:
-    """detail: 'pointers' (locations + notes, smallest) or 'code' (also the source of the existing solutions)."""
+    """detail: 'pointers' (locations and notes: for an agent that explores well on its own) or 'code' (step by step for a small
+    agent: also the source of the code to start from, its callers and the existing solutions, so it need not look for them)."""
     root = Path(repos[target])
     tix = Index.load(root)
     fetched = []
@@ -94,7 +116,7 @@ def build(target: str, repos: dict[str, str | Path], requirement: str = "", plan
         ixs[pname] = ix
         pool += build_entries(ix, None, 0)
     doc_chars = 420 if detail == "pointers" else 700
-    lines = [f"# Task: {pl['title']}", f"Repository: `{target}`", "", RULES, ""]
+    lines = [f"# Task: {pl['title']}", f"Repository: `{target}`", "", HOW, "", RULES, ""]
     if pl["constraints"]:
         lines += ["## Constraints", *(f"- {c}" for c in pl["constraints"]), ""]
     steps_out = []

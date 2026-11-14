@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, q } from "../api";
-import { Badge, EditorLink, editorHref, Empty, Err, RepoSelect, SymbolSearch, Term, riskOf, splitId, useAsync, useRepos } from "../components";
+import { Badge, EditorLink, editorHref, Empty, Err, useRepo, SymbolSearch, Term, riskOf, splitId, useAsync, useRepos } from "../components";
 import { nav } from "../route";
 
 const List = ({ title, items, repo, hint, link }: { title: any; items: any[]; repo: string; hint?: string; link: (id: string) => string | undefined }) => (
@@ -15,7 +15,7 @@ const List = ({ title, items, repo, hint, link }: { title: any; items: any[]; re
 
 export default function Impact({ params }: { params: Record<string, string> }) {
   const repos = useRepos();
-  const [repo, setRepo] = useState(params.repo || "");
+  const { repo } = useRepo();
   const [target, setTarget] = useState(params.target || "");
   const [cross, setCross] = useState(false);
   const [res, setRes] = useState<any>(null);
@@ -40,7 +40,6 @@ export default function Impact({ params }: { params: Record<string, string> }) {
       <h1>What breaks if I change…</h1>
       <p className="sub">Use this before editing a function, table or column: it lists everything that depends on it and the tests that would catch a mistake.</p>
       <div className="row" style={{ marginBottom: 12 }}>
-        {repos.data && <RepoSelect value={repo} onChange={setRepo} repos={repos.data} />}
         {cross ? <input className="grow" placeholder="db.table.column" value={target} onChange={(e) => setTarget(e.target.value)} onKeyDown={(e) => e.key === "Enter" && run()} aria-label="Column" />
           : <SymbolSearch repo={repo} value={target} onChange={setTarget} onPick={(id) => { setTarget(id); run(id); }}
               placeholder="What will you change? Describe it (e.g. save settings) or type a name, table or table.column" />}

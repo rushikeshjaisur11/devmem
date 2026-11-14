@@ -80,12 +80,15 @@ FakePayments"*, scope it to `tests/**`, and choose *Only this repo* or *Every re
 when they touch matching files; `**` rules apply to every task. Hub rules reach repos on *Sync hub*. Lessons work the same way: agents
 save them with `devmem remember` in their PRs, you edit or promote them here.
 
-**4. Add the docs your code depends on.** In **Library docs**, add `https://<docs-site>/llms.txt`, `pypi:pydantic`, `npm:zod`, or a
-local folder such as `C:\docs\internal-api`. Publish the repo again. Agents can search them offline (`devmem docs "validate an email"`), and whenever they `show` code that
+**4. Add the docs your code depends on.** In **Library docs**, fetch `pypi:pydantic`, `npm:zod` or `https://<docs-site>/llms.txt`, or
+upload a folder or `.zip` of your own guides (Markdown, text, HTML); a local folder such as `C:\docs\internal-api` also works. Publish the repo again. Agents can search them offline (`devmem docs "validate an email"`), and whenever they `show` code that
 imports one of these libraries, the matching section of the latest docs is listed with it.
 
 **5. Hand work to an agent.** In **Chat**, describe a change ("add retry with backoff to the export job") or paste a plan. You get a
-compact prompt with the code your org already has, current library docs and the paths not to touch. Paste it into the agent.
+prompt with the code your org already has, current library docs and the paths not to touch. Paste it into the agent. Every prompt
+devmem writes (here, and the fix, test and merge prompts on Code health) has the same shape, so a small model can follow it without
+exploring: the task in one sentence, the exact code with line numbers and its callers, numbered steps with the commands to run, short
+rules, a done-when checklist and what to report. Untick *Step-by-step prompts* in Chat for a shorter version for a stronger agent.
 
 **See how it all connects.** **Code map** draws every file (or every function and class) of every repo as one force-directed
 graph, like Obsidian's graph view: bigger dots have more links, names fade in as you zoom, hovering lights up a node's connections,

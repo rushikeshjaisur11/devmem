@@ -166,7 +166,7 @@ def test_implement_builds_agent_prompt_for_a_requirement_and_writes_nothing(site
     r = build("py_app", repos, "retry failing calls and validate email addresses before sending")
     assert r["mode"] == "task" and r["counts"]["org_solutions"] >= 1 and r["counts"]["doc_excerpts"] >= 1
     p = r["prompt"]
-    assert "# Task:" in p and "This prompt is final" in p and "conv_app" in p and "validate_email" in p and "## When done" in p
+    assert "# Task:" in p and "## How to work (do these in order)" in p and "conv_app" in p and "validate_email" in p and "## Done when" in p
     assert "```" not in p                                              # pointers mode: no source
     assert r["tokens"] < 1200
     assert "```" in build("py_app", repos, "retry failing calls", detail="code")["prompt"]

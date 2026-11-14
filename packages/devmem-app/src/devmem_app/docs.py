@@ -270,6 +270,9 @@ def refresh(names: list[str] | None = None) -> dict:
             continue
         old = lib["version"] or lib["fetched"]
         man = json.loads((docs_dir() / lib["name"] / "manifest.json").read_text(encoding="utf-8"))
+        if man.get("kind") == "upload":
+            res[lib["name"]] = "uploaded: upload it again to update"
+            continue
         try:
             new = add(man["source"], lib["name"], man.get("follow", True), man.get("max_pages", 40))
             res[lib["name"]] = f"{old} -> {new['version'] or new['fetched']} ({len(new['pages'])} pages)"

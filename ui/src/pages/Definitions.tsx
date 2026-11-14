@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, q } from "../api";
 import { nav } from "../route";
-import { Badge, Empty, EditorLink, editorHref, Err, Icon, RepoSelect, useAsync, useRepos } from "../components";
+import { Badge, Empty, EditorLink, editorHref, Err, Icon, useRepo, useAsync, useRepos } from "../components";
 
 const LEVEL: Record<string, [string, string]> = { low: ["bad", "low"], medium: ["warn", "medium"], high: ["good", "good"] };
 
@@ -43,7 +43,7 @@ function Row({ repo, it, repos, checked, onCheck, onSaved }: { repo: string; it:
 
 export default function Definitions({ params }: { params: Record<string, string> }) {
   const repos = useRepos();
-  const [repo, setRepo] = useState(params.repo || "");
+  const { repo } = useRepo();
   const [level, setLevel] = useState("low");
   const [filter, setFilter] = useState("");
   const [sel, setSel] = useState<Set<string>>(new Set());
@@ -74,7 +74,7 @@ export default function Definitions({ params }: { params: Record<string, string>
 
   return (
     <>
-      <div className="row"><h1>Improve descriptions</h1>{repos.data && <RepoSelect value={repo} onChange={setRepo} repos={repos.data} />}</div>
+      <div className="row"><h1>Improve descriptions</h1></div>
       <p className="sub">devmem builds its index without AI, so code with a vague name and no docstring can only be found by that name. This page lists the definitions it is least sure about, the most used first. Write one sentence for each, or let a model draft them and correct what is off. Descriptions are saved in <code>.devmem/descriptions.json</code> and searched like docstrings by agents. To draft them all in one go, with module summaries and an overview, use <a href={`#/analysis${repo ? `?repo=${repo}` : ""}`}>AI analysis</a>.</p>
       <Err msg={repos.error || d.error || err} />
       {msg && <div className="ok">{msg}</div>}

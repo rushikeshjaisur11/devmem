@@ -144,3 +144,79 @@ def test_mcp_tool_list_stays_small():
     tools = [{"name": n, **t[0]} for n, t in mcp.TOOLS.items()]
     assert list(mcp.TOOLS)[0] == "devmem_context"                                 # the first tool an agent reads is the one to start with
     assert len(json.dumps(tools)) // 4 <= 1050                                    # paid on every session, before any work
+
+
+# ---------- prompts a small agent can follow ----------
+def test_prompts_are_self_contained_and_have_the_same_shape(tmp_path):
+    from devmem import memory
+    from devmem_app import prompts
+    root = _repo(tmp_path)
+    memory.write_rule(root, "retry-cap", "Retries must be capped at 5 attempts", "app/retry.py")
+    ix = Index.load(root)
+    sections = ["# Task", "## Where (everything you need is here)", "## Steps (do them in this order)", "## Rules", "## Done when", "## Report back"]
+
+    f = {"source": "sonar", "code": "python:S5754", "msg": "Specify an exception class", "severity": "high", "path": "app/retry.py", "line": 9,
+         "url": "http://sq/project/issues?id=p&open=k"}
+    p = prompts.build(ix, "finding", f)
+    text = p["prompt"]
+    assert [text.index(s) for s in sections] == sorted(text.index(s) for s in sections) and p["tokens"] == len(text) // 4
+    assert "Fix one finding from SonarQube in `app/retry.py` at line 9" in text and "`def retry(fn, attempts=3, delay=0.1)`" in text
+    assert "Called by: app/client.py: ApiClient.get; app/service.py: load_user. These must keep working." in text
+    assert "    9  " in text and "def retry(" in text                                    # the code itself, with line numbers
+    assert "`python -m pytest -q tests/test_service.py::test_load_user`" in text         # the exact command to run
+    assert "Repo rule: Retries must be capped at 5 attempts" in text and "http://sq/project/issues" in text
+    assert "1. Read the code above and find line 9." in text and "- [ ] `devmem diffcheck` passes." in text
+
+    many = [{"path": "app/client.py", "line": n, "msg": f"problem {n}", "code": "E1", "severity": sev, "symbol": "ApiClient.get"} for n, sev in ((9, "low"), (4, "high"))]
+    text = prompts.build(ix, "file", {"path": "app/client.py", "findings": many})["prompt"]
+    assert text.index("line 4: problem 4") < text.index("line 9: problem 9") and "Fix the 2 code health findings" in text   # most severe first
+    assert "other file" in text and "Do not change any function's name" in text
+
+    text = prompts.build(ix, "test", {"id": "app/retry.py#retry"})["prompt"]
+    assert "Write tests for `retry` in `app/retry.py`. 2 places call it" in text and "Put the tests in `tests/test_service.py`" in text
+    assert "No production code is changed." in text
+
+    text = prompts.build(ix, "duplicate", {"a": "app/client.py", "a_lines": [5, 8], "b": "app/service.py", "b_lines": [6, 9], "tokens": 40})["prompt"]
+    assert "The same code exists twice" in text and "each difference becomes a parameter" in text and all(s in text for s in sections)
+
+
+def test_task_prompt_for_a_small_agent_includes_the_code_to_start_from(tmp_path, monkeypatch):
+    from devmem_app.implement import build
+    monkeypatch.setenv("DEVMEM_HOME", str(tmp_path / "home"))
+    root = _repo(tmp_path)
+    guided = build("py_app", {"py_app": root}, "Make retry wait longer between attempts", detail="code", fetch_docs=False)["prompt"]
+    short = build("py_app", {"py_app": root}, "Make retry wait longer between attempts", detail="pointers", fetch_docs=False)["prompt"]
+    for text in (guided, short):
+        assert text.index("## How to work (do these in order)") < text.index("## Rules") < text.index("## Task") < text.index("## Done when") < text.index("## Report back")
+        assert "4. Run `devmem check`" in text and "- [ ] `devmem check` and `devmem diffcheck` pass." in text
+    assert "Start here: extend this code" in guided and "def retry(fn, attempts=3, delay=0.1):" in guided and "Called by: app/client.py: ApiClient.get" in guided
+    assert "def retry(fn, attempts=3, delay=0.1):" not in short and "app/retry.py:5 retry" in short and len(short) < len(guided)
+
+
+def test_prompt_and_docs_upload_endpoints(tmp_path, monkeypatch):
+    import io
+    import zipfile
+    from fastapi.testclient import TestClient
+    from devmem_app.server import create_app
+    monkeypatch.setenv("DEVMEM_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("DEVMEM_TOKEN", raising=False)
+    root = _repo(tmp_path)
+    api, H = TestClient(create_app()), {"X-Devmem": "1"}
+    assert api.post("/api/repos", json={"path": str(root)}, headers=H).status_code == 200
+    r = api.post("/api/repos/py_app/prompt", json={"kind": "test", "data": {"id": "app/retry.py#retry"}}, headers=H)
+    assert r.status_code == 200 and r.json()["prompt"].startswith("# Task\nWrite tests for `retry`") and r.json()["tokens"] > 100
+    assert api.post("/api/repos/py_app/prompt", json={"kind": "nope"}, headers=H).status_code == 400
+    assert api.post("/api/repos/py_app/prompt", json={"kind": "test", "data": {"id": "ghost"}}, headers=H).status_code == 400
+
+    b = io.BytesIO()
+    with zipfile.ZipFile(b, "w") as z:
+        z.writestr("guide/payments.md", "# Payments API\n\n## Refunds\nCall refund(charge_id, amount) to refund a charge. Amount is in cents.\n")
+        z.writestr("guide/.git/config", "x")
+    r = api.post("/api/docs/upload?filename=internal-guide.zip", content=b.getvalue(), headers=H)
+    assert r.status_code == 200 and r.json()["name"] == "internal-guide" and r.json()["pages"] == 1
+    lib = api.get("/api/docs").json()[0]
+    assert (lib["name"], lib["kind"], lib["source"]) == ("internal-guide", "upload", "uploaded: internal-guide.zip")
+    assert api.post("/api/docs/refresh", headers=H).json() == {"internal-guide": "uploaded: upload it again to update"}
+    assert api.post("/api/docs/upload?name=x", content=b"not a zip", headers=H).status_code == 400
+    monkeypatch.setenv("DEVMEM_TOKEN", "t")                                        # a deployed server does not read docs from its own disk
+    assert api.post("/api/docs", json={"spec": "/etc"}, headers={**H, "Authorization": "Bearer t"}).status_code == 403
