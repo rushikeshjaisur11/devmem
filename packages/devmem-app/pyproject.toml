@@ -18,7 +18,7 @@ dependencies = [
 devmem = { workspace = true }
 
 [project.optional-dependencies]
-test = ["httpx", "pytest"]
+test = ["httpx", "pytest", "coverage", "pytest-cov"]   # coverage: the importer is tested against real coverage.py output
 embed = ["model2vec"]   # offline meaning-based ranking in Chat (DEVMEM_LOCAL_EMBED=1)
 
 [project.scripts]

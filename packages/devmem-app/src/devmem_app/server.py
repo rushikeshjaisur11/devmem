@@ -583,6 +583,35 @@ def create_app() -> FastAPI:
             raise HTTPException(409, "no AI model is set up: open AI setup. The scan itself does not need one.")
         return mz.verify_with_ai(ix_of(name), body.keys, prov)
 
+    @app.post("/api/repos/{name}/coverage")
+    async def coverage_upload(name: str, request: Request, filename: str = "coverage"):
+        """Import a coverage report (coverage.py JSON, Cobertura or JaCoCo XML, lcov) uploaded as the request body."""
+        from . import coverage_import as ci
+        raw = await request.body()
+        if not raw:
+            raise HTTPException(400, "empty upload")
+        if len(raw) > uploads.max_upload_bytes():
+            raise HTTPException(413, "report too large")
+        tmp = Path(tempfile.mkdtemp(prefix="devmem-cov-")) / (re.sub(r"[^\w.-]", "_", filename) or "coverage")
+        try:
+            tmp.write_bytes(raw)
+            d = await run_in_threadpool(ci.import_file, ix_of(name), tmp)
+        except ci.CoverageError as e:
+            raise HTTPException(400, str(e))
+        finally:
+            shutil.rmtree(tmp.parent, ignore_errors=True)
+        cache.pop(name, None)
+        return {k: d[k] for k in ("format", "per_test", "stats", "ts")}
+
+    @app.get("/api/repos/{name}/coverage")
+    def coverage_status(name: str):
+        p = root_of(name) / ".devmem/coverage.json"
+        try:
+            d = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {"available": False}
+        return {"available": True, **{k: d.get(k) for k in ("format", "per_test", "stats", "ts", "source")}}
+
     class PromptReq(BaseModel):
         kind: str
         data: dict = {}

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { api } from "../api";
+import { api, upload } from "../api";
 import { nav } from "../route";
 import { Badge, CopyPrompt, EditorLink, Empty, Err, Icon, LineChart, useRepo, Term, editorHref, useAsync, useRepos } from "../components";
 
@@ -45,6 +45,17 @@ export default function Hygiene({ params }: { params: Record<string, string> }) 
   const [err, setErr] = useState("");
   const [msg, setMsg] = useState("");
   const h = useAsync<any>(() => (repo ? api.get(`/api/repos/${repo}/health`) : Promise.resolve(null)), [repo]);
+  const cov = useAsync<any>(() => (repo ? api.get(`/api/repos/${repo}/coverage`) : Promise.resolve(null)), [repo]);
+  const sendCoverage = async (f: File) => {
+    setBusy("cov"); setErr(""); setMsg("");
+    try {
+      const r = await upload(`/api/repos/${repo}/coverage?filename=${encodeURIComponent(f.name)}`, f, () => {});
+      setMsg(`${r.format} report imported: ${r.stats.covered} of ${r.stats.functions} functions ran in tests` + (r.per_test ? `; per-test data for ${r.stats.with_tests}, so test selection is now measured.` : ". It has no per-test data, so test selection still uses the call graph.")
+        + (r.stats.newer_than_report ? ` ${r.stats.newer_than_report} file(s) changed after the run and were skipped.` : ""));
+      cov.reload(); h.reload();
+    } catch (e: any) { setErr(e.message); }
+    setBusy("");
+  };
   const d = h.data;
   useEffect(() => { setSev(""); setCat(""); setSrc(""); setText(""); setMsg(""); setErr(""); setView("first"); }, [repo]);
   useEffect(() => setShown(PAGE), [sev, cat, src, text, view, repo]);
@@ -207,6 +218,20 @@ export default function Hygiene({ params }: { params: Record<string, string> }) 
         </div>
       )}
 
+      {view === "sources" && (
+        <div className="card">
+          <div className="row" style={{ marginBottom: 10 }}>
+            <h3 style={{ margin: 0 }}>Measured test coverage</h3>
+            {cov.data?.available ? <Badge kind={cov.data.per_test ? "good" : "warn"}>{cov.data.per_test ? "per-test data" : "lines only"}</Badge> : <Badge>not imported</Badge>}
+            <span className="grow" />
+            <label className="btn-file"><input type="file" hidden accept=".json,.xml,.info,.lcov" disabled={!!busy} onChange={(e) => { const f = e.target.files?.[0]; if (f) sendCoverage(f); e.target.value = ""; }} /><span className="btnlike"><Icon name="upload" />{busy === "cov" ? "Importing…" : "Import a coverage report"}</span></label>
+          </div>
+          {cov.data?.available
+            ? <p className="hint" style={{ margin: 0 }}>{cov.data.format} report <code>{cov.data.source}</code> from {String(cov.data.ts).slice(0, 16).replace("T", " ")}: {cov.data.stats.covered} of {cov.data.stats.functions} functions ran in tests.
+                {cov.data.per_test ? " Test selection (`devmem tests-for`) and “untested” use it, including tests that reach code through fixtures." : " Without per-test data, “untested” uses it but test selection still uses the call graph."}</p>
+            : <p className="hint" style={{ margin: 0 }}>Test selection is inferred from calls, so tests that reach code through fixtures or helpers can be missed. Import what your test run already produces: coverage.py JSON (<code>pytest --cov --cov-context=test</code> then <code>coverage json --show-contexts</code>), lcov, Cobertura or JaCoCo XML. A report left in the repo (<code>coverage.json</code>, <code>lcov.info</code>, <code>jacoco.xml</code>) is picked up on every re-index.</p>}
+        </div>
+      )}
       {view === "sources" && (
         <div className="hy-split">
           <div className="card">

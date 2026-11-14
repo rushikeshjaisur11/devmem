@@ -494,4 +494,10 @@ def _index_repo(root: str | Path, name: str | None = None, write: bool = True, s
         p.parent.mkdir(parents=True, exist_ok=True)
         atomic_write(p, json.dumps(idx, indent=1, sort_keys=True))    # readers never see a half-written index
         write_db(Index(idx, root))
+        try:   # a coverage report the repo's own test run left behind (coverage.json, lcov.info, jacoco.xml ...): use it
+            from . import coverage_import
+            coverage_import.auto_import(Index(idx, root))
+        except Exception as e:
+            from .paths import diagnose
+            diagnose("coverage", f"coverage report could not be imported: {e}", name or root.name)
     return idx

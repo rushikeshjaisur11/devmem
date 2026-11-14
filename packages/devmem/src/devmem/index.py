@@ -56,6 +56,14 @@ class Index:
                     self.desc[sid] = d["text"]
         except (OSError, ValueError, AttributeError):
             pass
+        # measured coverage (devmem_app/coverage_import.py): {symbol id: [covered lines, body lines]} and {symbol id: [test ids]}
+        self.coverage: dict = {}
+        try:
+            cov = json.loads((Path(root) / ".devmem/coverage.json").read_text(encoding="utf-8"))
+            if isinstance(cov, dict) and isinstance(cov.get("functions"), dict):
+                self.coverage = cov
+        except (OSError, ValueError):
+            pass
         self.out = defaultdict(list)  # src -> edges
         self.inc = defaultdict(list)  # dst -> edges
         for e in data["edges"]:
@@ -230,12 +238,16 @@ class Index:
                 item = {"id": e["src"], "conf": "by-name" if e["type"] == "refs" else e["conf"]}
                 res["hop1" if hop == 0 else "hop2"].append(item)
                 frontier.append((e["src"], hop + 1))
-        # tests that cover any affected symbol
+        # tests that cover any affected symbol: from the call graph, and from a measured test run when one was imported
+        measured = set()
         for sid in list(seen):
             for e in self.inc.get(sid, []):
                 if e["type"] == "tests":
                     tests.add(e["src"])
-        res["tests"] = sorted(tests)
+            measured.update((self.coverage.get("tests") or {}).get(sid, []))
+        res["tests"] = sorted(tests | measured)
+        res["tests_measured"] = sorted(measured - tests)
+        res["coverage"] = {t["id"]: (self.coverage.get("functions") or {}).get(t["id"]) for t in targets} if self.coverage else {}
         res["files"] = sorted({i.split("#")[0] for k in ("hop1", "hop2") for i in (x["id"] for x in res[k])}
                               | {s["file"] for s in targets})
         res["cochange"] = self._cochange_for(res["files"])
@@ -282,6 +294,16 @@ class Index:
     def _module_paths(self, module: str) -> list[str]:
         return module_files(self.data["files"], module)
 
+    def coverage_note(self, paths: list[str]) -> str:
+        """Where a test selection came from, so the agent knows how far to trust a passing run."""
+        cov = self.coverage
+        if cov and cov.get("per_test"):
+            older = [p for p in paths if p in (cov.get("hashes") or {}) and (cov["hashes"][p] != (self.data["files"].get(p) or {}).get("hash"))]
+            return (f"tests chosen from measured coverage ({cov.get('source')}, {cov.get('ts', '')[:10]})"
+                    + (f"; {', '.join(older[:3])} changed since that test run" if older else ""))
+        return ("tests chosen from the call graph: tests that reach this code through fixtures, helpers or a framework may be missing. "
+                "Run the full suite before merging" + ("" if cov else "; import a coverage report (`devmem-app coverage <repo> <file>`) to make this exact"))
+
     def tests_for_files(self, paths: list[str]) -> dict[str, list[str]]:
         """{test_file: [test qualnames]} covering the given changed files (direct + impact tests; import fallback)."""
         tests_by_file = {f: ts for f, syms in self.by_file.items() if (ts := [s for s in syms if s["is_test"]])}
@@ -293,6 +315,8 @@ class Index:
             found = False
             for s in self.by_file.get(path, []):
                 for t in self.impact(s["id"]).get("tests", []):
+                    if "#" not in t:
+                        continue
                     f, q = t.split("#", 1)
                     picked[f].add(q)
                     found = True

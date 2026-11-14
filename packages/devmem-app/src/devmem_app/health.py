@@ -70,7 +70,11 @@ class _Locator:
 
 
 def _tested(ix: Index) -> set[str]:
-    """Symbols some test reaches directly or through one caller (the same reach impact uses)."""
+    """Symbols some test reaches: measured by an imported coverage run when there is one, else directly or through one
+    caller in the call graph (the same reach impact uses)."""
+    measured = (ix.coverage or {}).get("functions") or {}
+    if measured:
+        return {sid for sid, (hit, _t) in measured.items() if hit}
     out = set()
     for sid, s in ix.symbols.items():
         if s.get("is_test"):

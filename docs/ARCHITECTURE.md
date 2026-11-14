@@ -37,7 +37,7 @@ with nothing changed 1.2 s (it was 78 s when every import scanned every file). `
 
 - `files`: `{path: {hash, lang, imports, tables, calls}}`
 - `symbols`: `{id: "path#qualname", name, qualname, kind, file, line, end_line, sig, doc, is_test}`
-- `edges`: `{src, dst, type: calls|tests|reads|writes, conf: precise|structural|ambiguous|co-change}`; table edges use `dst = "table:<name>"`.
+- `edges`: `{src, dst, type: calls|tests|refs|inherits|overrides|reads|writes, conf: precise|structural|ambiguous|co-change}` (`refs`: a function passed by name); table edges use `dst = "table:<name>"`.
 
 `Index` (`index.py`) loads the whole file into dicts (`symbols`, `out`, `inc`) and answers every query in memory.
 `Index.find` picks candidates with an FTS5 query (any shared token, or the query as a substring of the qualname), then scores only those by token overlap on name, doc and path.
@@ -84,6 +84,8 @@ Budgets in `knowledge.py`: `AGENTS.md` index 300 tokens, `map.md` 1,500, any oth
 - Code health: `devmem_app/hygiene.py` (built-in tools), `sonar.py` (SonarQube Web API, read-only -> `.devmem/sonar.json`), `health.py` (merges both, maps findings to symbols, ranks by severity x callers x tested)
 - Prompts for agents: `devmem_app/prompts.py` (fix / file / test / duplicate prompts in one fixed shape, with code, callers and the test command), `implement.py` (task and plan prompts)
 - Modernize: `devmem_app/modernize.py` (pattern catalog `RULES`, docs match, declared runtime versions and dependencies -> `.devmem/modernize.json`); add a rule there to teach it a new pattern
+- Freshness of answers: `Index.read` / `file_state` (devmem/index.py) re-locate symbols in files changed since indexing; `schema.atomic_write`, `paths.repo_lock`, `paths.diagnose`
+- Measured coverage: `devmem_app/coverage_import.py` -> `.devmem/coverage.json`, read by `Index` (impact, tests_for_files) and `review.gaps`
 - Server mode: `devmem_app/server.py` (token sign-in), `uploads.py` (safe unpacking), `settings.py` (AI settings); see `DEPLOY.md`
 - Freshness: `devmem_app/watch.py` (re-index when HEAD moves; runs inside `devmem-app ui`)
 - Web UI: `devmem_app/server.py` (API under `/api`), `ui/src` (React, built into `devmem_app/ui_dist`)

@@ -115,7 +115,10 @@ def cmd_impact(ix: Index, a) -> int:
     unsure = {i["id"]: ("passed by name" if i["conf"] == "by-name" else i["conf"]) for i in r["hop1"] if i["conf"] in ("ambiguous", "co-change", "by-name")}
     print("hop 1 (must check): " + grouped([i["id"] for i in r["hop1"]], cap, unsure))
     print("hop 2 (contract check): " + grouped([i["id"] for i in r["hop2"]], cap))
-    print("tests: " + grouped(r["tests"], cap))
+    print("tests: " + grouped(r["tests"], cap) + (f"  ({len(r['tests_measured'])} found only by measured coverage)" if r.get("tests_measured") else ""))
+    for sid, c in (r.get("coverage") or {}).items():
+        if c:
+            print(f"coverage of {sid.split('#')[-1]}: {c[0]} of {c[1]} body lines ran in the last measured test run" + (": NOT TESTED" if not c[0] else ""))
     for c in r["capped"]:
         print(f"capped: {c['symbol']} has {c['callers']} callers (widely used utility)")
     if r.get("overridden_by"):
@@ -218,11 +221,13 @@ def _changed_paths(a) -> list[str]:
 
 def cmd_tests_for(ix: Index, a) -> int:
     from .check import tests_for
-    ids, cmd = tests_for(ix, _changed_paths(a))
+    paths = _changed_paths(a)
+    ids, cmd = tests_for(ix, paths)
     if not ids:
         print("no mapped tests; run the full suite (see .devmem/knowledge/commands.md)")
         return 0
     print(cmd)
+    print("# " + ix.coverage_note(paths))     # a shell comment: harmless if the whole output is pasted into a terminal
     return 0
 
 

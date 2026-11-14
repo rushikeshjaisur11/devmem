@@ -138,6 +138,18 @@ releases API refuses, the project's changelog file is read instead. Each candida
 needs, and a library replacement says whether you already depend on it. The scan needs no AI and changes nothing; a model can
 optionally confirm or reject candidates, and each has a step-by-step replace prompt. Agents see the ready ones in `devmem hygiene <file>`.
 
+**Measured test coverage.** Test selection is inferred from calls, which misses tests that reach code through fixtures or helpers.
+Import what your test run already produces and `tests-for`, `impact` and "untested" use measured data instead:
+`devmem-app coverage <repo> coverage.json` (coverage.py JSON from `pytest --cov --cov-context=test` and `coverage json --show-contexts`;
+lcov, Cobertura and JaCoCo XML give line data without per-test detail), or upload it on Code health → Sources. A report left in the
+repo is picked up on every re-index; files edited after the test run are skipped rather than mapped onto moved lines. `tests-for`
+always says where its selection came from.
+
+**What devmem cannot see, it says.** Answers read code as the file is now: a file edited since indexing is re-parsed (or the
+definition searched for) and the answer notes it; renamed or deleted code is refused instead of printing the wrong lines. `impact`
+follows inheritance (overrides, callers through a base class) and functions passed by name, and prints a `BLIND SPOT` line when a
+decorator, an `__all__` export or the name used as text means a caller may be invisible.
+
 **6. Keep it fresh.** While `devmem-app ui` runs it re-indexes any repo whose HEAD moved (pull, merge, commit, branch switch); add
 `--publish` to republish too, or `--no-watch` to turn it off. Without the UI: `devmem-app watch` (or `watch --once` from cron or a git
 hook). Overview flags an index behind HEAD and any knowledge file over its token budget.

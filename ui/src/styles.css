@@ -686,3 +686,6 @@ pre.prompt.open { max-height: none; }
 .composer textarea { min-height: 56px; resize: none; border-radius: 10px; font-size: 14.5px; }
 .composer-foot { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; font-size: 13px; }
 @media (max-width: 900px) { .hide-sm { display: none; } .src-where { display: none; } }
+.btn-file { display: inline-flex; cursor: pointer; }
+.btnlike { display: inline-flex; align-items: center; gap: 7px; height: 34px; padding: 0 14px; border: 1px solid var(--line-2); border-radius: var(--radius); background: var(--surface); font-weight: 500; }
+.btn-file:hover .btnlike { background: var(--surface-2); border-color: var(--text-3); }
