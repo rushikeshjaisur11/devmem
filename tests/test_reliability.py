@@ -262,3 +262,37 @@ def test_impact_follows_inheritance_both_ways(tmp_path, capsys):
     edges = {(e["src"], e["dst"], e["type"]) for e in ix.data["edges"]}
     assert ("app/shapes.py#Square", "app/shapes.py#Shape", "inherits") in edges
     assert not any(t == "overrides" and "__init__" in s for s, _, t in edges)            # constructors are not overrides
+
+
+# ---------- AI-written descriptions: labelled, weighted lower, dropped when their code changes ----------
+def test_ai_descriptions_are_labelled_weighted_lower_and_dropped_when_stale(tmp_path, capsys):
+    from devmem_app import definitions
+    root = tmp_path / "r"
+    (root / "pkg").mkdir(parents=True)
+    (root / "pkg/a.py").write_text("def run(x):\n    return x\n\n\ndef go(y):\n    return y\n\n\ndef other(z):\n    return z\n")
+    indexer.index_repo(root, "r", accuracy="fast")
+    ix = Index.load(root)
+    definitions.set_description(ix, "pkg/a.py#run", "Settles the nightly ledger batch.", "ai")
+    definitions.set_description(ix, "pkg/a.py#go", "Settles the nightly ledger batch.", "human")
+    ix = Index.load(root)
+    hits = [s["id"] for _, s in ix.find("settle nightly ledger")]
+    assert hits[:2] == ["pkg/a.py#go", "pkg/a.py#run"]                                       # same words: the reviewed one ranks first
+    assert ix.described(ix.symbols["pkg/a.py#run"]) == "(AI-written, unreviewed) Settles the nightly ledger batch."
+    assert ix.described(ix.symbols["pkg/a.py#go"]) == "Settles the nightly ledger batch."
+    _, out = _run(capsys, root, "find", "settle nightly ledger")
+    assert "function run — (AI-written, unreviewed) Settles" in out and "function go — Settles" in out
+    assert "What it does: (AI-written, unreviewed)" in "\n".join(prompts.symbol_block(ix, ix.symbols["pkg/a.py#run"]))
+
+    definitions.set_description(ix, "pkg/a.py#run", "Settles the nightly ledger batch.", "human")  # a person approved it
+    assert "AI-written" not in Index.load(root).described(Index.load(root).symbols["pkg/a.py#run"])
+
+    f = root / "pkg/a.py"
+    f.write_text(f.read_text().replace("def other(z):\n    return z", "def other(z):\n    return z * 2"))   # same file, other function
+    ix = Index.load(root)
+    assert "pkg/a.py#run" in ix.desc and not ix.desc_stale                                    # unchanged code keeps its description
+    f.write_text(f.read_text().replace("def run(x):\n    return x", "def run(x):\n    return -x"))
+    ix = Index.load(root)
+    assert "pkg/a.py#run" in ix.desc_stale and "pkg/a.py#run" not in ix.desc                  # its code changed: may now be wrong
+    assert [s["id"] for _, s in ix.find("settle nightly ledger")] == ["pkg/a.py#go"]
+    indexer.index_repo(root, "r", accuracy="fast")                                            # also after a re-index (the search cache)
+    assert [s["id"] for _, s in Index.load(root).find("settle nightly ledger")] == ["pkg/a.py#go"]

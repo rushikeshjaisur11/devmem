@@ -43,7 +43,7 @@ def _test_cmd(ix: Index, files: list[str]) -> str | None:
 def symbol_block(ix: Index, s: dict, lines: int = BODY_LINES, mark: int | None = None) -> list[str]:
     """Everything about one symbol an agent needs in order to edit it without opening anything else."""
     out = [f"- `{s['file']}` lines {s['line']}-{s.get('end_line', s['line'])}: `{s.get('sig') or s['qualname']}`"]
-    said = s.get("doc") or ix.desc.get(s["id"], "")
+    said = ix.described(s)
     if said:
         out.append(f"  What it does: {said[:200]}")
     imp = ix.impact(s["id"])

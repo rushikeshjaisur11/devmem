@@ -34,7 +34,6 @@ def _stat(p: Path):
 class Index:
     def __init__(self, data: dict, root: Path):
         self.data, self.root = data, root
-        self._states: dict[str, tuple[tuple, str]] = {}
         self._fts: sqlite3.Connection | None = None
         self._fts_lock = threading.Lock()   # one connection, queried from the web app's thread pool: one query at a time
         self.symbols = {s["id"]: s for s in data["symbols"]}
@@ -48,14 +47,12 @@ class Index:
             except Exception:
                 pass
         # plain-language descriptions written on the Improve descriptions page (by a person or an LLM) for code whose name and
-        # docstring say too little; search treats them like a docstring
+        # docstring say too little; search treats them like a docstring (see load_descriptions for what is left out)
         self.desc: dict[str, str] = {}
-        try:
-            for sid, d in json.loads((Path(root) / DESC_PATH).read_text(encoding="utf-8")).items():
-                if sid in self.symbols and d.get("text"):
-                    self.desc[sid] = d["text"]
-        except (OSError, ValueError, AttributeError):
-            pass
+        self.desc_by: dict[str, str] = {}
+        self.desc_stale: set[str] = set()
+        self._states: dict[str, tuple[tuple, str]] = {}
+        self.load_descriptions()
         # measured coverage (devmem_app/coverage_import.py): {symbol id: [covered lines, body lines]} and {symbol id: [test ids]}
         self.coverage: dict = {}
         try:
@@ -124,7 +121,8 @@ class Index:
             return []
         cands = [s for s in map(self.symbols.get, self._candidates(q, query, limit)) if s]
         w = self.idf(q)
-        scored = [(sc, s) for s in cands if (sc := _score(q, query, s, self.desc.get(s["id"], ""), w)) > 0]
+        scored = [(sc, s) for s in cands
+                  if (sc := _score(q, query, s, self.desc.get(s["id"], ""), w, ai=self.desc_by.get(s["id"]) == "ai")) > 0]
         scored.sort(key=lambda x: (-x[0], x[1]["file"], x[1]["line"]))
         return scored[:limit]
 
@@ -152,6 +150,44 @@ class Index:
                 "SELECT id FROM sym WHERE sym MATCH ? ORDER BY bm25(sym, 0, 3, 1, 0.5) LIMIT ?", (match, cap)).fetchall()
             substr = self._fts.execute("SELECT id FROM qual WHERE instr(q, ?) > 0 LIMIT ?", (query.lower(), cap)).fetchall()
         return list(dict.fromkeys(r[0] for r in ranked + substr))
+
+    def load_descriptions(self) -> None:
+        """Read `.devmem/descriptions.json`. A description whose code changed since it was written is left out (it may now be
+        wrong); one written by a model and not yet approved by a person is kept but counts half in search and is labelled."""
+        self.desc, self.desc_by, self.desc_stale = {}, {}, set()
+        try:
+            entries = json.loads((Path(self.root) / DESC_PATH).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if not isinstance(entries, dict):
+            return
+        for sid, d in entries.items():
+            if sid not in self.symbols or not isinstance(d, dict) or not d.get("text"):
+                continue
+            s = self.symbols[sid]
+            want = d.get("code")
+            unchanged = d.get("fhash") == (self.data["files"].get(s["file"]) or {}).get("hash") and self.file_state(s["file"]) == "fresh"
+            if want and not unchanged:
+                try:   # the file changed since the description was written: check the function itself
+                    if hashlib.sha1(self.read(s)[0].encode("utf-8", "replace")).hexdigest()[:16] != want:
+                        self.desc_stale.add(sid)
+                        continue
+                except LookupError:
+                    self.desc_stale.add(sid)
+                    continue
+            self.desc[sid] = d["text"]
+            self.desc_by[sid] = d.get("by") or "human"
+
+    def described(self, s: dict, chars: int = 0) -> str:
+        """What a symbol is for, for an agent to read: its docstring, else its written description, labelled when a model wrote
+        it and no person has approved it yet."""
+        if s.get("doc"):
+            return s["doc"][:chars] if chars else s["doc"]
+        text = self.desc.get(s["id"], "")
+        if not text:
+            return ""
+        text = text[:chars] if chars else text
+        return f"(AI-written, unreviewed) {text}" if self.desc_by.get(s["id"]) == "ai" else text
 
     # ---- freshness: the index stores line numbers, and files move on after it was built ----
     def file_state(self, path: str) -> str:
@@ -443,16 +479,18 @@ def query_tokens(query: str) -> set[str]:
     return (q - STOP) or q
 
 
-def _score(q: set[str], query: str, s: dict, desc: str = "", w: dict[str, float] | None = None, name: set[str] | None = None) -> float:
-    """Each query word counts once, in the best place it appears (name 3, docstring or description 1, path 0.5), weighted by
-    how rare it is in the repo."""
+def _score(q: set[str], query: str, s: dict, desc: str = "", w: dict[str, float] | None = None, name: set[str] | None = None,
+           ai: bool = False) -> float:
+    """Each query word counts once, in the best place it appears (name 3, docstring or a person's description 1, an
+    unreviewed AI description 0.5, path 0.5), weighted by how rare it is in the repo."""
     name = _tokens(s["qualname"]) if name is None else name
-    said = _tokens(f"{s['doc']} {desc}")
+    doc = _tokens(s["doc"] or "")
+    said = _tokens(desc) if desc else set()
     path = _tokens(s["file"])
     w = w or {}
     score, hit = 0.0, 0
     for t in q:
-        f = 3.0 if t in name else 1.0 if t in said else 0.5 if t in path else 0.0
+        f = (3.0 if t in name else 1.0 if t in doc else (0.5 if ai else 1.0) if t in said else 0.5 if t in path else 0.0)
         if f:
             score += f * w.get(t, 1.0)
             hit += t in name

@@ -43,7 +43,7 @@ def build_docs(repo: str, root: Path, ix: Index) -> list[dict]:
         name_toks = f"{s['name']} {s['qualname']} " * 3
         docs.append({"repo": repo, "kind": "test" if s.get("is_test") else "symbol", "ref": s["id"], "path": s["file"],
                      "line": s["line"], "title": (s.get("sig") or s["qualname"]) if s["kind"] != "class" else f"class {s['qualname']}",
-                     "text": f"{name_toks} {s['file']} {s.get('sig') or ''} {s.get('doc') or ''} {ix.desc.get(s['id'], '')}"})
+                     "text": f"{name_toks} {s['file']} {s.get('sig') or ''} {s.get('doc') or ''} {ix.described(s) if not s.get('doc') else ''}"})
     for path, f in ix.data["files"].items():
         if f["lang"] == "other":
             continue

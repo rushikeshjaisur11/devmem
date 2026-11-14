@@ -58,8 +58,8 @@ def distinct(ix: Index, hits: list[tuple[float, dict]], limit: int) -> list[tupl
 
 
 def hit_line(ix: Index, s: dict, twins: list[dict], doc_chars: int = 100) -> str:
-    said = s.get("doc") or ix.desc.get(s["id"], "")
-    line = f"{s['file']}:{s['line']}  {s['kind']} {s['qualname']}" + (f" — {said[:doc_chars]}" if said else "")
+    said = ix.described(s, doc_chars)
+    line = f"{s['file']}:{s['line']}  {s['kind']} {s['qualname']}" + (f" — {said}" if said else "")
     if twins:
         line += f"  (+{len(twins)} same name: " + ", ".join(f"{t['file']}:{t['line']}" for t in twins[:3]) + (", …" if len(twins) > 3 else "") + ")"
     return line
@@ -117,7 +117,7 @@ def build(ix: Index, task: str, files: list[str] | None = None, budget: int = DE
         for s, tw in hits[:4]:
             callers = len({e["src"] for e in ix.inc.get(s["id"], []) if e["type"] == "calls"})
             tests = sum(1 for e in ix.inc.get(s["id"], []) if e["type"] == "tests")
-            said = s.get("doc") or ix.desc.get(s["id"], "")
+            said = ix.described(s)
             rows.append(f" {s['id']}:{s['line']}  {(s.get('sig') or s['qualname'])[:110]}  [{callers} callers, {tests} tests]"
                         + (f"\n   {said[:110]}" if said else "") + (f"\n   (+{len(tw)} same name in other files)" if tw else ""))
         add("CANDIDATES (several fit; none is clearly the one)\n" + "\n".join(rows), force=True)

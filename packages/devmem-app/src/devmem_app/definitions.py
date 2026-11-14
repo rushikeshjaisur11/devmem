@@ -39,6 +39,11 @@ def code_hash(ix: Index, s: dict) -> str:
         return ""
 
 
+def _fhash(ix: Index, s: dict) -> str:
+    """The file's hash in the index when the description was written: while it is unchanged, the description needs no re-check."""
+    return (ix.data["files"].get(s["file"]) or {}).get("hash") or ""
+
+
 def load(root: Path) -> dict:
     try:
         d = json.loads((Path(root) / DESC_PATH).read_text(encoding="utf-8"))
@@ -52,7 +57,7 @@ def save(ix: Index, entries: dict) -> None:
     p = Path(ix.root) / DESC_PATH
     p.parent.mkdir(parents=True, exist_ok=True)
     atomic_write(p, json.dumps(entries, indent=1, sort_keys=True, ensure_ascii=False) + "\n")
-    ix.desc = {sid: d["text"] for sid, d in entries.items() if sid in ix.symbols and d.get("text")}
+    ix.load_descriptions()
     try:
         write_db(ix)
     except Exception:
@@ -117,7 +122,7 @@ def set_description(ix: Index, sid: str, text: str, by: str = "human") -> dict:
     entries = load(ix.root)
     text = " ".join(text.split())[:MAX_TEXT]
     if text:
-        entries[sid] = {"text": text, "by": by, "code": code_hash(ix, ix.symbols[sid])}
+        entries[sid] = {"text": text, "by": by, "code": code_hash(ix, ix.symbols[sid]), "fhash": _fhash(ix, ix.symbols[sid])}
     else:
         entries.pop(sid, None)
     save(ix, entries)
@@ -168,7 +173,7 @@ def describe_with_ai(ix: Index, ids: list[str], provider, batch: int = 8) -> dic
                 s = chunk[int(item["i"])]
                 text = " ".join(str(item["text"]).split())[:MAX_TEXT]
                 if text:
-                    entries[s["id"]] = {"text": text, "by": "ai", "code": code_hash(ix, s)}
+                    entries[s["id"]] = {"text": text, "by": "ai", "code": code_hash(ix, s), "fhash": _fhash(ix, s)}
                     written[s["id"]] = text
                     seen.add(s["id"])
             failed += [s["id"] for s in chunk if s["id"] not in seen]
