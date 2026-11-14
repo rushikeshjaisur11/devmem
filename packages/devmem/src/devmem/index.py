@@ -1,6 +1,8 @@
 """Load and query .devmem/index.json. Pure stdlib; used by the agent CLI and the app."""
 from __future__ import annotations
 
+import ast
+import hashlib
 import json
 import re
 import sqlite3
@@ -11,7 +13,7 @@ from pathlib import Path
 
 from .jsresolve import is_js, module_files
 from .jsresolve import resolve as js_resolve
-from .schema import DB_PATH, DESC_PATH, INDEX_PATH, MAX_HOPS, UTILITY_CALLER_CAP
+from .schema import DB_PATH, DESC_PATH, INDEX_PATH, INDEX_VERSION, MAX_HOPS, UTILITY_CALLER_CAP
 
 
 def find_repo_root(start: Path | None = None) -> Path:
@@ -45,13 +47,19 @@ class Index:
             except Exception:
                 pass
         # plain-language descriptions written on the Improve descriptions page (by a person or an LLM) for code whose name and
-        # docstring say too little; search treats them like a docstring
+        # docstring say too little; search treats them like a docstring (see load_descriptions for what is left out)
         self.desc: dict[str, str] = {}
+        self.desc_by: dict[str, str] = {}
+        self.desc_stale: set[str] = set()
+        self._states: dict[str, tuple[tuple, str]] = {}
+        self.load_descriptions()
+        # measured coverage (devmem_app/coverage_import.py): {symbol id: [covered lines, body lines]} and {symbol id: [test ids]}
+        self.coverage: dict = {}
         try:
-            for sid, d in json.loads((Path(root) / DESC_PATH).read_text(encoding="utf-8")).items():
-                if sid in self.symbols and d.get("text"):
-                    self.desc[sid] = d["text"]
-        except (OSError, ValueError, AttributeError):
+            cov = json.loads((Path(root) / ".devmem/coverage.json").read_text(encoding="utf-8"))
+            if isinstance(cov, dict) and isinstance(cov.get("functions"), dict):
+                self.coverage = cov
+        except (OSError, ValueError):
             pass
         self.out = defaultdict(list)  # src -> edges
         self.inc = defaultdict(list)  # dst -> edges
@@ -71,7 +79,16 @@ class Index:
     @classmethod
     def load(cls, root: Path | None = None) -> "Index":
         root = find_repo_root(root)
-        return cls(json.loads((root / INDEX_PATH).read_text(encoding="utf-8")), root)
+        try:
+            data = json.loads((root / INDEX_PATH).read_text(encoding="utf-8"))
+        except ValueError as e:
+            raise FileNotFoundError(f"{INDEX_PATH} is not readable ({e}); rebuild it with `devmem-app index <repo>`") from None
+        if not isinstance(data, dict) or "symbols" not in data or "edges" not in data:
+            raise FileNotFoundError(f"{INDEX_PATH} is not a devmem index; rebuild it with `devmem-app index <repo>`")
+        if int(data.get("version") or 1) > INDEX_VERSION:
+            raise FileNotFoundError(f"{INDEX_PATH} was written by a newer devmem (format {data.get('version')}, this CLI reads up to {INDEX_VERSION}); "
+                                    "update the devmem CLI before using it")
+        return cls(data, root)
 
     _loaded: dict[str, tuple[tuple, "Index"]] = {}
 
@@ -99,12 +116,27 @@ class Index:
         return list(self.by_qual.get(ref) or self.by_name.get(ref) or [])
 
     def find(self, query: str, limit: int = 10) -> list[tuple[float, dict]]:
-        q = _tokens(query)
+        q = query_tokens(query)
         if not q:
             return []
-        scored = [(sc, s) for s in map(self.symbols.get, self._candidates(q, query, limit)) if (sc := _score(q, query, s, self.desc.get(s["id"], ""))) > 0]
+        cands = [s for s in map(self.symbols.get, self._candidates(q, query, limit)) if s]
+        w = self.idf(q)
+        scored = [(sc, s) for s in cands
+                  if (sc := _score(q, query, s, self.desc.get(s["id"], ""), w, ai=self.desc_by.get(s["id"]) == "ai")) > 0]
         scored.sort(key=lambda x: (-x[0], x[1]["file"], x[1]["line"]))
         return scored[:limit]
+
+    def idf(self, q: set[str]) -> dict[str, float]:
+        """How much each query word says: log(N / symbols containing it), from the search tables' own vocabulary, so a word
+        on every other symbol (get, data, value) counts for little and a rare one (interval, refund) for a lot."""
+        import math
+        with self._fts_lock:
+            if self._fts is None:
+                self._fts = _open_fts(self)
+            ph = ",".join("?" * len(q))
+            df = dict(self._fts.execute(f"SELECT term, doc FROM symv WHERE term IN ({ph})", sorted(q)).fetchall()) if q else {}
+        n = max(len(self.symbols), 1)
+        return {t: math.log(1 + n / (1 + df.get(t, 0))) for t in q}
 
     def _candidates(self, q: set[str], query: str, limit: int) -> list[str]:
         """Ids of symbols sharing a token with the query (best bm25 first) or containing it in the qualname.
@@ -119,9 +151,94 @@ class Index:
             substr = self._fts.execute("SELECT id FROM qual WHERE instr(q, ?) > 0 LIMIT ?", (query.lower(), cap)).fetchall()
         return list(dict.fromkeys(r[0] for r in ranked + substr))
 
-    def source(self, s: dict) -> str:
+    def load_descriptions(self) -> None:
+        """Read `.devmem/descriptions.json`. A description whose code changed since it was written is left out (it may now be
+        wrong); one written by a model and not yet approved by a person is kept but counts half in search and is labelled."""
+        self.desc, self.desc_by, self.desc_stale = {}, {}, set()
+        try:
+            entries = json.loads((Path(self.root) / DESC_PATH).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if not isinstance(entries, dict):
+            return
+        for sid, d in entries.items():
+            if sid not in self.symbols or not isinstance(d, dict) or not d.get("text"):
+                continue
+            s = self.symbols[sid]
+            want = d.get("code")
+            unchanged = d.get("fhash") == (self.data["files"].get(s["file"]) or {}).get("hash") and self.file_state(s["file"]) == "fresh"
+            if want and not unchanged:
+                try:   # the file changed since the description was written: check the function itself
+                    if hashlib.sha1(self.read(s)[0].encode("utf-8", "replace")).hexdigest()[:16] != want:
+                        self.desc_stale.add(sid)
+                        continue
+                except LookupError:
+                    self.desc_stale.add(sid)
+                    continue
+            self.desc[sid] = d["text"]
+            self.desc_by[sid] = d.get("by") or "human"
+
+    def described(self, s: dict, chars: int = 0) -> str:
+        """What a symbol is for, for an agent to read: its docstring, else its written description, labelled when a model wrote
+        it and no person has approved it yet."""
+        if s.get("doc"):
+            return s["doc"][:chars] if chars else s["doc"]
+        text = self.desc.get(s["id"], "")
+        if not text:
+            return ""
+        text = text[:chars] if chars else text
+        return f"(AI-written, unreviewed) {text}" if self.desc_by.get(s["id"]) == "ai" else text
+
+    # ---- freshness: the index stores line numbers, and files move on after it was built ----
+    def file_state(self, path: str) -> str:
+        """'fresh' (same bytes as when indexed), 'changed', or 'missing'. Checked against the content hash the indexer stored;
+        cached per file on its size and mtime, so repeated questions do not re-hash."""
+        fp = self.root / path
+        try:
+            st = fp.stat()
+        except OSError:
+            return "missing"
+        key = (st.st_mtime_ns, st.st_size)
+        hit = self._states.get(path)
+        if hit and hit[0] == key:
+            return hit[1]
+        want = (self.data["files"].get(path) or {}).get("hash")
+        try:
+            state = "fresh" if not want or hashlib.sha1(fp.read_bytes()).hexdigest() == want else "changed"
+        except OSError:
+            state = "missing"
+        self._states[path] = (key, state)
+        return state
+
+    def changed_files(self, paths) -> list[str]:
+        """Of the given files, the ones edited or deleted since the index was built, in a stable order."""
+        return [p for p in dict.fromkeys(paths) if p in self.data["files"] and self.file_state(p) != "fresh"]
+
+    def read(self, s: dict) -> tuple[str, int, int, str]:
+        """(source, first line, last line, note) of a symbol as it is in the file NOW. When the file changed since indexing
+        the symbol is found again rather than read from stale line numbers; the note says so. Raises LookupError when it
+        cannot be found: printing the wrong lines would be worse than printing none."""
+        state = self.file_state(s["file"])
+        if state == "missing":
+            raise LookupError(f"{s['file']} no longer exists (the index is older than the code): re-index the repo")
         lines = (self.root / s["file"]).read_text(encoding="utf-8", errors="replace").splitlines()
-        return "\n".join(lines[s["line"] - 1 : s["end_line"]])
+        start, end = s["line"], s.get("end_line", s["line"])
+        if state == "fresh":
+            return "\n".join(lines[start - 1: end]), start, end, ""
+        found = _relocate(s, lines)
+        if not found:
+            raise LookupError(f"{s['qualname']} is no longer in {s['file']} (the file changed since it was indexed; it may have been renamed "
+                              f"or removed): re-index the repo, or `devmem outline {s['file']}` shows what the index knew")
+        start, end, exact = found
+        note = (f"{s['file']} changed since it was indexed: `{s['qualname']}` is now at lines {start}-{end}"
+                + ("" if exact else " (found by its name; the end line is an estimate)") + ". Callers and tests listed for it may be out of date.")
+        return "\n".join(lines[start - 1: end]), start, end, note
+
+    def source(self, s: dict) -> str:
+        try:
+            return self.read(s)[0]
+        except LookupError as e:
+            raise OSError(str(e)) from None
 
     def callees(self, s: dict) -> list[dict]:
         seen, out = set(), []
@@ -151,8 +268,8 @@ class Index:
             cur, hop = frontier.popleft()
             if hop >= MAX_HOPS:
                 continue
-            callers = [e for e in self.inc.get(cur, []) if e["type"] in ("calls", "tests")]
-            real = [e for e in callers if e["type"] == "calls"]
+            callers = [e for e in self.inc.get(cur, []) if e["type"] in ("calls", "tests", "refs")]
+            real = [e for e in callers if e["type"] in ("calls", "refs")]
             if len(real) > UTILITY_CALLER_CAP:
                 res["capped"].append({"symbol": cur, "callers": len(real)})
                 real = []
@@ -163,19 +280,46 @@ class Index:
                 if e["src"] in seen:
                     continue
                 seen.add(e["src"])
-                item = {"id": e["src"], "conf": e["conf"]}
+                item = {"id": e["src"], "conf": "by-name" if e["type"] == "refs" else e["conf"]}
                 res["hop1" if hop == 0 else "hop2"].append(item)
                 frontier.append((e["src"], hop + 1))
-        # tests that cover any affected symbol
+        # tests that cover any affected symbol: from the call graph, and from a measured test run when one was imported
+        measured = set()
         for sid in list(seen):
             for e in self.inc.get(sid, []):
                 if e["type"] == "tests":
                     tests.add(e["src"])
-        res["tests"] = sorted(tests)
+            measured.update((self.coverage.get("tests") or {}).get(sid, []))
+        res["tests"] = sorted(tests | measured)
+        res["tests_measured"] = sorted(measured - tests)
+        res["coverage"] = {t["id"]: (self.coverage.get("functions") or {}).get(t["id"]) for t in targets} if self.coverage else {}
         res["files"] = sorted({i.split("#")[0] for k in ("hop1", "hop2") for i in (x["id"] for x in res[k])}
                               | {s["file"] for s in targets})
         res["cochange"] = self._cochange_for(res["files"])
+        # inheritance: who overrides the target (their signatures must follow it), and whose callers reach it through a base class
+        res["overridden_by"] = sorted({e["src"] for t in targets for e in self.inc.get(t["id"], []) if e["type"] == "overrides"})
+        bases = sorted({e["dst"] for t in targets for e in self.out.get(t["id"], []) if e["type"] == "overrides"})
+        res["overrides"] = bases
+        res["via_base"] = sorted({e["src"] for b in bases for e in self.inc.get(b, []) if e["type"] in ("calls", "refs")} - seen)
+        res["blind_spots"] = [n for t in targets for n in self.blind_spots(t)]
         return res
+
+    def blind_spots(self, s: dict) -> list[str]:
+        """What the call graph cannot show about a symbol, in plain words. "No callers" is only safe to rely on when this is
+        empty: a decorator, a public export or the name appearing as text all mean something may call it unseen."""
+        out = []
+        decos = [d for d in s.get("decorators", []) if d.split(".")[-1] not in ("staticmethod", "classmethod", "property", "abstractmethod", "override", "wraps",
+                                                                               "lru_cache", "cache", "cached_property", "dataclass", "contextmanager")]
+        if decos:
+            out.append(f"{s['qualname']} is decorated with @{', @'.join(decos[:3])}: a framework may call it without any call appearing in the code")
+        rec = self.data["files"].get(s["file"], {})
+        if s["name"] in rec.get("exports", []) and "." not in s["qualname"]:
+            out.append(f"{s['qualname']} is exported in __all__: code outside this repo may use it")
+        if "." not in s["qualname"] and len(s["name"]) >= 4:
+            named = [f for f, r in self.data["files"].items() if s["name"] in r.get("strs", ())][:3]
+            if named:
+                out.append(f"the name \"{s['name']}\" appears as text in {', '.join(named)}: it may be looked up by name (getattr, a routing or config table)")
+        return out
 
     def _cochange_for(self, files: list[str], top: int = 5) -> list[str]:
         score: dict[str, int] = defaultdict(int)
@@ -188,12 +332,31 @@ class Index:
     def _table_impact(self, tname: str) -> dict:
         readers = sorted({e["src"] for e in self.inc.get(tname, []) if e["type"] == "reads"})
         writers = sorted({e["src"] for e in self.inc.get(tname, []) if e["type"] == "writes"})
+        if not readers and not writers and tname not in self.inc:
+            # neither a symbol nor a table devmem knows: say so, with the closest names, instead of an empty table report
+            import difflib
+            name = tname[6:]
+            want = name.split("#")[-1]
+            quals = list(self.by_qual)
+            close = [sym["id"] for q in difflib.get_close_matches(want, quals, 3, 0.75) for sym in self.by_qual[q]][:3]   # a typo
+            near = list(dict.fromkeys(close + [s["id"] for _, s in self.find(want.replace(".", " "), 5)]))[:5]
+            return {"not_found": name, "suggestions": near}
         return {"table": tname, "readers": readers, "writers": writers,
                 "files": sorted({x.split("#")[0] for x in readers + writers})}
 
     # ---- tests ----
     def _module_paths(self, module: str) -> list[str]:
         return module_files(self.data["files"], module)
+
+    def coverage_note(self, paths: list[str]) -> str:
+        """Where a test selection came from, so the agent knows how far to trust a passing run."""
+        cov = self.coverage
+        if cov and cov.get("per_test"):
+            older = [p for p in paths if p in (cov.get("hashes") or {}) and (cov["hashes"][p] != (self.data["files"].get(p) or {}).get("hash"))]
+            return (f"tests chosen from measured coverage ({cov.get('source')}, {cov.get('ts', '')[:10]})"
+                    + (f"; {', '.join(older[:3])} changed since that test run" if older else ""))
+        return ("tests chosen from the call graph: tests that reach this code through fixtures, helpers or a framework may be missing. "
+                "Run the full suite before merging" + ("" if cov else "; import a coverage report (`devmem-app coverage <repo> <file>`) to make this exact"))
 
     def tests_for_files(self, paths: list[str]) -> dict[str, list[str]]:
         """{test_file: [test qualnames]} covering the given changed files (direct + impact tests; import fallback)."""
@@ -206,6 +369,8 @@ class Index:
             found = False
             for s in self.by_file.get(path, []):
                 for t in self.impact(s["id"]).get("tests", []):
+                    if "#" not in t:
+                        continue
                     f, q = t.split("#", 1)
                     picked[f].add(q)
                     found = True
@@ -247,6 +412,53 @@ class Index:
         return out[:limit]
 
 
+_DEF = re.compile(r"\b(def|class|function|func|fn|fun|interface|struct|enum|trait|impl|const|let|var|public|private|protected|static|async|export)\b")
+
+
+def _relocate(s: dict, lines: list[str]) -> tuple[int, int, bool] | None:
+    """Where a symbol is in the current text of its file: (first line, last line, exact?). Python is re-parsed, so the answer
+    is exact. Other languages: the definition line nearest to where it used to be, and the block that follows it."""
+    name, qual = s["name"], s["qualname"]
+    if s["file"].endswith(".py"):
+        try:
+            tree = ast.parse("\n".join(lines))
+        except SyntaxError:
+            tree = None
+        if tree is not None:
+            def walk(body, prefix):
+                for n in body:
+                    if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                        q = f"{prefix}{n.name}"
+                        if q == qual:
+                            return n
+                        if isinstance(n, ast.ClassDef):
+                            hit = walk(n.body, q + ".")
+                            if hit is not None:
+                                return hit
+                return None
+            node = walk(tree.body, "")
+            return (node.lineno, getattr(node, "end_lineno", node.lineno), True) if node is not None else None
+    pat = re.compile(rf"(?<![\w$]){re.escape(name)}(?![\w$])\s*(\(|=|:|<|\{{|$)")
+    cands = [i for i, ln in enumerate(lines, 1) if pat.search(ln) and (_DEF.search(ln) or re.match(rf"\s*{re.escape(name)}\s*\(", ln)) and not ln.lstrip().startswith(("//", "#", "*", "/*"))]
+    if not cands:
+        return None
+    start = min(cands, key=lambda i: abs(i - s["line"]))
+    length = max(s.get("end_line", s["line"]) - s["line"], 0)
+    depth, seen_open, end = 0, False, None
+    for i in range(start, min(len(lines), start + max(length * 3, 400)) + 1):
+        for ch in lines[i - 1]:
+            if ch == "{":
+                depth += 1; seen_open = True
+            elif ch == "}":
+                depth -= 1
+        if seen_open and depth <= 0:
+            end = i
+            break
+        if not seen_open and i - start > 3:
+            break
+    return start, end or min(len(lines), start + length), False
+
+
 _SUFFIX = ("ators", "ations", "ator", "ation", "ating", "ated", "ate", "ings", "ing", "ers", "er", "ed", "es", "ion", "s")
 
 
@@ -265,23 +477,51 @@ def _tokens(text: str) -> set[str]:
     return {_stem(t.lower()) for t in re.split(r"[^A-Za-z0-9]+", text) if len(t) > 1}
 
 
-def _score(q: set[str], query: str, s: dict, desc: str = "") -> float:
-    score = 3.0 * len(q & _tokens(s["qualname"])) + 1.0 * len(q & _tokens(f"{s['doc']} {desc}")) + 0.5 * len(q & _tokens(s["file"]))
-    if query.lower() in s["qualname"].lower():
-        score += 2
+STOP = {"the", "and", "for", "with", "how", "to", "in", "of", "on", "is", "it", "we", "do", "an", "this", "that", "when", "from", "into", "not",
+        "are", "be", "by", "or", "as", "at", "if", "its", "their", "which", "will", "can", "should", "where", "what", "who", "all", "any", "each",
+        "one", "only", "been", "has", "have", "was", "were", "there", "these", "those", "than", "then", "so", "such", "also", "but", "no", "yes"}
+
+
+def query_tokens(query: str) -> set[str]:
+    """The words of a query that carry meaning: stop words dropped unless nothing else is left."""
+    q = _tokens(query)
+    return (q - STOP) or q
+
+
+def _score(q: set[str], query: str, s: dict, desc: str = "", w: dict[str, float] | None = None, name: set[str] | None = None,
+           ai: bool = False) -> float:
+    """Each query word counts once, in the best place it appears (name 3, docstring or a person's description 1, an
+    unreviewed AI description 0.5, path 0.5), weighted by how rare it is in the repo."""
+    name = _tokens(s["qualname"]) if name is None else name
+    doc = _tokens(s["doc"] or "")
+    said = _tokens(desc) if desc else set()
+    path = _tokens(s["file"])
+    w = w or {}
+    score, hit = 0.0, 0
+    for t in q:
+        f = (3.0 if t in name else 1.0 if t in doc else (0.5 if ai else 1.0) if t in said else 0.5 if t in path else 0.0)
+        if f:
+            score += f * w.get(t, 1.0)
+            hit += t in name
+    if hit and len(name) > hit + 2:
+        score *= 1 - 0.04 * min(len(name) - hit - 2, 5)     # a long name that merely contains the words is a weaker match than a short one
+    if len(query) > 2 and query.lower() in s["qualname"].lower():
+        score += sum(w.get(t, 1.0) for t in q)                # the query is literally part of the name
     return score * 0.5 if s["is_test"] else score
 
 
 CANDIDATE_CAP = 300
-FTS_FORMAT = 2   # bump when indexed tokens change (2: stemmed), so older index.db files are rebuilt
+FTS_FORMAT = 3   # bump when the search tables change (2: stemmed, 3: vocabulary table for word rarity), so older index.db files are rebuilt
 
 
 def _rebuild_fts(db: sqlite3.Connection, ix: "Index") -> None:
     """`sym` = FTS5 over camel/snake-split tokens; `qual` = plain table (an FTS column is too slow to substring-scan)."""
+    db.execute("DROP TABLE IF EXISTS symv")
     db.execute("DROP TABLE IF EXISTS sym")
     db.execute("DROP TABLE IF EXISTS qual")
     db.execute("CREATE VIRTUAL TABLE sym USING fts5(id UNINDEXED, name, doc, path)")
     db.execute("CREATE TABLE qual(id TEXT, q TEXT)")
+    db.execute("CREATE VIRTUAL TABLE symv USING fts5vocab(sym, 'row')")   # per word: how many symbols contain it
     for s in ix.symbols.values():
         if s["kind"] != "module":
             db.execute("INSERT INTO sym VALUES (?,?,?,?)",

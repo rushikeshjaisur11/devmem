@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { nav } from "../route";
-import { Badge, Empty, Err, Icon, RepoSelect, useAsync, useRepos } from "../components";
+import { Badge, Empty, Err, Icon, useRepo, useAsync, useRepos } from "../components";
 
 const STEP: Record<string, string> = { describe: "Describing definitions", modules: "Summarising modules", overview: "Writing the overview" };
 
@@ -35,7 +35,7 @@ function Editable({ value, by, stale, placeholder, onSave }: { value: string; by
 
 export default function Analysis({ params }: { params: Record<string, string> }) {
   const repos = useRepos();
-  const [repo, setRepo] = useState(params.repo || "");
+  const { repo } = useRepo();
   const [limit, setLimit] = useState(200);
   const [on, setOn] = useState<Record<string, boolean>>({ describe: true, modules: true, overview: true });
   const [err, setErr] = useState("");
@@ -64,7 +64,7 @@ export default function Analysis({ params }: { params: Record<string, string> })
 
   return (
     <>
-      <div className="row"><h1>AI analysis</h1>{repos.data && <RepoSelect value={repo} onChange={setRepo} repos={repos.data} />}</div>
+      <div className="row"><h1>AI analysis</h1></div>
       <p className="sub">The index (functions, calls, tests, tables) is built by parsers and needs no AI. This optional pass adds what parsers cannot: what each piece of code is <i>for</i>. Run it once after adding a repo, then again whenever you like; it only sends what is new or changed, and every text can be corrected by hand.</p>
       <Err msg={repos.error || d.error || err} />
       {repos.data && !repos.data.some((r) => r.indexed) && <div className="card"><Empty>No indexed repo yet. <a href="#/repos">Add one</a> first.</Empty></div>}

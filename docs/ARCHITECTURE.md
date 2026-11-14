@@ -37,7 +37,7 @@ with nothing changed 1.2 s (it was 78 s when every import scanned every file). `
 
 - `files`: `{path: {hash, lang, imports, tables, calls}}`
 - `symbols`: `{id: "path#qualname", name, qualname, kind, file, line, end_line, sig, doc, is_test}`
-- `edges`: `{src, dst, type: calls|tests|reads|writes, conf: precise|structural|ambiguous|co-change}`; table edges use `dst = "table:<name>"`.
+- `edges`: `{src, dst, type: calls|tests|refs|inherits|overrides|reads|writes, conf: precise|structural|ambiguous|co-change}` (`refs`: a function passed by name); table edges use `dst = "table:<name>"`.
 
 `Index` (`index.py`) loads the whole file into dicts (`symbols`, `out`, `inc`) and answers every query in memory.
 `Index.find` picks candidates with an FTS5 query (any shared token, or the query as a substring of the qualname), then scores only those by token overlap on name, doc and path.
@@ -45,6 +45,18 @@ The tables live in `.devmem/index.db` (gitignored), written by the indexer after
 Readers never write: a missing, stale or corrupt db is rebuilt in memory, which keeps prompt building read-only.
 Candidates are ranked by bm25 (weights mirror the scorer: name 3, doc 1, path 0.5) and capped at `max(CANDIDATE_CAP = 300, 10 * limit)` per source, so a query of very common tokens stays fast. Results are exact unless a query matches more symbols than the cap; then only the lowest-ranked matches can be dropped.
 Impact walks `inc` edges up to `MAX_HOPS = 2`, capping utility callers at `UTILITY_CALLER_CAP = 20`.
+
+## Answer budgets (agent CLI and MCP)
+
+Every tool result stays in the agent's context for the rest of the task, so output size is treated as a cost.
+`devmem context` (`context.py`) builds the start-of-task answer in priority order (rules and lessons, focus symbol facts,
+body) until `--budget` (default 1,200 tokens, chars / 4) is spent; it prints a body only when the best match scores at
+least 15% above the next, and lists candidates otherwise. `find` weights each query word by how rare it is among the
+candidates and collapses definitions with the same qualified name. `impact` groups callers by file and tags only
+ambiguous edges. `outline` folds methods into their class past 60 lines. `cli.run` cuts any logged answer at
+`MAX_TOKENS` (2,500; `DEVMEM_MAX_TOKENS`) unless `--full` / `--all` was given. Measured on a 1,381-file corpus:
+`outline` of a 105,000-token file 8,907 -> 744 tokens, `impact` 235 -> 165, `helpers` 1,299 -> 645, and one `context`
+call 271 tokens against 521 for the five calls it replaces.
 
 ## Knowledge budgets
 
@@ -70,6 +82,10 @@ Budgets in `knowledge.py`: `AGENTS.md` index 300 tokens, `map.md` 1,500, any oth
 - Descriptions for weakly described code: `devmem_app/definitions.py` (rating, AI drafts) -> `.devmem/descriptions.json`, read by `devmem/index.py`
 - Optional AI pass: `devmem_app/analysis.py` (descriptions in bulk, module summaries, overview; background job with progress) -> `.devmem/analysis.json`, read by `publisher.py` and `chat.py`
 - Code health: `devmem_app/hygiene.py` (built-in tools), `sonar.py` (SonarQube Web API, read-only -> `.devmem/sonar.json`), `health.py` (merges both, maps findings to symbols, ranks by severity x callers x tested)
+- Prompts for agents: `devmem_app/prompts.py` (fix / file / test / duplicate prompts in one fixed shape, with code, callers and the test command), `implement.py` (task and plan prompts)
+- Modernize: `devmem_app/modernize.py` (pattern catalog `RULES`, docs match, declared runtime versions and dependencies -> `.devmem/modernize.json`); add a rule there to teach it a new pattern
+- Freshness of answers: `Index.read` / `file_state` (devmem/index.py) re-locate symbols in files changed since indexing; `schema.atomic_write`, `paths.repo_lock`, `paths.diagnose`
+- Measured coverage: `devmem_app/coverage_import.py` -> `.devmem/coverage.json`, read by `Index` (impact, tests_for_files) and `review.gaps`
 - Server mode: `devmem_app/server.py` (token sign-in), `uploads.py` (safe unpacking), `settings.py` (AI settings); see `DEPLOY.md`
 - Freshness: `devmem_app/watch.py` (re-index when HEAD moves; runs inside `devmem-app ui`)
 - Web UI: `devmem_app/server.py` (API under `/api`), `ui/src` (React, built into `devmem_app/ui_dist`)

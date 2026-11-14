@@ -20,6 +20,7 @@ from devmem.index import Index
 
 from . import definitions as defs
 from .publisher import _module_of
+from devmem.schema import atomic_write
 
 PATH = ".devmem/analysis.json"
 STEPS = ("describe", "modules", "overview")
@@ -41,7 +42,7 @@ def load(root: Path) -> dict:
 def save(root: Path, data: dict) -> None:
     p = Path(root) / PATH
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(data, indent=1, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
+    atomic_write(p, json.dumps(data, indent=1, sort_keys=True, ensure_ascii=False) + "\n")
 
 
 def _h(text: str) -> str:

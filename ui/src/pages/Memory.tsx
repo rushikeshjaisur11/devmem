@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { api, q } from "../api";
-import { Badge, Empty, Err, RepoSelect, useAsync, useRepos } from "../components";
+import { Badge, Empty, Err, useRepo, useAsync, useRepos } from "../components";
 
 function LessonForm({ initial, onSave, onCancel }: { initial: any; onSave: (v: any) => Promise<void>; onCancel: () => void }) {
   const [v, setV] = useState({ title: initial.title || "", problem: initial.problem || "", fix: initial.fix || "", tags: (initial.tags || []).join(", ") });
@@ -24,7 +24,7 @@ export default function Memory(_: any) {
   const repos = useRepos();
   const mem = useAsync(() => api.get("/api/memory"), []);
   const [tab, setTab] = useState("lessons");
-  const [repo, setRepo] = useState("");
+  const { repo } = useRepo();
   const [edit, setEdit] = useState<string>("");   // lesson id, or "new"
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
@@ -42,7 +42,6 @@ export default function Memory(_: any) {
     <>
       <div className="row" style={{ marginBottom: 6 }}>
         <h1 style={{ margin: 0 }}>Lessons &amp; rules</h1>
-        {repos.data && <RepoSelect value={repo} onChange={setRepo} repos={repos.data} indexedOnly={false} />}
         <button onClick={() => act(() => api.post("/api/memory/sync"), (r) => `Synced: ${r.new_lessons} new lesson(s) to the hub, ${r.lessons_pushed} pushed to repos, ${r.new_feedback} feedback entries`)}>Sync hub</button>
         <button className="primary" onClick={() => { setTab("lessons"); setEdit("new"); }}>New lesson</button>
       </div>

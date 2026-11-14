@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { api } from "../api";
+import { api, job, upload } from "../api";
 import { nav } from "../route";
-import { Badge, Copy, EditorLink, Empty, Err, Icon, LineChart, RepoSelect, Term, editorHref, useAsync, useRepos } from "../components";
+import { Badge, CopyPrompt, EditorLink, Empty, Err, Icon, LineChart, useRepo, Term, editorHref, useAsync, useRepos } from "../components";
 
 const SEV: Record<string, [string, string]> = { high: ["High", "bad"], medium: ["Medium", "warn"], low: ["Low", ""] };
 const TOOL: Record<string, string> = { sonar: "SonarQube", ruff: "ruff", vulture: "vulture", radon: "radon", bandit: "bandit", deptry: "deptry", sqlfluff: "sqlfluff", eslint: "eslint", knip: "knip" };
@@ -34,7 +34,7 @@ const Tile = ({ label, value, sub, kind = "" }: { label: string; value: any; sub
 
 export default function Hygiene({ params }: { params: Record<string, string> }) {
   const repos = useRepos();
-  const [repo, setRepo] = useState(params.repo || "");
+  const { repo } = useRepo();
   const [view, setView] = useState("first");
   const [sev, setSev] = useState("");
   const [cat, setCat] = useState("");
@@ -45,6 +45,17 @@ export default function Hygiene({ params }: { params: Record<string, string> }) 
   const [err, setErr] = useState("");
   const [msg, setMsg] = useState("");
   const h = useAsync<any>(() => (repo ? api.get(`/api/repos/${repo}/health`) : Promise.resolve(null)), [repo]);
+  const cov = useAsync<any>(() => (repo ? api.get(`/api/repos/${repo}/coverage`) : Promise.resolve(null)), [repo]);
+  const sendCoverage = async (f: File) => {
+    setBusy("cov"); setErr(""); setMsg("");
+    try {
+      const r = await upload(`/api/repos/${repo}/coverage?filename=${encodeURIComponent(f.name)}`, f, () => {});
+      setMsg(`${r.format} report imported: ${r.stats.covered} of ${r.stats.functions} functions ran in tests` + (r.per_test ? `; per-test data for ${r.stats.with_tests}, so test selection is now measured.` : ". It has no per-test data, so test selection still uses the call graph.")
+        + (r.stats.newer_than_report ? ` ${r.stats.newer_than_report} file(s) changed after the run and were skipped.` : ""));
+      cov.reload(); h.reload();
+    } catch (e: any) { setErr(e.message); }
+    setBusy("");
+  };
   const d = h.data;
   useEffect(() => { setSev(""); setCat(""); setSrc(""); setText(""); setMsg(""); setErr(""); setView("first"); }, [repo]);
   useEffect(() => setShown(PAGE), [sev, cat, src, text, view, repo]);
@@ -52,8 +63,8 @@ export default function Hygiene({ params }: { params: Record<string, string> }) 
   const run = async (what: "local" | "sonar") => {
     setBusy(what); setErr(""); setMsg("");
     try {
-      if (what === "local") { await api.post(`/api/repos/${repo}/hygiene`); setMsg("Checks finished."); }
-      else { const r = await api.post(`/api/repos/${repo}/sonar/sync`); setMsg(`Read ${r.issues.toLocaleString()} open issue${r.issues === 1 ? "" : "s"} and ${r.hotspots} hotspot${r.hotspots === 1 ? "" : "s"} from SonarQube.${r.notes.length ? " Note: " + r.notes.join("; ") : ""}`); }
+      if (what === "local") { await job(`/api/repos/${repo}/hygiene`); setMsg("Checks finished."); }
+      else { const r = await job(`/api/repos/${repo}/sonar/sync`); setMsg(`Read ${r.issues.toLocaleString()} open issue${r.issues === 1 ? "" : "s"} and ${r.hotspots} hotspot${r.hotspots === 1 ? "" : "s"} from SonarQube.${r.notes.length ? " Note: " + r.notes.join("; ") : ""}`); }
       h.reload();
     } catch (e: any) { setErr(e.message); }
     setBusy("");
@@ -69,14 +80,10 @@ export default function Hygiene({ params }: { params: Record<string, string> }) 
   const clear = () => { setSev(""); setCat(""); setSrc(""); setText(""); };
   const sq = d?.sonar, setup = d?.sonar_setup, m = sq?.measures || {};
   const canSync = setup?.configured && (setup.project.key || setup.project.detected);
-  const prompt = (f: any) => `Fix this ${f.source === "sonar" ? "SonarQube" : f.source} finding (${f.code}, ${f.severity} severity) in ${f.path}:${f.line}${f.symbol ? `, inside ${f.symbol}` : ""}: ${f.msg}\n${f.callers ? `It is called from ${f.callers} place${f.callers === 1 ? "" : "s"}: run \`devmem impact ${f.symbol_id}\` first and keep its behaviour for callers. ` : ""}Change only what the finding needs, then run \`devmem check\` and \`devmem diffcheck\`.`;
-  const filePrompt = (f: any) => `Fix the ${f.total} code health finding${f.total === 1 ? "" : "s"} in ${f.path} (${f.high} high, ${f.medium} medium, ${f.low} low). Run \`devmem hygiene ${f.path}\` for the list, most severe first. Change only what each finding needs, then run \`devmem check\` and \`devmem diffcheck\`.`;
-
   const header = (
     <>
       <div className="row">
         <h1>Code health</h1>
-        {repos.data && <RepoSelect value={repo} onChange={setRepo} repos={repos.data} />}
         <span className="grow" />
         <button className={d?.available ? "" : "primary"} disabled={!repo || !!busy} onClick={() => run("local")} title="ruff, vulture, radon, bandit, deptry, sqlfluff, eslint, knip: they only read the code"><Icon name="shield" />{busy === "local" ? "Running checks…" : d?.local ? "Run checks again" : "Run checks"}</button>
         {canSync
@@ -153,7 +160,7 @@ export default function Hygiene({ params }: { params: Record<string, string> }) 
                     </div>
                   </div>
                   <div className="find-act">
-                    <Copy label="Copy fix prompt" text={prompt(f)} />
+                    <CopyPrompt repo={repo} kind="finding" data={f} />
                     {f.url && <a className="btn-link" href={f.url} target="_blank" rel="noreferrer">Open in SonarQube</a>}
                   </div>
                 </div>
@@ -177,7 +184,7 @@ export default function Hygiene({ params }: { params: Record<string, string> }) 
                   <td className="num">{f.high || <span className="muted">0</span>}</td><td className="num">{f.medium || <span className="muted">0</span>}</td><td className="num">{f.low || <span className="muted">0</span>}</td>
                   <td className="num" title="Other files that call code in this file">{f.used_by ? `${f.used_by} file${f.used_by === 1 ? "" : "s"}` : <span className="muted">-</span>}</td>
                   {sq && <td className="num">{f.coverage === null || f.coverage === undefined ? <span className="muted">-</span> : `${f.coverage.toFixed(0)}%`}</td>}
-                  <td><div className="row actions"><Copy label="Copy fix prompt" text={filePrompt(f)} /></div></td>
+                  <td><div className="row actions"><CopyPrompt repo={repo} kind="file" data={{ path: f.path, findings: all.filter((x) => x.path === f.path) }} /></div></td>
                 </tr>
               ))}
             </tbody>
@@ -194,7 +201,7 @@ export default function Hygiene({ params }: { params: Record<string, string> }) 
               <span className="mono" title={g.doc || undefined}>{g.id.split("#")[1]} <span className="muted">{g.file}:{g.line}</span></span>
               <span className="muted">{g.callers} callers in {g.files} file{g.files === 1 ? "" : "s"}</span>
               <EditorLink href={editorHref(repos.data, repo, g.file, g.line)} />
-              <Copy label="Copy test prompt" text={`Write focused tests for ${g.id} (${g.callers} callers, no test reaches it). Run \`devmem show ${g.id}\` to read it and \`devmem impact ${g.id}\` for how callers use it. Cover the behaviour callers rely on; change no production code.`} />
+              <CopyPrompt repo={repo} kind="test" data={{ id: g.id }} label="Copy test prompt" />
             </div>
           ))}
         </div>
@@ -205,12 +212,26 @@ export default function Hygiene({ params }: { params: Record<string, string> }) 
           {!d.clones.length ? <Empty>{d.local ? "No duplicated blocks found." : "Run the checks to look for duplicated code."}</Empty> : (
             <table><thead><tr><th>First copy</th><th>Second copy</th><th className="num">Size (tokens)</th><th></th></tr></thead><tbody>
               {d.clones.map((c: any, k: number) => <tr key={k}><td className="mono">{c.a}:{c.a_lines.join("-")}</td><td className="mono">{c.b}:{c.b_lines.join("-")}</td><td className="num">{c.tokens}</td>
-                <td><div className="row actions"><Copy label="Copy merge prompt" text={`${c.a} lines ${c.a_lines.join("-")} and ${c.b} lines ${c.b_lines.join("-")} are the same code. Move it into one shared function, call it from both places, and keep behaviour identical. Run \`devmem check\` and \`devmem diffcheck\` afterwards.`} /></div></td></tr>)}
+                <td><div className="row actions"><CopyPrompt repo={repo} kind="duplicate" data={c} label="Copy merge prompt" /></div></td></tr>)}
             </tbody></table>
           )}
         </div>
       )}
 
+      {view === "sources" && (
+        <div className="card">
+          <div className="row" style={{ marginBottom: 10 }}>
+            <h3 style={{ margin: 0 }}>Measured test coverage</h3>
+            {cov.data?.available ? <Badge kind={cov.data.per_test ? "good" : "warn"}>{cov.data.per_test ? "per-test data" : "lines only"}</Badge> : <Badge>not imported</Badge>}
+            <span className="grow" />
+            <label className="btn-file"><input type="file" hidden accept=".json,.xml,.info,.lcov" disabled={!!busy} onChange={(e) => { const f = e.target.files?.[0]; if (f) sendCoverage(f); e.target.value = ""; }} /><span className="btnlike"><Icon name="upload" />{busy === "cov" ? "Importing…" : "Import a coverage report"}</span></label>
+          </div>
+          {cov.data?.available
+            ? <p className="hint" style={{ margin: 0 }}>{cov.data.format} report <code>{cov.data.source}</code> from {String(cov.data.ts).slice(0, 16).replace("T", " ")}: {cov.data.stats.covered} of {cov.data.stats.functions} functions ran in tests.
+                {cov.data.per_test ? " Test selection (`devmem tests-for`) and “untested” use it, including tests that reach code through fixtures." : " Without per-test data, “untested” uses it but test selection still uses the call graph."}</p>
+            : <p className="hint" style={{ margin: 0 }}>Test selection is inferred from calls, so tests that reach code through fixtures or helpers can be missed. Import what your test run already produces: coverage.py JSON (<code>pytest --cov --cov-context=test</code> then <code>coverage json --show-contexts</code>), lcov, Cobertura or JaCoCo XML. A report left in the repo (<code>coverage.json</code>, <code>lcov.info</code>, <code>jacoco.xml</code>) is picked up on every re-index.</p>}
+        </div>
+      )}
       {view === "sources" && (
         <div className="hy-split">
           <div className="card">

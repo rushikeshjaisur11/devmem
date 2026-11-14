@@ -11,11 +11,34 @@ files, and builds prompts for the agent that will do the work.
   suggestions are checked against them and flagged `MODERNIZE` when code hand-rolls what a library now provides.
 - **Chat** (web UI): ask your repos, or describe something new / paste a plan and get a compact prompt for another agent.
 - **Guards**: `devmem diffcheck` blocks oversized, out-of-scope or test-weakening diffs; lessons and rules (added by agents, or by you in the UI) persist what was learned.
-- **Token budget**: the `AGENTS.md` block is ~150 tokens; agent commands print capped output (`show` 80 lines, `impact` 12 items per
-  list) with a hint for the full version, and the skill tells agents how to keep tool output small.
+- **Token budget**: the `AGENTS.md` block is ~150 tokens and the MCP tool list ~1,000; a task starts with one `devmem context` call
+  (~1,200 tokens, measured at about half of the recall + find + show + impact + hygiene answers it replaces on a 21,000-symbol repo);
+  every other answer is capped, with a hint for the full version.
 
 - **Runs on a server too**: `devmem-app ui --host 0.0.0.0` adds sign-in with an access token; repos are onboarded by upload or
   Git URL instead of a path (`docs/DEPLOY.md`, `Dockerfile`).
+
+## Screenshots
+
+![Ask & plan: a change described in words becomes a step-by-step prompt with the code to start from](docs/screenshots/ask-and-plan.png)
+
+| | |
+|---|---|
+| ![What breaks if I change](docs/screenshots/impact.png) | ![Code health](docs/screenshots/code-health.png) |
+| **What breaks if…**: direct and indirect callers, overriding methods, tests that reach the code, and what the call graph cannot see. | **Code health**: devmem's checks and SonarQube findings in one list, ordered by severity, callers and test coverage, each with a fix prompt. |
+| ![Modernize](docs/screenshots/modernize.png) | ![Library docs](docs/screenshots/library-docs.png) |
+| **Modernize**: hand-written code that the language or a library now provides, and whether the replacement is usable at the repo's declared versions. | **Library docs**: current docs from PyPI, npm or the web, or your own guides uploaded as a folder or zip; online docs refresh on their own. |
+| ![Repos](docs/screenshots/repos.png) | ![Code map](docs/screenshots/code-map.png) |
+| **Repos**: add a repo by upload, Git URL or path; publish writes the knowledge agents read. | **Code map** (dark theme): every file or function of every repo and how they connect. |
+
+![How far to trust an index](docs/screenshots/overview-repo.png)
+
+Each repo's card on the Overview shows what an agent pays per session and how far to trust the index: calls confirmed by a second
+tool, name-only guesses, call sites still in the code, and how often search finds a function from a description of it.
+
+The screenshots are of the app running on Starlette's own source (indexed in full-accuracy mode, with Graphify and SCIP) and on the
+small sample repos in `fixtures/`. The SonarQube findings come from a local test server with sample data; library docs were fetched
+live from PyPI.
 
 ## Requirements
 Python 3.10+, git, **Node.js 18+**, and network access the first time (npx downloads the SCIP indexers; docs are fetched from the web).
@@ -52,35 +75,43 @@ Push that branch and merge it. **Overview** now shows what agents load per sessi
 
 **2. Connect your agent.** On the **Agents** page tick your agents and press *Connect* (or run `devmem connect` in the repo), or install
 the plugin (`docs/INSTALL.md`). The Overview checklist ticks this off. From then on the agent starts every task with `recall` and uses
-the commands below instead of opening files. A typical agent turn:
+the commands below instead of opening files. A typical agent turn starts with one call:
 ```
-$ devmem find "retry"
-app/retry.py:5  function retry — Call fn, retrying on exception.
-
-$ devmem impact retry
-targets: app/retry.py#retry
-hop 1 (must check): app/client.py#ApiClient.get [structural], app/service.py#load_user [structural]
-hop 2 (contract check): app/service.py#main
-tests: tests/test_service.py#test_load_user
-files: app/client.py, app/retry.py, app/service.py
+$ devmem context "make retry wait longer between attempts"
+FOCUS app/retry.py#retry (lines 5-13)
+ callers (must still work): app/client.py: ApiClient.get; app/service.py: load_user
+ their callers: 1 (`devmem impact app/retry.py#retry`)
+ tests: tests/test_service.py: test_load_user
+BODY
+def retry(fn, attempts=3, delay=0.1):
+    """Call fn, retrying on exception."""
+    ...
+NEXT: edit, `devmem check`, `devmem diffcheck`. Wrong symbol: add `--symbol <path#name>`.
 
 $ devmem tests-for app/retry.py
 python -m pytest -q tests/test_service.py::test_load_user
 ```
-Three short answers replace reading three files and the whole test suite. `show retry` prints the function body (first 80 lines,
-`--full` for more), and `impact` lists are capped at 12 items (`--all` for every one).
+`context` packs the rules and lessons that apply, the likeliest code, its callers, tests and known issues into about 1,200 tokens
+(`--budget`). When several functions fit the task equally it lists them with their signatures instead of printing a body that may be
+the wrong one; `--symbol` picks. `find`, `show`, `impact` and `outline` remain for follow-ups, and every answer is bounded: callers are
+grouped by file, the same definition repeated across files is one hit, `show` prints 80 lines, a large file's `outline` folds methods
+into their class, and nothing exceeds 2,500 tokens unless `--full` / `--all` is given (`DEVMEM_MAX_TOKENS`).
 
 **3. Teach it your rules.** In **Lessons & rules → Rules**, add a rule such as *"Never call the payments API from tests; use
 FakePayments"*, scope it to `tests/**`, and choose *Only this repo* or *Every repo (hub)*. Agents see targeted rules in `devmem recall`
 when they touch matching files; `**` rules apply to every task. Hub rules reach repos on *Sync hub*. Lessons work the same way: agents
 save them with `devmem remember` in their PRs, you edit or promote them here.
 
-**4. Add the docs your code depends on.** In **Library docs**, add `https://<docs-site>/llms.txt`, `pypi:pydantic`, `npm:zod`, or a
-local folder such as `C:\docs\internal-api`. Publish the repo again. Agents can search them offline (`devmem docs "validate an email"`), and whenever they `show` code that
+**4. Add the docs your code depends on.** Docs fetched from the web re-fetch themselves while devmem runs (weekly by default; set it
+on the page or with `DEVMEM_DOCS_REFRESH_DAYS`), and the copies in published repos are updated.  In **Library docs**, fetch `pypi:pydantic`, `npm:zod` or `https://<docs-site>/llms.txt`, or
+upload a folder or `.zip` of your own guides (Markdown, text, HTML); a local folder such as `C:\docs\internal-api` also works. Publish the repo again. Agents can search them offline (`devmem docs "validate an email"`), and whenever they `show` code that
 imports one of these libraries, the matching section of the latest docs is listed with it.
 
 **5. Hand work to an agent.** In **Chat**, describe a change ("add retry with backoff to the export job") or paste a plan. You get a
-compact prompt with the code your org already has, current library docs and the paths not to touch. Paste it into the agent.
+prompt with the code your org already has, current library docs and the paths not to touch. Paste it into the agent. Every prompt
+devmem writes (here, and the fix, test and merge prompts on Code health) has the same shape, so a small model can follow it without
+exploring: the task in one sentence, the exact code with line numbers and its callers, numbered steps with the commands to run, short
+rules, a done-when checklist and what to report. Untick *Step-by-step prompts* in Chat for a shorter version for a stronger agent.
 
 **See how it all connects.** **Code map** draws every file (or every function and class) of every repo as one force-directed
 graph, like Obsidian's graph view: bigger dots have more links, names fade in as you zoom, hovering lights up a node's connections,
@@ -115,6 +146,36 @@ placed in the function it sits in and ordered by severity, by how many places ca
 every row has a ready fix prompt and a link back to SonarQube. Connect the server once under **Integrations** (address, user token,
 project key per repo; a `sonar-project.properties` in the repo is picked up), then *Sync*. Agents get the same findings from
 `devmem hygiene <file>`. CLI and CI: `DEVMEM_SONAR_URL` / `DEVMEM_SONAR_TOKEN` (or Sonar's `SONAR_HOST_URL` / `SONAR_TOKEN`).
+
+**Stop maintaining what a library already does.** **Modernize** scans every function for code written by hand that the language, a
+library you already use, or a well-known library provides: a retry loop with sleep (`tenacity`), a dict used as a cache
+(`functools.lru_cache`), `zip(x, x[1:])` (`itertools.pairwise`), `JSON.parse(JSON.stringify(x))` (`structuredClone`) and about 25 more
+patterns for Python and JS/TS. With *Compare with the latest releases and docs* ticked, the scan first asks the package
+registries for the newest release of every library the repo uses, downloads the current docs for libraries that have none on file,
+and reads the release notes since the version in use (set `GITHUB_TOKEN` to avoid GitHub's anonymous rate limit); it then shows, per
+library that is behind, what changed and which functions here use it, and every candidate links to the current documentation. What
+each newer release added is matched against your function names and descriptions ("possible: word match"), and with a model set up
+*Find what new releases replace* reads the same notes against the code itself and adds its suggestions, marked as such. When GitHub's
+releases API refuses, the project's changelog file is read instead. Each candidate says whether it is usable now: the repo's declared Python / Node version is compared with what the replacement
+needs, and a library replacement says whether you already depend on it. The scan needs no AI and changes nothing; a model can
+optionally confirm or reject candidates, and each has a step-by-step replace prompt. Agents see the ready ones in `devmem hygiene <file>`.
+
+**Measured test coverage.** Test selection is inferred from calls, which misses tests that reach code through fixtures or helpers.
+Import what your test run already produces and `tests-for`, `impact` and "untested" use measured data instead:
+`devmem-app coverage <repo> coverage.json` (coverage.py JSON from `pytest --cov --cov-context=test` and `coverage json --show-contexts`;
+lcov, Cobertura and JaCoCo XML give line data without per-test detail), or upload it on Code health → Sources. A report left in the
+repo is picked up on every re-index; files edited after the test run are skipped rather than mapped onto moved lines. `tests-for`
+always says where its selection came from.
+
+**What devmem cannot see, it says.** Answers read code as the file is now: a file edited since indexing is re-parsed (or the
+definition searched for) and the answer notes it; renamed or deleted code is refused instead of printing the wrong lines. `impact`
+follows inheritance (overrides, callers through a base class) and functions passed by name, and prints a `BLIND SPOT` line when a
+decorator, an `__all__` export or the name used as text means a caller may be invisible.
+
+**How far to trust each index.** `devmem-app selfcheck <repo>` (or *Measure it* on the Overview) reports the share of call
+edges a second tool confirmed, the share of name-only guesses, whether sampled call sites are still in the code, and how often
+search finds a function from a description. Add your own `query => path#qualname` pairs to `.devmem/search-eval.txt`. Measured
+numbers and method: `docs/ACCURACY.md`.
 
 **6. Keep it fresh.** While `devmem-app ui` runs it re-indexes any repo whose HEAD moved (pull, merge, commit, branch switch); add
 `--publish` to republish too, or `--no-watch` to turn it off. Without the UI: `devmem-app watch` (or `watch --once` from cron or a git
@@ -186,6 +247,7 @@ in the repo: it checks every layer, down to a real MCP round trip, and prints th
 
 | `devmem` (agents, offline) | |
 |---|---|
+| `context` | start of a task in one call: rules, likeliest code, callers, tests, known issues, inside a token budget |
 | `find`, `show`, `outline`, `impact`, `helpers` | locate code and see blast radius instead of reading files |
 | `mcp` | the same commands as MCP tools over stdio |
 | `recall`, `remember`, `feedback` | lessons, rules and cross-repo pointers for a task |

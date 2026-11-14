@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, q } from "../api";
-import { Badge, Copy, Empty, Err, RepoSelect, SymbolSearch, Term, useAsync, useRepos } from "../components";
+import { Badge, Copy, Empty, Err, useRepo, SymbolSearch, Term, useAsync, useRepos } from "../components";
 
 const AGENTS: Record<string, [string, string]> = {
   claude: ["Claude Code", ".mcp.json + CLAUDE.md"], cursor: ["Cursor", ".cursor/mcp.json"], vscode: ["VS Code / Copilot", ".vscode/mcp.json"],
@@ -27,7 +27,7 @@ function Connect({ repo, onDone }: { repo: string; onDone: () => void }) {
   return (
     <div className="card">
       <h3>Connect your agents</h3>
-      <p className="hint" style={{ marginTop: -6 }}>Adds devmem as an <Term k="mcp">MCP server</Term> in each agent's project settings, so the agent can call <code>devmem_find</code>, <code>devmem_impact</code> and the rest as tools. Existing settings in those files are kept. Commit them so your team gets the same setup.</p>
+      <p className="hint" style={{ marginTop: -6 }}>Adds devmem as an <Term k="mcp">MCP server</Term> in each agent's project settings, so the agent can call <code>devmem_context</code>, <code>devmem_find</code>, <code>devmem_impact</code> and the rest as tools. Existing settings in those files are kept. Commit them so your team gets the same setup.</p>
       <div className="agents-grid" role="group" aria-label="Agents">
         {Object.entries(AGENTS).map(([k, [label, file]]) => (
           <label key={k} className={`agent-opt ${pick.includes(k) ? "on" : ""}`}>
@@ -136,10 +136,10 @@ function Activity({ repo }: { repo: string }) {
 
 export default function Agents({ params }: { params: Record<string, string> }) {
   const repos = useRepos();
-  const [repo, setRepo] = useState(params.repo || "");
+  const { repo } = useRepo();
   return (
     <>
-      <div className="row"><h1>Agents</h1>{repos.data && <RepoSelect value={repo} onChange={setRepo} repos={repos.data} />}</div>
+      <div className="row"><h1>Agents</h1></div>
       <p className="sub">Connect the coding agents you use, see exactly what they read from devmem, and check what they asked for.</p>
       <Connect repo={repo} onDone={repos.reload} />
       <Doctor repo={repo} />

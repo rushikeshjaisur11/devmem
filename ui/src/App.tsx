@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useRoute, nav } from "./route";
 import { api } from "./api";
-import { EDITORS, ErrorBoundary, getEditor, Icon, useConfig, useRepos } from "./components";
+import { EDITORS, ErrorBoundary, getEditor, Icon, RepoContext, useConfig, useRepos } from "./components";
 const Overview = lazy(() => import("./pages/Overview"));
 const Agents = lazy(() => import("./pages/Agents"));
 const Repos = lazy(() => import("./pages/Repos"));
@@ -19,6 +19,7 @@ const Ai = lazy(() => import("./pages/Ai"));
 const Definitions = lazy(() => import("./pages/Definitions"));
 const Analysis = lazy(() => import("./pages/Analysis"));
 const Integrations = lazy(() => import("./pages/Integrations"));
+const Modernize = lazy(() => import("./pages/Modernize"));
 
 const ic = (d: string) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" dangerouslySetInnerHTML={{ __html: d }} />;
 const ICONS: Record<string, string> = {
@@ -35,18 +36,21 @@ const ICONS: Record<string, string> = {
   chat: '<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/>',
   metrics: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
   ai: '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 16l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7z"/>',
+  modernize: '<path d="M4 17 10 11l4 4 6-7"/><path d="M15 8h5v5"/>',
   integrations: '<path d="M9 3v5M15 3v5M7 8h10v3a5 5 0 0 1-10 0zM12 16v5"/>',
   analysis: '<path d="M10 3 8 9l-6 2 6 2 2 6 2-6 6-2-6-2z"/><path d="M19 15v5M16.5 17.5h5"/>',
   definitions: '<path d="M4 5h16M4 10h10M4 15h7"/><path d="m15 17 2 2 4-5"/>',
   reuse: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>',
 };
-const GROUPS: [string, string[]][] = [["Start here", ["overview", "agents", "repos"]], ["Before you change code", ["reuse", "impact", "graph", "lineage"]], ["Guide agents", ["chat", "memory", "analysis", "definitions", "docs", "hub"]], ["Health", ["hygiene", "metrics"]], ["Settings", ["ai", "integrations"]]];
+const GROUPS: [string, string[]][] = [["Start here", ["overview", "agents", "repos"]], ["Before you change code", ["reuse", "impact", "graph", "lineage"]], ["Guide agents", ["chat", "memory", "analysis", "definitions", "docs", "hub"]], ["Health", ["hygiene", "modernize", "metrics"]], ["Settings", ["ai", "integrations"]]];
 const PAGES: [string, string, any][] = [
   ["overview", "Overview", Overview], ["agents", "Agents", Agents], ["repos", "Repos", Repos], ["impact", "What breaks if…", Impact], ["graph", "Code map", Graph], ["reuse", "Already built elsewhere", Reuse],
   ["lineage", "Data flow", Lineage], ["hygiene", "Code health", Hygiene], ["memory", "Lessons & rules", Memory], ["docs", "Library docs", Docs], ["hub", "Team hub", Hub],
-  ["chat", "Ask & plan", Chat], ["metrics", "Results", Metrics], ["analysis", "AI analysis", Analysis], ["definitions", "Improve descriptions", Definitions], ["ai", "AI setup", Ai], ["integrations", "Integrations", Integrations],
+  ["chat", "Ask & plan", Chat], ["metrics", "Results", Metrics], ["analysis", "AI analysis", Analysis], ["definitions", "Improve descriptions", Definitions], ["ai", "AI setup", Ai], ["integrations", "Integrations", Integrations], ["modernize", "Modernize", Modernize],
 ];
 const LABEL = Object.fromEntries(PAGES.map((p) => [p[0], p[1]]));
+// pages that show one repo at a time: the top bar offers the repo switcher on these
+const REPO_PAGES = new Set(["agents", "impact", "graph", "reuse", "hygiene", "memory", "metrics", "definitions", "analysis", "docs", "modernize", "chat"]);
 
 /** The mark: a symbol and the blast radius around it, drawn in the one accent. */
 const Mark = () => (
@@ -131,6 +135,14 @@ export default function App() {
   const repos = useRepos();
   const cfg = useConfig();
   const [locked, setLocked] = useState(false);
+  // one current repo for the whole app: from the link (?repo=), else the last one used, else the first indexed
+  const [repo, setRepoState] = useState(() => { try { return params.repo || localStorage.getItem("devmem-repo") || ""; } catch { return params.repo || ""; } });
+  const setRepo = (v: string) => { setRepoState(v); try { localStorage.setItem("devmem-repo", v); } catch { /* private mode */ } if (params.repo && params.repo !== v) nav(page, { ...params, repo: v }); };
+  useEffect(() => { if (params.repo && params.repo !== repo) setRepoState(params.repo); }, [params.repo]); // eslint-disable-line
+  const indexed = (repos.data || []).filter((r) => r.indexed);
+  useEffect(() => { if (repos.data && indexed.length && !indexed.some((r) => r.name === repo)) setRepoState(indexed[0].name); }, [repos.data]); // eslint-disable-line
+  const [edMenu, setEdMenu] = useState(false);
+  useEffect(() => { if (!edMenu) return; const f = () => setEdMenu(false); window.addEventListener("click", f); return () => window.removeEventListener("click", f); }, [edMenu]);
   useEffect(() => { if (cfg.data) setLocked(!cfg.data.signed_in); }, [cfg.data]);
   useEffect(() => { const f = () => setLocked(true); window.addEventListener("devmem-signin", f); return () => window.removeEventListener("devmem-signin", f); }, []);
   useEffect(() => setMenu(false), [page, params.repo]);
@@ -163,12 +175,20 @@ export default function App() {
         <div className="side-foot">
           {deployed
             ? <button className="ghost sm" onClick={() => api.post("/api/logout").then(() => window.location.reload())}><Icon name="out" />Sign out</button>
-            : <label className="editor-pick" title="File and line links on every page open in this editor">
-                <span>Open files in</span>
-                <select value={editor} onChange={(e) => pickEditor(e.target.value)}>
-                  {Object.entries(EDITORS).map(([k, [label]]) => <option key={k} value={k}>{k === "none" ? "nothing (links off)" : label}</option>)}
-                </select>
-              </label>}
+            : <span className="menu-wrap" onClick={(e) => e.stopPropagation()}>
+                <button className="ghost sm foot-btn" aria-haspopup="menu" aria-expanded={edMenu} onClick={() => setEdMenu((o) => !o)} title="File and line links on every page open in this editor">
+                  <Icon name="code" /><span>{editor === "none" ? "Editor links off" : `Opens in ${EDITORS[editor]?.[0] || "VS Code"}`}</span>
+                </button>
+                {edMenu && (
+                  <div className="menu up" role="menu">
+                    {Object.entries(EDITORS).map(([k, [label]]) => (
+                      <button key={k} role="menuitemradio" aria-checked={editor === k} onClick={() => { pickEditor(k); setEdMenu(false); }}>
+                        <Icon name={editor === k ? "check" : "blank"} /><span>{k === "none" ? "Do not link files" : `Open files in ${label}`}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </span>}
           <button className="icon-btn" onClick={toggle} aria-label={dark ? "Switch to light theme" : "Switch to dark theme"} title={dark ? "Light theme" : "Dark theme"}>
             {dark ? ic('<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>') : ic('<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>')}
           </button>
@@ -176,12 +196,21 @@ export default function App() {
       </nav>
       <header className="topbar">
         <button className="icon-btn menu-btn" onClick={() => setMenu((m) => !m)} aria-label={menu ? "Close menu" : "Open menu"} aria-expanded={menu}>{ic(menu ? '<path d="M6 6l12 12M18 6 6 18"/>' : '<path d="M4 7h16M4 12h16M4 17h16"/>')}</button>
-        <span className="crumb">{params.repo ? <>{params.repo} / </> : null}<b>{LABEL[page] || "Overview"}</b></span>
+        <span className="crumb"><b>{LABEL[page] || "Overview"}</b></span>
+        {!REPO_PAGES.has(page) && <span className="topbar-lead" />}
+        {REPO_PAGES.has(page) && indexed.length > 0 && (
+          <label className="repo-switch" title="The repo this page shows. It stays the same as you move between pages.">
+            <Icon name="folder" />
+            <select value={repo} onChange={(e) => setRepo(e.target.value)} aria-label="Repository">
+              {(page === "memory" ? repos.data || [] : indexed).map((r) => <option key={r.name} value={r.name}>{r.name}</option>)}
+            </select>
+          </label>
+        )}
         <button className="kbtn" onClick={() => setPalette(true)} aria-label="Go to a page or repo">{ic('<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>')}<span>Go to a page or repo</span><kbd>{mac ? "⌘" : "Ctrl"} K</kbd></button>
         <span className="spacer" />
       </header>
       <div className="sheet">
-        <main><ErrorBoundary key={page + JSON.stringify(params) + editor}><Suspense fallback={<p className="muted">Loading…</p>}><Page params={params} /></Suspense></ErrorBoundary></main>
+        <main><RepoContext.Provider value={{ repo, setRepo, repos: repos.data }}><ErrorBoundary key={page + JSON.stringify(params) + editor + repo}><Suspense fallback={<p className="muted">Loading…</p>}><Page params={params} /></Suspense></ErrorBoundary></RepoContext.Provider></main>
       </div>
       {palette && <Palette onClose={() => setPalette(false)} />}
     </div>

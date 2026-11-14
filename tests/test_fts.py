@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from devmem.index import Index, _score, _tokens, write_db
+from devmem.index import query_tokens, Index, _score, _tokens, write_db
 from devmem.schema import DB_PATH, INDEX_PATH
 
 NAMES = ["retryRequest", "load_user", "parse_config", "RetryPolicy.backoff", "send_mail", "Mailer.send", "t_retry"]
@@ -16,8 +16,9 @@ def make_idx():
 
 
 def brute(ix, query):
-    q = _tokens(query)
-    hits = [(sc, s) for s in ix.symbols.values() if s["kind"] != "module" and (sc := _score(q, query, s)) > 0]
+    q = query_tokens(query)
+    w = ix.idf(q)                                              # word rarity over the whole index, as find uses
+    hits = [(sc, s) for s in ix.symbols.values() if s["kind"] != "module" and (sc := _score(q, query, s, "", w)) > 0]
     return sorted(hits, key=lambda x: (-x[0], x[1]["file"], x[1]["line"]))
 
 

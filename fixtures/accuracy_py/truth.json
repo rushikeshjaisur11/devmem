@@ -1,0 +1,24 @@
+{
+ "note": "Ground truth written by reading the code, not from devmem's output. Each trap is named in `why`.",
+ "calls": [
+  ["app/service.py#load", "app/store.py#make_store", "plain imported function"],
+  ["app/service.py#load", "app/store.py#Store.get", "get on a value returned by make_store: three classes define get"],
+  ["app/service.py#fetch", "app/http.py#Session", "constructor through a module alias"],
+  ["app/service.py#fetch", "app/http.py#Session.get", "get on a fresh Session"],
+  ["app/service.py#remember", "app/store.py#Cache", "constructor through an aliased import (LRU)"],
+  ["app/service.py#remember", "app/store.py#Cache.put", "put on that instance"],
+  ["app/service.py#run_all", "app/service.py#load", "passed by name to map"],
+  ["app/store.py#Store.get", "app/store.py#Store._load", "self call"],
+  ["app/store.py#make_store", "app/store.py#Store", "constructor"],
+  ["app/http.py#Session.get", "app/http.py#Session.send", "self call"],
+  ["app/sub.py#RemoteStore.warm", "app/store.py#Store.get", "inherited method called through self"],
+  ["tests/test_service.py#test_load", "app/service.py#load", "test"],
+  ["tests/test_service.py#test_remember", "app/service.py#remember", "test"]
+ ],
+ "not_calls": [
+  ["app/service.py#config", "app/store.py#Store.items", "d.items() is dict.items, not the user class"]
+ ],
+ "overrides": [
+  ["app/sub.py#RemoteStore._load", "app/store.py#Store._load"]
+ ]
+}

@@ -131,6 +131,155 @@ def build_edges(idx: dict) -> list[dict]:
         if k not in best or RANK[conf] > RANK[best[k]]:
             best[k] = conf
 
+    # ---- receiver types (Python): which class a variable holds, so `x.get()` resolves to one class, not every class with get ----
+    def base_class(cls: dict, name: str) -> dict | None:
+        rec = files.get(cls["file"], {})
+        simple = name.split(".")[-1]
+        loc = by_file.get(cls["file"], {}).get(simple)
+        if loc and loc["kind"] == "class" and "." not in name:
+            return loc
+        for i in rec.get("imports", []):
+            if i["name"] and i["alias"] == name.split(".")[0] and "." not in name:
+                for f in _module_files(files, i["module"]):
+                    hit = by_file.get(f, {}).get(i["name"])
+                    if hit and hit["kind"] == "class":
+                        return hit
+            if not i["name"] and "." in name and i["alias"] == name.split(".")[0]:
+                for f in _module_files(files, i["module"]):
+                    hit = by_file.get(f, {}).get(simple)
+                    if hit and hit["kind"] == "class":
+                        return hit
+        return None
+
+
+    def resolve_ref(path: str, text: str) -> dict | None:
+        """`Session`, `h.Session`, `LRU`, `make_store` as written in `path` -> the class or function it names (via imports or the
+        same file only: no global guess)."""
+        rec = files.get(path, {})
+        imports = rec.get("imports", [])
+        text = text.replace("()", "")
+        if "." in text:
+            head, rest = text.split(".", 1)
+            for i in imports:
+                if i["alias"] == head:
+                    mod = f"{i['module']}.{i['name']}" if i["name"] else i["module"]
+                    for f in _module_files(files, mod):
+                        hit = by_file.get(f, {}).get(rest)
+                        if hit:
+                            return hit
+            return None
+        loc = by_file.get(path, {}).get(text)
+        if loc and loc["kind"] in ("class", "function"):
+            return loc
+        for i in imports:
+            if i["name"] and i["alias"] == text:
+                for f in _module_files(files, i["module"]):
+                    hit = by_file.get(f, {}).get(i["name"])
+                    if hit and hit["kind"] in ("class", "function"):
+                        return hit
+        return None
+
+    BUILTIN_TYPES = {"open", "dict", "list", "set", "tuple", "str", "bytes", "int", "float", "frozenset", "bytearray", "iter", "enumerate", "zip",
+                     "map", "filter", "sorted", "reversed", "range", "object", "super", "type", "memoryview", "defaultdict", "OrderedDict", "Counter", "deque"}
+
+    def external(path: str, ref: str) -> bool:
+        """True when `ref` is a builtin or comes from a library outside the repo: an object of that type has no method here."""
+        ref = ref.replace("()", "")
+        head = ref.split(".")[0]
+        if "." not in ref and ref in BUILTIN_TYPES:
+            return True
+        for i in files.get(path, {}).get("imports", []):
+            if i["alias"] == head:
+                mod = i["module"] if not i["name"] else f"{i['module']}.{i['name']}"
+                return not (_module_files(files, mod) or _module_files(files, i["module"]))
+        return False
+
+    def type_of(path: str, ref: str, depth: int = 0) -> dict | None:
+        """The class a constructor call or a function call written as `ref` produces."""
+        t = resolve_ref(path, ref)
+        if t is None or depth > 2:
+            return None
+        if t["kind"] == "class":
+            return t
+        if t.get("returns"):
+            return type_of(t["file"], t["returns"], depth + 1)
+        return None
+
+    def method_of(cls: dict, name: str, depth: int = 0) -> dict | None:
+        """`name` on `cls`, or inherited from its bases (first base first)."""
+        hit = by_file.get(cls["file"], {}).get(f"{cls['qualname']}.{name}")
+        if hit or depth > 5:
+            return hit
+        for b in cls.get("bases", []):
+            bc = base_class(cls, b)
+            if bc:
+                m = method_of(bc, name, depth + 1)
+                if m:
+                    return m
+        return None
+
+    var_types: dict[tuple[str, str], dict[str, dict | None]] = {}
+
+    EXTERNAL = {"id": "<external>"}       # a value whose class lives outside the repo
+
+    def typed(path: str, a: dict):
+        ref = a.get("type") or a.get("call") or ""
+        t = type_of(path, ref)
+        return t if t is not None else (EXTERNAL if external(path, ref) else None)
+
+    def var_table(path: str, caller: str) -> dict:
+        """var -> class (or EXTERNAL, or None = unknown) for one function, then the module's globals as a fallback."""
+        key = (path, caller)
+        if key not in var_types:
+            vt: dict = {}
+            fn = by_file.get(path, {}).get(caller)
+            for v, ann in ((fn or {}).get("params") or {}).items():
+                vt[v] = type_of(path, ann) or (EXTERNAL if external(path, ann) else None)
+            for a in sorted((x for x in files.get(path, {}).get("assigns", []) if x["caller"] == caller), key=lambda x: x["line"]):
+                t = typed(path, a)
+                if a["var"] in vt and vt[a["var"]] is not None and t is not None and vt[a["var"]]["id"] != t["id"]:
+                    vt[a["var"]] = None              # assigned two different classes: unknown
+                elif a["var"] not in vt:
+                    vt[a["var"]] = t
+            var_types[key] = vt
+        return var_types[key]
+
+    def receiver_class(path: str, caller: str, recv: str) -> tuple[dict | None, bool]:
+        """(class, known?) for the receiver expression of a call. known is False when nothing can be said; (None, True) means
+        the receiver is a builtin or library object, so no method in the repo can be the target."""
+        local = by_file.get(path, {})
+        cls_name = caller.split(".")[0] if "." in caller else None
+        if recv in ("self", "cls") and cls_name:
+            c = local.get(cls_name)
+            return (c, True) if c and c["kind"] == "class" else (None, False)
+        if recv == "super()" and cls_name and local.get(cls_name, {}).get("kind") == "class":
+            return {"id": "<super>", "of": local[cls_name]}, True
+        if recv.endswith(")") and "(" in recv and recv.count("(") == 1:
+            ref = recv[: recv.index("(")]
+            t = type_of(path, ref)
+            if t is not None:
+                return t, True
+            return (None, True) if external(path, ref) else (None, False)
+        if recv.startswith("self.") and recv.count(".") == 1 and cls_name:
+            found = None
+            for a in files.get(path, {}).get("assigns", []):
+                if a["var"] == recv and a["caller"].startswith(cls_name + "."):
+                    t = typed(path, a)
+                    if t is None or (found is not None and found["id"] != t["id"]):
+                        return None, False           # unknown, or two different classes over the class's methods
+                    found = t
+            if found is not None:
+                return (None, True) if found is EXTERNAL else (found, True)
+            return None, False
+        if recv.isidentifier():
+            t = var_table(path, caller).get(recv)
+            if t is None and recv not in var_table(path, caller):
+                t = var_table(path, "<module>").get(recv)     # a module-level object (a compiled regex, a client)
+            if t is EXTERNAL:
+                return None, True
+            return (t, t is not None)
+        return None, False
+
     for path, rec in files.items():
         if rec.get("lang") in ("go", "java", "csharp", "kotlin", "rust"):
             _typed_edges(path, rec, by_id, by_name, by_file, add)
@@ -184,6 +333,23 @@ def build_edges(idx: dict) -> list[dict]:
                     cands = [s for s in by_name.get(name, []) if s["kind"] != "method"]
             else:
                 head = recv.split(".")[0]
+                cls, known = receiver_class(path, c["caller"], recv)
+                if known and cls is None:
+                    continue                  # a builtin or library object: a same-named method in the repo is not the target
+                if known and cls.get("id") == "<super>":
+                    base = cls["of"]
+                    m = next((mm for b in base.get("bases", []) if (bc := base_class(base, b)) and (mm := method_of(bc, name))), None)
+                    if m is not None and m["id"] != src_id:
+                        add(src_id, m["id"], "tests" if by_id[src_id]["is_test"] else "calls", CONF_STRUCTURAL)
+                    continue
+                if known and cls is not None:
+                    m = method_of(cls, name)
+                    if m is not None:
+                        if m["id"] != src_id:
+                            add(src_id, m["id"], "tests" if by_id[src_id]["is_test"] else "calls", CONF_STRUCTURAL)
+                        continue
+                    if recv not in ("self", "cls"):
+                        continue          # the class is known and has no such method (a library base class, a typo): no guess
                 if recv in ("self", "cls") and "." in c["caller"]:
                     cls = c["caller"].split(".")[0]
                     q = f"{cls}.{name}"
@@ -216,5 +382,50 @@ def build_edges(idx: dict) -> list[dict]:
         for t in rec.get("tables", []):
             src = f"{path}#{t['caller']}"
             add(src if src in by_id else path, f"table:{t['name']}", t["mode"], CONF_STRUCTURAL)
+
+        # functions handed over by name (callbacks, targets, handler tables): the receiver calls them later, so a change to
+        # the function affects this code although no call to it is written here
+        for r in rec.get("refs", []):
+            src_id = f"{path}#{r['caller']}"
+            if src_id not in by_id:
+                continue
+            name, cands = r["name"], []
+            if r.get("recv"):
+                if r["recv"] in mod_alias:
+                    for f in _module_files(files, mod_alias[r["recv"]]):
+                        cands += [s for q, s in by_file.get(f, {}).items() if s["name"] == name and "." not in q and s["kind"] == "function"]
+                elif r["recv"] in ("self", "cls") and "." in r["caller"]:
+                    q = f"{r['caller'].split('.')[0]}.{name}"
+                    cands = [local[q]] if q in local else []
+            elif name in from_imp:
+                imp = from_imp[name]
+                for f in _module_files(files, imp["module"]):
+                    cands += [s for q, s in by_file.get(f, {}).items() if s["name"] == imp["name"] and "." not in q and s["kind"] == "function"]
+            elif name in local and local[name]["kind"] == "function":
+                cands = [local[name]]
+            for d in cands[:2]:
+                if d["id"] != src_id:
+                    add(src_id, d["id"], "refs", CONF_STRUCTURAL)
+
+    for cls in idx["symbols"]:
+        if cls["kind"] != "class" or not cls.get("bases"):
+            continue
+        seen_cls, queue = {cls["id"]}, list(cls["bases"])
+        owner = cls
+        chain = []
+        while queue and len(chain) < 6:                      # walk up: direct bases, then theirs
+            b = base_class(owner, queue.pop(0))
+            if b and b["id"] not in seen_cls:
+                seen_cls.add(b["id"]); chain.append(b)
+                if owner is cls:
+                    add(cls["id"], b["id"], "inherits", CONF_STRUCTURAL)
+                if not queue and b.get("bases"):
+                    owner, queue = b, list(b["bases"])
+        mine = {q.split(".", 1)[1]: s for q, s in by_file.get(cls["file"], {}).items() if q.startswith(cls["qualname"] + ".")}
+        for b in chain:
+            for m, s in mine.items():
+                parent = by_file.get(b["file"], {}).get(f"{b['qualname']}.{m}")
+                if parent and not m.startswith("__"):
+                    add(s["id"], parent["id"], "overrides", CONF_STRUCTURAL)
 
     return [{"src": s, "dst": d, "type": t, "conf": c} for (s, d, t), c in sorted(best.items())]

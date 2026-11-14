@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type cytoscape from "cytoscape";
 import { api, q } from "../api";
-import { Empty, Err, RepoSelect, SymbolSearch, useAsync, useRepos } from "../components";
+import { Empty, Err, useRepo, SymbolSearch, useAsync, useRepos } from "../components";
 import { CyGraph, EDGE_KINDS, NODE_KINDS, kindColor } from "../graph";
 import { DEFAULT_SETTINGS, ForceMap, GROUP_HUES, KIND_HUE, MapLink, MapNode, MapSettings, folderOf } from "../forcemap";
 import { nav } from "../route";
@@ -212,7 +212,7 @@ function WorkspaceMap({ onFocus }: { onFocus: (repo: string, sid: string) => voi
 
 export default function Graph({ params }: { params: Record<string, string> }) {
   const repos = useRepos();
-  const [repo, setRepo] = useState(params.repo || "");
+  const { repo, setRepo } = useRepo();
   const [focus, setFocus] = useState(params.focus || "");
   const [depth, setDepth] = useState(2);
   const [sel, setSel] = useState<any>(null);
@@ -240,7 +240,6 @@ export default function Graph({ params }: { params: Record<string, string> }) {
       {!focus ? <WorkspaceMap onFocus={(r, sid) => { setRepo(r); setFocus(sid); }} /> : (
         <>
           <div className="gtools">
-            {repos.data && <RepoSelect value={repo} onChange={setRepo} repos={repos.data} />}
             <SymbolSearch repo={repo} value={find} onChange={setFind} onPick={(id) => { if (id.includes("#")) { setFocus(id); setFind(""); } }} placeholder="Find a function: describe it or type its name" />
             <label className="row" style={{ gap: 6 }}>Hops <select value={depth} onChange={(e) => setDepth(+e.target.value)}>{[1, 2, 3].map((d) => <option key={d}>{d}</option>)}</select></label>
           </div>

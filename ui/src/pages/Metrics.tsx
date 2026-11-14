@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { api } from "../api";
-import { Badge, Bars, EditorLink, Empty, Err, RepoSelect, editorHref, useAsync, useRepos } from "../components";
+import { Badge, Bars, EditorLink, Empty, Err, useRepo, editorHref, useAsync, useRepos } from "../components";
 
 const fmt = (v: any) => (v === null || v === undefined ? "–" : v);
 
@@ -47,7 +47,7 @@ function PrMetrics({ d, onUploaded }: { d: any; onUploaded: () => void }) {
 
 export default function Metrics({ params }: { params: Record<string, string> }) {
   const repos = useRepos();
-  const [repo, setRepo] = useState(params.repo || "");
+  const { repo } = useRepo();
   const m = useAsync(() => (repo ? api.get(`/api/repos/${repo}/metrics`) : Promise.resolve(null)), [repo]);
   const d = m.data;
   const usage = (repos.data || []).find((r) => r.name === repo)?.usage;
@@ -55,7 +55,7 @@ export default function Metrics({ params }: { params: Record<string, string> }) 
   const agentNow = pm ? (pm.split ? pm.agent.after : pm.agent.all) : null;
   return (
     <>
-      <div className="row" style={{ marginBottom: 6 }}><h1>Results</h1>{repos.data && <RepoSelect value={repo} onChange={setRepo} repos={repos.data} />}</div>
+      <div className="row" style={{ marginBottom: 6 }}><h1>Results</h1></div>
       <p className="sub">Is devmem paying off? Smaller agent changes, fewer tokens, and lessons agents found useful.</p>
       <Err msg={m.error} />
       {d && <>

@@ -24,7 +24,8 @@ def run_graphify(root: Path, timeout: int = 900) -> tuple[Path | None, str]:
     if not exe:
         return None, "graphify not found: pip install graphifyy (or pass an existing graph with --graphify-file)"
     try:
-        r = subprocess.run([exe, "update", "."], cwd=str(root), capture_output=True, text=True, errors="replace", timeout=timeout)
+        from devmem.runner import tool_env   # a repo file named like a standard module (types.py) must not shadow it inside Graphify
+        r = subprocess.run([exe, "update", "."], cwd=str(root), capture_output=True, text=True, errors="replace", timeout=timeout, env=tool_env())
     except (subprocess.TimeoutExpired, OSError) as e:
         return None, f"graphify: {e}"
     g = root / "graphify-out/graph.json"

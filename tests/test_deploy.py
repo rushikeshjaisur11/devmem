@@ -244,7 +244,8 @@ def test_low_confidence_definitions_are_rated_described_and_searched(tmp_path, m
     assert api.get("/api/repos/r/definitions?level=low").json()["llm"]["configured"] is False
     assert api.post("/api/repos/r/definitions/ai", json={"ids": ["pkg/a.py#caller"]}, headers=H).status_code == 409   # no model set up
     r = api.put("/api/repos/r/definitions", json={"id": "pkg/a.py#caller", "text": "  Doubles one through   run.  "}, headers=H)
-    assert r.json()["saved"] == {"text": "Doubles one through run.", "by": "human", "code": r.json()["saved"]["code"]}
+    saved = r.json()["saved"]
+    assert saved == {"text": "Doubles one through run.", "by": "human", "code": saved["code"], "fhash": saved["fhash"]} and saved["fhash"]
     assert api.get("/api/repos/r/search?q=doubles").json()[0]["id"] == "pkg/a.py#caller"
     assert api.put("/api/repos/r/definitions", json={"id": "missing", "text": "x"}, headers=H).status_code == 404
     api.put("/api/repos/r/definitions", json={"id": "pkg/a.py#caller", "text": ""}, headers=H)
@@ -320,7 +321,8 @@ def test_ai_analysis_writes_once_resumes_and_feeds_publish_and_chat(tmp_path, ap
 
     publish(root, idx, {})
     ov = (root / ".devmem/knowledge/overview.md").read_text()
-    assert "## What this repo does\nA small payments service" in ov and "modules/app.md — Handles ledger reconciliation part 0." in ov
+    assert "## What this repo does\n(AI-written, unreviewed) A small payments service" in ov            # labelled until a person approves it
+    assert "modules/app.md — (AI-written, unreviewed) Handles ledger reconciliation part 0." in ov
     assert "Handles ledger reconciliation part 0." in (root / ".devmem/knowledge/modules/app.md").read_text().splitlines()[2]
     hits = chat.retrieve("what does this repo do", {"conv_app": root})
     assert hits and hits[0]["kind"] == "overview" and "payments service" in hits[0]["snippet"]

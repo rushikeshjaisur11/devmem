@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { api, Json } from "./api";
 
 export function useAsync<T = Json>(fn: () => Promise<T>, deps: any[]) {
@@ -16,6 +16,12 @@ export function useAsync<T = Json>(fn: () => Promise<T>, deps: any[]) {
 export function useRepos() {
   return useAsync<Json[]>(() => api.get("/api/repos"), []);
 }
+
+/* ---------- the current repo: chosen once in the top bar, used by every page ---------- */
+export interface RepoCtx { repo: string; setRepo: (v: string) => void; repos: Json[] | null }
+export const RepoContext = createContext<RepoCtx>({ repo: "", setRepo: () => {}, repos: null });
+/** The repo picked in the top bar. Pages read it here instead of each keeping (and placing) its own selector. */
+export const useRepo = () => useContext(RepoContext);
 
 export function RepoSelect({ value, onChange, repos, indexedOnly = true }: { value: string; onChange: (v: string) => void; repos: Json[]; indexedOnly?: boolean }) {
   const list = repos.filter((r) => !indexedOnly || r.indexed);
@@ -198,6 +204,11 @@ const PATHS: Record<string, string> = {
   git: '<circle cx="6" cy="6" r="2.2"/><circle cx="6" cy="18" r="2.2"/><circle cx="18" cy="9" r="2.2"/><path d="M6 8.2v7.6M18 11.2c0 3-3 3.8-6 3.8H8.2"/>',
   plug: '<path d="M9 3v5M15 3v5M7 8h10v3a5 5 0 0 1-10 0zM12 16v5"/>',
   key: '<circle cx="8" cy="14" r="4"/><path d="m11 11 9-9M16 6l3 3"/>',
+  code: '<path d="m8 8-4 4 4 4M16 8l4 4-4 4M13.5 5l-3 14"/>',
+  blank: '',
+  book: '<path d="M4 5a2 2 0 0 1 2-2h13v15H6a2 2 0 0 0-2 2z"/><path d="M4 20a2 2 0 0 0 2 2h13v-4"/>',
+  globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 3 2.5 15 0 18M12 3c-2.5 3-2.5 15 0 18"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
   out: '<path d="M10 4H5a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h5M15 8l4 4-4 4M19 12H9"/>',
 };
 export const Icon = ({ name }: { name: string }) => (
@@ -235,3 +246,34 @@ export function useConfig() {
 }
 
 export const fmtBytes = (n: number) => n >= 1024 ** 3 ? `${(n / 1024 ** 3).toFixed(1)} GB` : n >= 1024 ** 2 ? `${(n / 1024 ** 2).toFixed(1)} MB` : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} B`;
+
+/** Copy a prompt that the server builds with the code, callers and test command in it (see prompts.py). */
+export function CopyPrompt({ repo, kind, data, label = "Copy fix prompt" }: { repo: string; kind: string; data: Json; label?: string }) {
+  const [state, setState] = useState<"" | "busy" | "done" | "err">("");
+  const [text, setText] = useState("");
+  const [tokens, setTokens] = useState(0);
+  const go = async () => {
+    setState("busy");
+    try {
+      const r = await api.post(`/api/repos/${repo}/prompt`, { kind, data });
+      setTokens(r.tokens);
+      try { await navigator.clipboard.writeText(r.prompt); setState("done"); setTimeout(() => setState(""), 2500); }
+      catch { setText(r.prompt); setState(""); }     // no clipboard permission: show it to copy by hand
+    } catch { setState("err"); setTimeout(() => setState(""), 2500); }
+  };
+  return (
+    <>
+      <button className="ghost sm" disabled={state === "busy"} onClick={go} title="A step-by-step prompt with the code, its callers and the test command: paste it into your coding agent">
+        {state === "busy" ? "Building…" : state === "done" ? `Copied (~${tokens.toLocaleString()} tokens)` : state === "err" ? "Could not build it" : label}
+      </button>
+      {text && (
+        <div className="palette-bg" onMouseDown={() => setText("")}>
+          <div className="dialog" role="dialog" aria-label="Prompt" onMouseDown={(e) => e.stopPropagation()}>
+            <div className="row" style={{ marginBottom: 10 }}><b>Prompt for your coding agent</b><span className="muted">~{tokens.toLocaleString()} tokens</span><span className="grow" /><button className="ghost sm" onClick={() => setText("")}>Close</button></div>
+            <textarea readOnly value={text} onFocus={(e) => e.target.select()} autoFocus style={{ height: "50vh", fontFamily: "var(--mono)", fontSize: 12.5 }} />
+          </div>
+        </div>
+      )}
+    </>
+  );
+}

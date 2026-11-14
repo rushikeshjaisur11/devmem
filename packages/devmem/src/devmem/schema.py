@@ -30,6 +30,29 @@ MAX_HOPS = 2
 UTILITY_CALLER_CAP = 20
 
 
+def atomic_write(path, text: str) -> None:
+    """Write a file so that readers see either the old content or the new, never half of it: write a temp file next to it,
+    then rename over the target (atomic on the same filesystem). A crash mid-write leaves the previous file intact."""
+    import os
+    import tempfile
+    from pathlib import Path
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def knowledge_header(commit: str | None, tokens: int) -> str:
     """Freshness/budget stamp for generated knowledge files."""
     return f"<!-- devmem: commit={commit or 'unknown'} generated={_dt.date.today()} tokens={tokens} -->"
