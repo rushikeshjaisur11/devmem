@@ -17,7 +17,10 @@ def make_idx():
 
 def brute(ix, query):
     q = _tokens(query)
-    hits = [(sc, s) for s in ix.symbols.values() if s["kind"] != "module" and (sc := _score(q, query, s)) > 0]
+    cands = [s for s in ix.symbols.values() if s["kind"] != "module" and _score(q, query, s) > 0]
+    names = [_tokens(s["qualname"]) for s in cands]            # rarity weights, computed over every matching symbol as find does
+    w = {t: 2.0 - sum(1 for nm in names if t in nm) / (len(cands) or 1) for t in q}
+    hits = [(sc, s) for s, nm in zip(cands, names) if (sc := _score(q, query, s, "", w, nm)) > 0]
     return sorted(hits, key=lambda x: (-x[0], x[1]["file"], x[1]["line"]))
 
 

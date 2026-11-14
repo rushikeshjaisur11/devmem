@@ -46,6 +46,18 @@ Readers never write: a missing, stale or corrupt db is rebuilt in memory, which 
 Candidates are ranked by bm25 (weights mirror the scorer: name 3, doc 1, path 0.5) and capped at `max(CANDIDATE_CAP = 300, 10 * limit)` per source, so a query of very common tokens stays fast. Results are exact unless a query matches more symbols than the cap; then only the lowest-ranked matches can be dropped.
 Impact walks `inc` edges up to `MAX_HOPS = 2`, capping utility callers at `UTILITY_CALLER_CAP = 20`.
 
+## Answer budgets (agent CLI and MCP)
+
+Every tool result stays in the agent's context for the rest of the task, so output size is treated as a cost.
+`devmem context` (`context.py`) builds the start-of-task answer in priority order (rules and lessons, focus symbol facts,
+body) until `--budget` (default 1,200 tokens, chars / 4) is spent; it prints a body only when the best match scores at
+least 15% above the next, and lists candidates otherwise. `find` weights each query word by how rare it is among the
+candidates and collapses definitions with the same qualified name. `impact` groups callers by file and tags only
+ambiguous edges. `outline` folds methods into their class past 60 lines. `cli.run` cuts any logged answer at
+`MAX_TOKENS` (2,500; `DEVMEM_MAX_TOKENS`) unless `--full` / `--all` was given. Measured on a 1,381-file corpus:
+`outline` of a 105,000-token file 8,907 -> 744 tokens, `impact` 235 -> 165, `helpers` 1,299 -> 645, and one `context`
+call 271 tokens against 521 for the five calls it replaces.
+
 ## Knowledge budgets
 
 Generated files carry a header `<!-- devmem: commit=... generated=... tokens=... -->` (`knowledge_header`).

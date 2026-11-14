@@ -9,23 +9,19 @@ from .index import Index
 
 SHOW_LINES = 80     # default body lines for `show`; longer bodies end with a hint instead of flooding the context
 LIST_CAP = 12       # default items per impact list
+OUTLINE_CAP = 60    # default lines for `outline`; a larger file lists its classes with a method count instead of every method
+MAX_TOKENS = 2500   # no answer is longer than this unless the agent asked for everything (--full / --all); DEVMEM_MAX_TOKENS changes it
 
 
 def _line(s: dict) -> str:
     return f"{s['file']}:{s['line']}  {s['kind']} {s['qualname']}" + (f" — {s['doc'][:100]}" if s["doc"] else "")
 
 
-def _capped(items: list[str], cap: int) -> str:
-    if not items:
-        return "-"
-    more = len(items) - cap if cap and len(items) > cap else 0
-    return ", ".join(items[:cap] if more else items) + (f" (+{more} more: --all)" if more else "")
-
-
 def cmd_find(ix: Index, a) -> int:
-    hits = ix.find(a.query, a.limit)
-    for _, s in hits:   # code without a docstring shows its written description instead, when it has one
-        print(_line(s) + (f" — {ix.desc[s['id']][:100]}" if not s["doc"] and s["id"] in ix.desc else ""))
+    from .context import distinct, hit_line
+    hits = distinct(ix, ix.find(a.query, max(40, a.limit * 4)), a.limit)   # the same definition copied across files is one hit
+    for s, twins in hits:   # code without a docstring shows its written description instead, when it has one
+        print(hit_line(ix, s, twins))
     if not hits:
         print("no matches: try other or fewer words, or `devmem outline <file>`")
     return 0
@@ -69,9 +65,27 @@ def cmd_outline(ix: Index, a) -> int:
     if not syms:
         print(f"no symbols indexed for {a.file}")
         return 1
+    row = lambda s: f"{'    ' if s['kind'] == 'method' else ''}{s['line']}: {s['sig']}" + (f"  # {s['doc'][:90]}" if s["doc"] else "")
+    inside = getattr(a, "inside", None)
+    if inside:
+        syms = [s for s in syms if s["qualname"] == inside or s["qualname"].startswith(inside + ".")]
+        if not syms:
+            print(f"no class or function named {inside} in {a.file}")
+            return 1
+    if a.all or len(syms) <= OUTLINE_CAP:
+        print("\n".join(row(s) for s in syms))
+        return 0
+    # too long to print whole: top-level definitions only, each class with its method count; then cut at the cap
+    methods: dict[str, int] = {}
     for s in syms:
-        indent = "    " if s["kind"] == "method" else ""
-        print(f"{indent}{s['line']}: {s['sig']}" + (f"  # {s['doc']}" if s["doc"] else ""))
+        if s["kind"] == "method":
+            methods[s["qualname"].split(".")[0]] = methods.get(s["qualname"].split(".")[0], 0) + 1
+    top = [s for s in syms if s["kind"] != "method"] if not inside else syms
+    for s in top[:OUTLINE_CAP]:
+        n = methods.get(s["qualname"], 0) if not inside else 0
+        print(row(s) + (f"  [{n} methods: `devmem outline {a.file} --in {s['qualname']}`]" if n else ""))
+    if len(top) > OUTLINE_CAP:
+        print(f"... {len(top) - OUTLINE_CAP} more: `devmem find \"<words>\"` to locate one, or `devmem outline {a.file} --all`")
     return 0
 
 
@@ -87,14 +101,16 @@ def cmd_impact(ix: Index, a) -> int:
     if "table" in r:
         print(f"{r['table']}\n  readers: {', '.join(r['readers']) or '-'}\n  writers: {', '.join(r['writers']) or '-'}")
         return 0
+    from .context import grouped
     print("targets: " + ", ".join(r["targets"]))
     cap = 0 if a.all else LIST_CAP
-    print("hop 1 (must check): " + _capped([f"{i['id']} [{i['conf']}]" for i in r["hop1"]], cap))
-    print("hop 2 (contract check): " + _capped([i["id"] for i in r["hop2"]], cap))
-    print("tests: " + _capped(r["tests"], cap))
+    # callers are grouped by file (the path once, not once per caller); only edges that need checking carry a tag
+    unsure = {i["id"]: i["conf"] for i in r["hop1"] if i["conf"] in ("ambiguous", "co-change")}
+    print("hop 1 (must check): " + grouped([i["id"] for i in r["hop1"]], cap, unsure))
+    print("hop 2 (contract check): " + grouped([i["id"] for i in r["hop2"]], cap))
+    print("tests: " + grouped(r["tests"], cap))
     for c in r["capped"]:
         print(f"capped: {c['symbol']} has {c['callers']} callers (widely used utility)")
-    print("files: " + _capped(r["files"], cap))
     if r.get("cochange"):
         print("usually changes together with: " + ", ".join(r["cochange"]))
     return 0
@@ -102,7 +118,13 @@ def cmd_impact(ix: Index, a) -> int:
 
 def cmd_helpers(ix: Index, a) -> int:
     for s, n in ix.helpers(a.limit):
-        print(f"{s['file']}:{s['line']}  {s['sig']}  [used in {n} files]" + (f" — {s['doc']}" if s["doc"] else ""))
+        print(f"{s['file']}:{s['line']}  {s['sig']}  [{n} files]" + (f" — {s['doc'][:80]}" if s["doc"] else ""))
+    return 0
+
+
+def cmd_context(ix: Index, a) -> int:
+    from . import context
+    print(context.build(ix, a.task, a.files, a.budget, a.symbol))
     return 0
 
 
@@ -428,18 +450,25 @@ def run(argv=None, via: str = "cli", root=None) -> int:
     p = argparse.ArgumentParser(prog="devmem", description="Code knowledge for coding agents")
     p.add_argument("--version", action="version", version="devmem " + _version())
     sub = p.add_subparsers(dest="command", required=True)
+    s = sub.add_parser("context", help="start of a task, one call: rules, matches, the likeliest symbol's body, callers, tests, known issues")
+    s.add_argument("task"); s.add_argument("--files", nargs="*", help="files you expect to touch")
+    s.add_argument("--symbol", help="focus on this symbol (path#qualname or name) instead of the best match")
+    s.add_argument("--budget", type=int, default=1200, help="approximate token budget for the answer (default 1200)")
+    s.set_defaults(fn=cmd_context)
     s = sub.add_parser("find", help="ranked path:line hits for a concept")
     s.add_argument("query"); s.add_argument("-n", "--limit", type=int, default=10); s.set_defaults(fn=cmd_find)
     s = sub.add_parser("show", help="one symbol's body + signatures of what it calls")
     s.add_argument("symbol"); s.add_argument("--full", action="store_true", help=f"whole body (default: first {SHOW_LINES} lines)")
     s.set_defaults(fn=cmd_show)
     s = sub.add_parser("outline", help="signatures and docstrings of a file")
-    s.add_argument("file"); s.set_defaults(fn=cmd_outline)
+    s.add_argument("file"); s.add_argument("--in", dest="inside", metavar="CLASS", help="only this class and its methods")
+    s.add_argument("--all", action="store_true", help=f"every definition (default: {OUTLINE_CAP} lines, methods folded into their class)")
+    s.set_defaults(fn=cmd_outline)
     s = sub.add_parser("impact", help="callers, dependents, tests for a symbol or table")
     s.add_argument("target"); s.add_argument("--all", action="store_true", help=f"every item (default: {LIST_CAP} per list)")
     s.set_defaults(fn=cmd_impact)
     s = sub.add_parser("helpers", help="reusable utilities already in the repo")
-    s.add_argument("-n", "--limit", type=int, default=30); s.set_defaults(fn=cmd_helpers)
+    s.add_argument("-n", "--limit", type=int, default=15); s.set_defaults(fn=cmd_helpers)
     for nm, fn, hp in (("tests-for", cmd_tests_for, "test command for tests affected by changed files"),
                        ("check", cmd_check, "lint/types/affected tests on changed files, compact output")):
         s = sub.add_parser(nm, help=hp)
@@ -531,9 +560,20 @@ def run(argv=None, via: str = "cli", root=None) -> int:
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         code = a.fn(ix, a)
-    sys.stdout.write(buf.getvalue())
+    text = buf.getvalue()
+    import os
+    try:
+        limit = int(os.environ.get("DEVMEM_MAX_TOKENS", MAX_TOKENS))
+    except ValueError:
+        limit = MAX_TOKENS
+    asked_for_all = getattr(a, "full", False) or getattr(a, "all", False) or a.command == "context"   # context has its own budget
+    if limit > 0 and not asked_for_all and len(text) > limit * 4:
+        cut = text.rfind("\n", 0, limit * 4)
+        text = text[: cut if cut > 0 else limit * 4] + (f"\n... cut at ~{limit} tokens ({len(text) // 4} in full). Narrow the request "
+                                                         f"(a symbol instead of a file, fewer results), or set DEVMEM_MAX_TOKENS=0.\n")
+    sys.stdout.write(text)
     if via != "ui":   # the web UI previews what agents see; that is not agent usage
-        usage.record(ix, a.command, buf.getvalue(), via, " ".join(argv if argv is not None else sys.argv[1:]))
+        usage.record(ix, a.command, text, via, " ".join(argv if argv is not None else sys.argv[1:]))
     return code
 
 

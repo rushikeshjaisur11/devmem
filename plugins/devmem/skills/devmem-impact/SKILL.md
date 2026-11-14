@@ -16,7 +16,7 @@ Read the output as:
 - **Hop 2 (contract check):** callers of callers. Confirm the return type or shape they rely on is unchanged; do not edit them unless it is not.
 - **Tests:** the tests that exercise the change. Run these via `devmem check`.
 - **Co-change:** files that historically change together with this one; consider whether they need the same edit.
-- Edges marked `precise` come from a type-aware index, `structural` from import resolution, `ambiguous` are guesses: verify ambiguous ones in the code.
+- Callers are grouped by file (`path: caller, caller; path: caller`). A caller tagged `[ambiguous]` is a guess: verify it in the code. Untagged callers were resolved by imports or a type-aware index.
 - Utilities with many callers are capped and listed as such: change them backwards-compatibly or not at all.
 
 If the radius is larger than the task justifies, change the call site instead of the shared function, or add a new function and leave the old one.

@@ -11,8 +11,9 @@ files, and builds prompts for the agent that will do the work.
   suggestions are checked against them and flagged `MODERNIZE` when code hand-rolls what a library now provides.
 - **Chat** (web UI): ask your repos, or describe something new / paste a plan and get a compact prompt for another agent.
 - **Guards**: `devmem diffcheck` blocks oversized, out-of-scope or test-weakening diffs; lessons and rules (added by agents, or by you in the UI) persist what was learned.
-- **Token budget**: the `AGENTS.md` block is ~150 tokens; agent commands print capped output (`show` 80 lines, `impact` 12 items per
-  list) with a hint for the full version, and the skill tells agents how to keep tool output small.
+- **Token budget**: the `AGENTS.md` block is ~150 tokens and the MCP tool list ~1,000; a task starts with one `devmem context` call
+  (~1,200 tokens, measured at about half of the recall + find + show + impact + hygiene answers it replaces on a 21,000-symbol repo);
+  every other answer is capped, with a hint for the full version.
 
 - **Runs on a server too**: `devmem-app ui --host 0.0.0.0` adds sign-in with an access token; repos are onboarded by upload or
   Git URL instead of a path (`docs/DEPLOY.md`, `Dockerfile`).
@@ -52,23 +53,27 @@ Push that branch and merge it. **Overview** now shows what agents load per sessi
 
 **2. Connect your agent.** On the **Agents** page tick your agents and press *Connect* (or run `devmem connect` in the repo), or install
 the plugin (`docs/INSTALL.md`). The Overview checklist ticks this off. From then on the agent starts every task with `recall` and uses
-the commands below instead of opening files. A typical agent turn:
+the commands below instead of opening files. A typical agent turn starts with one call:
 ```
-$ devmem find "retry"
-app/retry.py:5  function retry — Call fn, retrying on exception.
-
-$ devmem impact retry
-targets: app/retry.py#retry
-hop 1 (must check): app/client.py#ApiClient.get [structural], app/service.py#load_user [structural]
-hop 2 (contract check): app/service.py#main
-tests: tests/test_service.py#test_load_user
-files: app/client.py, app/retry.py, app/service.py
+$ devmem context "make retry wait longer between attempts"
+FOCUS app/retry.py#retry (lines 5-13)
+ callers (must still work): app/client.py: ApiClient.get; app/service.py: load_user
+ their callers: 1 (`devmem impact app/retry.py#retry`)
+ tests: tests/test_service.py: test_load_user
+BODY
+def retry(fn, attempts=3, delay=0.1):
+    """Call fn, retrying on exception."""
+    ...
+NEXT: edit, `devmem check`, `devmem diffcheck`. Wrong symbol: add `--symbol <path#name>`.
 
 $ devmem tests-for app/retry.py
 python -m pytest -q tests/test_service.py::test_load_user
 ```
-Three short answers replace reading three files and the whole test suite. `show retry` prints the function body (first 80 lines,
-`--full` for more), and `impact` lists are capped at 12 items (`--all` for every one).
+`context` packs the rules and lessons that apply, the likeliest code, its callers, tests and known issues into about 1,200 tokens
+(`--budget`). When several functions fit the task equally it lists them with their signatures instead of printing a body that may be
+the wrong one; `--symbol` picks. `find`, `show`, `impact` and `outline` remain for follow-ups, and every answer is bounded: callers are
+grouped by file, the same definition repeated across files is one hit, `show` prints 80 lines, a large file's `outline` folds methods
+into their class, and nothing exceeds 2,500 tokens unless `--full` / `--all` is given (`DEVMEM_MAX_TOKENS`).
 
 **3. Teach it your rules.** In **Lessons & rules → Rules**, add a rule such as *"Never call the payments API from tests; use
 FakePayments"*, scope it to `tests/**`, and choose *Only this repo* or *Every repo (hub)*. Agents see targeted rules in `devmem recall`
@@ -186,6 +191,7 @@ in the repo: it checks every layer, down to a real MCP round trip, and prints th
 
 | `devmem` (agents, offline) | |
 |---|---|
+| `context` | start of a task in one call: rules, likeliest code, callers, tests, known issues, inside a token budget |
 | `find`, `show`, `outline`, `impact`, `helpers` | locate code and see blast radius instead of reading files |
 | `mcp` | the same commands as MCP tools over stdio |
 | `recall`, `remember`, `feedback` | lessons, rules and cross-repo pointers for a task |

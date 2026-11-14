@@ -92,9 +92,9 @@ steps:
 """
 
 AGENT_BLOCK = """## devmem (code knowledge, saves tokens)
-1. `devmem recall "<task>"` once: lessons, rules, code other repos solved (`devmem reuse "<need>"`, `devmem docs "<need>"`).
-2. Locate with `devmem find "<concept>"`, `show <symbol>`, `outline <file>`; never read whole files to explore.
-3. `devmem impact <symbol|table.column>` before editing; change only what the task needs.
+1. `devmem context "<task>"` first, once: rules, matches, the likeliest code, its callers and tests in one answer.
+2. Need more: `devmem find "<concept>"`, `show <symbol>`, `outline <file>`; never read whole files to explore.
+3. `devmem impact <symbol|table.column>` before editing other symbols; change only what the task needs.
 4. `devmem check`, then `devmem diffcheck` before each commit.
 Follow `.devmem/rules.md`. More: `.devmem/knowledge/map.md` and topic files there, read only when relevant. Stale stamp: trust the code."""
 
