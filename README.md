@@ -80,7 +80,8 @@ FakePayments"*, scope it to `tests/**`, and choose *Only this repo* or *Every re
 when they touch matching files; `**` rules apply to every task. Hub rules reach repos on *Sync hub*. Lessons work the same way: agents
 save them with `devmem remember` in their PRs, you edit or promote them here.
 
-**4. Add the docs your code depends on.** In **Library docs**, fetch `pypi:pydantic`, `npm:zod` or `https://<docs-site>/llms.txt`, or
+**4. Add the docs your code depends on.** Docs fetched from the web re-fetch themselves while devmem runs (weekly by default; set it
+on the page or with `DEVMEM_DOCS_REFRESH_DAYS`), and the copies in published repos are updated.  In **Library docs**, fetch `pypi:pydantic`, `npm:zod` or `https://<docs-site>/llms.txt`, or
 upload a folder or `.zip` of your own guides (Markdown, text, HTML); a local folder such as `C:\docs\internal-api` also works. Publish the repo again. Agents can search them offline (`devmem docs "validate an email"`), and whenever they `show` code that
 imports one of these libraries, the matching section of the latest docs is listed with it.
 
@@ -130,7 +131,10 @@ library you already use, or a well-known library provides: a retry loop with sle
 patterns for Python and JS/TS. With *Compare with the latest releases and docs* ticked, the scan first asks the package
 registries for the newest release of every library the repo uses, downloads the current docs for libraries that have none on file,
 and reads the release notes since the version in use (set `GITHUB_TOKEN` to avoid GitHub's anonymous rate limit); it then shows, per
-library that is behind, what changed and which functions here use it, and every candidate links to the current documentation. Each candidate says whether it is usable now: the repo's declared Python / Node version is compared with what the replacement
+library that is behind, what changed and which functions here use it, and every candidate links to the current documentation. What
+each newer release added is matched against your function names and descriptions ("possible: word match"), and with a model set up
+*Find what new releases replace* reads the same notes against the code itself and adds its suggestions, marked as such. When GitHub's
+releases API refuses, the project's changelog file is read instead. Each candidate says whether it is usable now: the repo's declared Python / Node version is compared with what the replacement
 needs, and a library replacement says whether you already depend on it. The scan needs no AI and changes nothing; a model can
 optionally confirm or reject candidates, and each has a step-by-step replace prompt. Agents see the ready ones in `devmem hygiene <file>`.
 

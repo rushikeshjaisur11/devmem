@@ -558,6 +558,18 @@ def create_app() -> FastAPI:
                 pass
         return {**mz.view(ix), "llm": chat_mod.llm_status()}
 
+    @app.post("/api/repos/{name}/modernize/discover")
+    def modernize_discover(name: str):
+        """Optional: the model reads what newer library releases added and reports functions here that do the same by hand."""
+        from . import modernize as mz
+        try:
+            prov = chat_mod.provider_from_env()
+        except ImportError as e:
+            raise HTTPException(409, f"LLM client not installed: {e}")
+        if prov is None:
+            raise HTTPException(409, "no AI model is set up: open AI setup. The scan already matches release notes by words without one.")
+        return mz.discover_with_ai(ix_of(name), prov)
+
     @app.post("/api/repos/{name}/modernize/ai")
     def modernize_ai(name: str, body: ModernizeAi):
         from . import modernize as mz
@@ -763,10 +775,26 @@ def create_app() -> FastAPI:
             raise HTTPException(422, f"could not fetch: {e}")
         return {"name": m["name"], "version": m["version"], "pages": len(m["pages"]), "bytes": m["bytes"]}
 
+    class DocsRefresh(BaseModel):
+        names: list[str] | None = None      # None = every library
+
+    class DocsSettings(BaseModel):
+        refresh_days: int
+
     @app.post("/api/docs/refresh")
-    def docs_refresh():
+    def docs_refresh(body: DocsRefresh = DocsRefresh()):
         from . import docs as dm
-        return dm.refresh()
+        return dm.refresh(body.names or None)
+
+    @app.get("/api/docs/settings")
+    def docs_settings():
+        from . import docs as dm
+        return {"refresh_days": dm.refresh_days(), "from_environment": bool(os.environ.get("DEVMEM_DOCS_REFRESH_DAYS"))}
+
+    @app.put("/api/docs/settings")
+    def docs_settings_save(body: DocsSettings):
+        from . import docs as dm
+        return {"refresh_days": dm.set_refresh_days(body.refresh_days), "from_environment": bool(os.environ.get("DEVMEM_DOCS_REFRESH_DAYS"))}
 
     @app.delete("/api/docs/{name}")
     def docs_remove(name: str):

@@ -14,6 +14,7 @@ const KIND: Record<string, [string, string]> = { pypi: ["PyPI", "globe"], npm: [
 export default function Docs(_: any) {
   const libs = useAsync<any[]>(() => api.get("/api/docs"), []);
   const cfg = useConfig().data;
+  const auto = useAsync<any>(() => api.get("/api/docs/settings"), []);
   const { repo } = useRepo();
   const pathsOk = cfg ? cfg.paths_allowed : true;
   const [src, setSrc] = useState<"web" | "upload" | "path">("web");
@@ -91,6 +92,12 @@ export default function Docs(_: any) {
           <h3 style={{ margin: 0 }}>On file</h3>
           <span className="muted">{list.length} librar{list.length === 1 ? "y" : "ies"}{old ? `, ${old} older than 4 months` : ""}</span>
           <span className="toolbar-end">
+            <label className="row" style={{ gap: 6 }} title="Docs that came from the web (a package or an address) are fetched again on their own while devmem is running, and the copies inside published repos are updated. Uploaded and folder docs are not touched.">
+              <span className="muted">Keep online docs fresh</span>
+              <select value={auto.data?.refresh_days ?? 7} disabled={!auto.data || auto.data.from_environment} aria-label="Refresh interval" onChange={(e) => api.put("/api/docs/settings", { refresh_days: Number(e.target.value) }).then(auto.reload).catch((x) => setErr(x.message))}>
+                <option value={1}>every day</option><option value={7}>every week</option><option value={30}>every month</option><option value={0}>never</option>
+              </select>
+            </label>
             <button disabled={!!busy || !list.length || !repo} title="Release notes between the version this repo uses and the latest, saved with each library's docs"
               onClick={() => run("notes", () => api.post("/api/docs/upgrade-notes", { repo }), (r) => Object.keys(r).length ? Object.entries(r).map(([k, v]) => `${k}: ${v}`).join("; ") + ". Publish the repo to ship them." : `${repo} is on the latest version of every library with docs here.`)}>
               {busy === "notes" ? "Fetching…" : `Get upgrade notes for ${repo || "a repo"}`}</button>
@@ -104,11 +111,12 @@ export default function Docs(_: any) {
               <tr key={l.name}>
                 <td><b>{l.name}</b></td>
                 <td className="mono">{l.version || <span className="muted">-</span>}</td>
-                <td>{l.age_days > 120 ? <Badge kind="warn">{l.age_days} days old</Badge> : <Badge kind="good">{l.age_days <= 1 ? "today" : `${l.age_days} days ago`}</Badge>}</td>
+                <td>{l.age_days > 120 ? <Badge kind="warn">{l.age_days} days old</Badge> : <Badge kind="good">{l.age_days <= 1 ? "today" : `${l.age_days} days ago`}</Badge>}{["url", "pypi", "npm"].includes(l.kind) && (auto.data?.refresh_days ?? 7) > 0 && <div className="muted" style={{ fontSize: 12 }}>auto-refresh on</div>}</td>
                 <td className="num">{l.pages}</td>
                 <td className="num">{l.bytes ? fmtBytes(l.bytes) : "-"}</td>
                 <td><span className="tag" title={l.source}><Icon name={(KIND[l.kind] || KIND.url)[1]} /> {(KIND[l.kind] || KIND.url)[0]}</span> <span className="mono muted src">{String(l.source).replace(/^(uploaded: |https?:\/\/)/, "")}</span></td>
                 <td><div className="row actions"><Menu label={`Actions for ${l.name}`} disabled={!!busy} items={[
+                  ...(l.kind !== "upload" ? [{ label: "Refresh now", icon: "refresh", hint: l.kind === "local" ? "read the folder again" : "fetch the current version", onClick: () => run("rf" + l.name, () => api.post("/api/docs/refresh", { names: [l.name] }), (r: any) => `${l.name}: ${r[l.name] ?? "refreshed"}`) }] : []),
                   { label: "Remove", icon: "trash", danger: true, hint: "agents keep the copy already published in repos", onClick: () => { if (confirm(`Remove the ${l.name} docs?`)) run("rm" + l.name, () => api.del(`/api/docs/${l.name}`), () => `Removed ${l.name}.`); } },
                 ]} /></div></td>
               </tr>

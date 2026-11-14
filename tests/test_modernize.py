@@ -252,3 +252,94 @@ def test_import_names_map_to_package_names(tmp_path):
     indexer.index_repo(root, "shop", accuracy="fast")
     used = modernize._usage(Index.load(root), [{"name": "PyYAML"}, {"name": "pillow"}, {"name": "zod"}, {"name": "@scope/pkg"}, {"name": "local"}])
     assert {k: [s["name"] for s in v] for k, v in used.items()} == {"pyyaml": ["load"], "pillow": ["load"], "zod": ["parse"], "@scope/pkg": ["parse"]}
+
+
+def _behind_repo(tmp_path, monkeypatch):
+    from devmem_app import docs as dm
+    monkeypatch.setenv("DEVMEM_HOME", str(tmp_path / "home"))
+    root = _repo(tmp_path, requires="3.12", deps="requests==2.25.0\n")
+    (root / "app/net.py").write_text('import requests\n\n\ndef get_json(url):\n    """Fetch a URL and decode the JSON body."""\n    return requests.get(url).json()\n\n\n'
+                                     'def send_with_retry(url):\n    for _ in range(3):\n        r = requests.get(url)\n        if r.ok:\n            return r\n\n\ndef unrelated(x):\n    return x + 1\n')
+    indexer.index_repo(root, "shop", accuracy="fast")
+    monkeypatch.setattr(dm, "latest_version", lambda eco, name: "2.34.2")
+    monkeypatch.setattr(dm, "add", lambda spec, name=None, follow=True, max_pages=40, dest=None: {"name": "requests", "version": "2.34.2", "pages": [], "bytes": 0})
+    monkeypatch.setattr(dm, "source_repo", lambda eco, name: "psf/requests")
+    return root, dm
+
+
+def test_features_of_newer_releases_are_matched_to_hand_written_code(tmp_path, monkeypatch):
+    root, dm = _behind_repo(tmp_path, monkeypatch)
+    monkeypatch.setattr(dm, "release_notes", lambda repo, frm, to: [("v2.30.0", "- Added built-in `Retry` support: `Session.send` can retry idempotent requests\n- Fixed a crash on Windows\n"),
+                                                                    ("v2.34.0", "- New `Session.json()` helper decodes the response body\n- Bump urllib3\n")])
+    ix = Index.load(root)
+    d = modernize.scan(ix, modernize.refresh_latest(ix))
+    rel = {f["name"]: f for f in d["findings"] if f["rule"] == "new-release"}
+    assert set(rel) == {"get_json", "send_with_retry"}                                          # not `unrelated`, not functions in other files
+    g = rel["get_json"]
+    assert g["status"] == "upgrade" and g["use"] == "requests v2.34.0: New `Session.json()` helper decodes the response body"
+    assert "requires upgrading requests from 2.25.0 to 2.34.2" in g["needs"] and "json" in g["needs"] and g["url"] == "https://github.com/psf/requests/releases"
+    assert rel["send_with_retry"]["use"].startswith("requests v2.30.0: Added built-in `Retry` support") and g["confidence"] in ("medium", "low")
+    text = prompts.build(ix, "modernize", g)["prompt"]
+    assert "hand-writes something requests v2.34.0 now does" in text and "def get_json(url):" in text
+
+
+def test_changelog_file_is_read_when_the_releases_api_refuses(tmp_path, monkeypatch):
+    root, dm = _behind_repo(tmp_path, monkeypatch)
+    monkeypatch.setattr(dm, "release_notes", lambda repo, frm, to: (_ for _ in ()).throw(RuntimeError("HTTP Error 403: Forbidden")))
+    history = ("Release History\n===============\n\n2.34.0 (2026-05-01)\n-------------------\n\n**Improvements**\n- New `Session.json()` helper decodes the response body\n\n"
+               "2.26.0 (2021-07-13)\n-------------------\n- Added support for Brotli decoding\n\n2.25.0 (2020-11-11)\n-------------------\n- Added support for NETRC\n\n2.20.0\n------\n- Old news\n")
+    monkeypatch.setattr(dm, "_try", lambda url: history if url.endswith("/psf/requests/HEAD/HISTORY.md") else None)
+    assert [v for v, _ in modernize.changelog_notes("psf/requests", "2.25.0", "2.34.2")] == ["2.26.0", "2.34.0"]      # newer than the version in use only
+    info = modernize.refresh_latest(Index.load(root))
+    assert info["notes"]["requests"]["highlights"] == ["2.34.0: New `Session.json()` helper decodes the response body", "2.26.0: Added support for Brotli decoding"]
+    assert info["notes_error"] == ""
+    monkeypatch.setattr(dm, "_try", lambda url: None)
+    assert "no release notes or changelog could be read for requests" in modernize.refresh_latest(Index.load(root))["notes_error"]
+
+
+def test_model_can_add_candidates_from_release_notes_marked_as_suggestions(tmp_path, monkeypatch):
+    root, dm = _behind_repo(tmp_path, monkeypatch)
+    monkeypatch.setattr(dm, "release_notes", lambda repo, frm, to: [("v2.31.0", "- Added a connection pool size option to `HTTPAdapter`\n")])
+    ix = Index.load(root)
+    d = modernize.scan(ix, modernize.refresh_latest(ix))
+    assert not [f for f in d["findings"] if f["rule"] == "new-release"]                          # the words do not match any function name
+
+    class Model:
+        def generate(self, prompt):
+            assert "ADDED IN NEWER RELEASES\nN0. v2.31.0: Added a connection pool size option" in prompt and "### F0 " in prompt and "requests 2.25.0" in prompt
+            i = prompt.split("send_with_retry")[0].count("### F")
+            return f'Here you go: [{{"f": {i - 1}, "n": 0, "why": "It opens a new connection per attempt; the pooled adapter covers that."}}]'
+    r = modernize.discover_with_ai(ix, Model())
+    assert r == {"added": 1, "libraries": 1, "error": ""}
+    f = next(x for x in modernize.load(root)["findings"] if x["rule"] == "ai-release")
+    assert (f["name"], f["confidence"], f["status"]) == ("send_with_retry", "model", "upgrade") and "pooled adapter" in f["ai"]["note"] and "suggested by the model" in f["needs"]
+    assert modernize.discover_with_ai(ix, Model())["added"] == 0                                # not reported twice
+    kept = [x["name"] for x in modernize.scan(ix)["findings"] if x["rule"] == "ai-release"]
+    assert kept == ["send_with_retry"]                                                          # survives a rescan while the function exists
+
+    class Down:
+        def generate(self, prompt):
+            raise RuntimeError("model unreachable")
+    assert modernize.discover_with_ai(ix, Down())["error"] == "model unreachable"
+
+
+def test_online_docs_refresh_on_their_own(tmp_path, monkeypatch):
+    from devmem_app import docs as dm
+    monkeypatch.setenv("DEVMEM_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("DEVMEM_DOCS_REFRESH_DAYS", raising=False)
+    monkeypatch.delenv("DEVMEM_TOKEN", raising=False)
+    libs = [{"name": "requests", "kind": "pypi", "age_days": 9, "version": "2.30", "fetched": "x"}, {"name": "zod", "kind": "npm", "age_days": 2, "version": "3", "fetched": "x"},
+            {"name": "guide", "kind": "upload", "age_days": 400, "version": "", "fetched": "x"}, {"name": "site", "kind": "url", "age_days": 30, "version": "", "fetched": "x"}]
+    monkeypatch.setattr(dm, "list_libs", lambda base=None: libs)
+    asked = []
+    monkeypatch.setattr(dm, "refresh", lambda names=None: asked.append(names) or {n: "ok" for n in names})
+    assert dm.refresh_days() == 7 and dm.refresh_due() == {"requests": "ok", "site": "ok"} and asked == [["requests", "site"]]   # only online docs past the interval
+    assert dm.set_refresh_days(1) == 1 and set(dm.refresh_due()) == {"requests", "zod", "site"}
+    assert dm.set_refresh_days(0) == 0 and dm.refresh_due() == {}                                 # never
+    monkeypatch.setenv("DEVMEM_DOCS_REFRESH_DAYS", "30")
+    assert dm.refresh_days() == 30 and set(dm.refresh_due()) == {"site"}
+    monkeypatch.delenv("DEVMEM_DOCS_REFRESH_DAYS")
+    api, H = TestClient(create_app()), {"X-Devmem": "1"}
+    assert api.get("/api/docs/settings").json() == {"refresh_days": 0, "from_environment": False}
+    assert api.put("/api/docs/settings", json={"refresh_days": 7}, headers=H).json()["refresh_days"] == 7
+    assert api.post("/api/docs/refresh", json={"names": ["zod"]}, headers=H).json() == {"zod": "ok"} and asked[-1] == ["zod"]

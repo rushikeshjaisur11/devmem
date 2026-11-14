@@ -178,6 +178,150 @@ def _norm(n: str) -> str:
     return re.sub(r"[-_.]+", "-", n).lower()
 
 
+CHANGELOGS = ("CHANGELOG.md", "HISTORY.md", "CHANGES.md", "NEWS.md", "CHANGELOG.rst", "HISTORY.rst", "CHANGES.rst", "docs/changelog.md", "docs/CHANGELOG.md")
+ADDED = re.compile(r"\b(add(ed|s)?|new|support(s|ed)?|introduc\w+|now|built-?in|provid\w+|helper|replac\w+)\b", re.I)
+STOP_WORDS = {"add", "added", "adds", "new", "support", "supports", "supported", "introduce", "introduced", "now", "built", "builtin", "provide", "provides", "helper",
+              "replace", "replaces", "the", "and", "for", "with", "from", "that", "this", "via", "can", "use", "used", "using", "when", "which", "also", "into", "has",
+              "have", "are", "was", "will", "not", "all", "any", "more", "than", "instead", "manual", "manually", "option", "options", "method", "function", "class",
+              "parameter", "argument", "version", "release", "python", "node", "get", "set", "run", "make", "default", "value", "type", "types", "error", "errors", "fix",
+              "fixed", "data", "file", "files", "name", "test", "tests", "api", "user", "users", "code", "call", "calls", "return", "returns", "object", "objects"}
+
+
+def changelog_notes(repo: str, frm: str, to: str | None) -> list[tuple[str, str]]:
+    """[(version, text)] for releases newer than `frm`, read from the project's changelog file. Used when the GitHub releases
+    API is not reachable (it refuses anonymous calls once its rate limit is spent); the raw file has no such limit."""
+    lo, hi = docs_mod._ver(frm), docs_mod._ver(to) if to else (10 ** 9,)
+    for name in CHANGELOGS:
+        text = docs_mod._try(f"https://raw.githubusercontent.com/{repo}/HEAD/{name}")
+        if not text:
+            continue
+        out, cur, buf = [], None, []
+        for ln in text.splitlines():
+            m = re.match(r"^\s{0,3}(?:#{1,4}\s*)?\[?v?(\d+\.\d+(?:\.\d+)?)\]?(?:\s|\(|$)", ln)
+            under = re.match(r"^[=\-~^]{3,}\s*$", ln)
+            if m and not ln.lstrip().startswith(("-", "*", "+")):
+                if cur:
+                    out.append((cur, "\n".join(buf)))
+                cur, buf = m.group(1), []
+            elif cur and not under:
+                buf.append(ln)
+        if cur:
+            out.append((cur, "\n".join(buf)))
+        picked = [(v, b) for v, b in out if lo < docs_mod._ver(v) <= hi]
+        if picked:
+            return sorted(picked, key=lambda x: docs_mod._ver(x[0]))
+    return []
+
+
+def feature_lines(rel: list[tuple[str, str]], cap: int = 14) -> list[str]:
+    """What newer releases added, newest first: bullet lines that announce something new, not fixes or housekeeping."""
+    lines = []
+    for tag, body in reversed(rel):
+        for ln in body.splitlines():
+            t = re.sub(r"^[\s*+\-#>]+|\s+$", "", ln)
+            t = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", t)
+            if 20 <= len(t) <= 240 and ADDED.search(t) and not re.search(r"^(full changelog|what's changed|new contributors|@|bump|update[sd]? dep|fix(ed|es)?\b|doc(s|umentation)?\b)", t, re.I):
+                lines.append(f"{tag}: {t[:200]}")
+                if len(lines) >= cap:
+                    return lines
+    return lines
+
+
+def _feature_tokens(text: str) -> tuple[set[str], set[str]]:
+    """(identifiers named in backticks, other informative words) of one release-note line."""
+    from devmem.index import _tokens
+    idents = set()
+    for code in re.findall(r"`([^`]+)`", text):
+        idents |= {t for t in _tokens(code) if len(t) > 2}
+    words = {t for t in _tokens(re.sub(r"`[^`]+`", " ", text.split(": ", 1)[-1])) if len(t) > 3 and t not in STOP_WORDS}
+    return idents - STOP_WORDS, words - idents
+
+
+def match_features(ix: Index, behind: list[dict], used: dict[str, list[dict]]) -> list[dict]:
+    """Functions that look like a hand-written version of something a newer release of a library added. A function qualifies
+    when its name shares two informative words with the release note (one is enough if the note names that identifier in
+    backticks and the function already uses the library). No AI: this is word matching, so the result is marked "possible"."""
+    from devmem.index import _tokens
+    out, seen = [], set()
+    syms = [s for s in ix.symbols.values() if s["kind"] in ("function", "method") and not s.get("is_test") and not TEST_FILE.search(s["file"])]
+    names = {s["id"]: {t for t in _tokens(s["qualname"].split(".")[-1]) if len(t) > 2} - STOP_WORDS for s in syms}
+    said = {s["id"]: {t for t in _tokens(f"{s.get('doc') or ''} {ix.desc.get(s['id'], '')}") if len(t) > 3} - STOP_WORDS for s in syms}
+    for lib in behind:
+        users = {x["id"] for x in used.get(_norm(lib["name"]), [])}
+        for line in lib.get("highlights", []):
+            idents, words = _feature_tokens(line)
+            if not idents and len(words) < 2:
+                continue
+            for s in syms:
+                n, d = names[s["id"]], said[s["id"]]
+                hit_n = n & (idents | words)
+                score = 2 * len(n & idents) + len(n & words) + 0.5 * len(d & (idents | words)) + (1 if s["id"] in users else 0)
+                strong = len(hit_n) >= 2 or (len(n & idents) >= 1 and s["id"] in users)
+                if not strong or (s["id"], lib["name"]) in seen:
+                    continue
+                seen.add((s["id"], lib["name"]))
+                tag, feat = line.split(": ", 1)
+                callers = len({e["src"] for e in ix.inc.get(s["id"], []) if e["type"] == "calls"})
+                out.append({"id": s["id"], "rule": "new-release", "name": s["qualname"], "file": s["file"], "line": s["line"], "symbol_line": s["line"],
+                            "what": f"something {lib['name']} {tag} now does", "use": f"{lib['name']} {tag}: {feat}", "source": f"a newer release of {lib['name']}",
+                            "kind": "library", "status": "upgrade", "lib": lib["name"],
+                            "needs": f"requires upgrading {lib['name']} from {lib['using'] or 'the current version'} to {lib['latest']}; matched by the words {', '.join(sorted(hit_n))}: read the release note before acting",
+                            "confidence": "medium" if score >= 4 and s["id"] in users else "low", "evidence": (s.get("sig") or "")[:160], "url": lib.get("notes_url", ""),
+                            "callers": callers, "lines": s.get("end_line", s["line"]) - s["line"] + 1, "_score": score})
+    out.sort(key=lambda f: -f["_score"])
+    for f in out:
+        del f["_score"]
+    return out[:40]
+
+
+def discover_with_ai(ix: Index, provider, max_libs: int = 6) -> dict:
+    """Let the model read what newer releases added and the functions here that use each library, and say which functions
+    hand-write something the new release provides. Its suggestions are added as candidates marked "model suggestion"."""
+    d = load(ix.root)
+    if not d:
+        return {"added": 0, "error": "scan first"}
+    used = _usage(ix, [{"name": b["name"]} for b in d["behind"]])
+    known = {(f["id"], f.get("lib", "")) for f in d["findings"]}
+    added, error, asked = 0, "", 0
+    for lib in [b for b in d["behind"] if b.get("highlights")][:max_libs]:
+        fns = used.get(_norm(lib["name"]), [])[:25]
+        if not fns:
+            continue
+        asked += 1
+        feats = lib["highlights"][:12]
+        parts = []
+        for i, s in enumerate(fns):
+            try:
+                code = "\n".join(ix.source(s).splitlines()[:14])
+            except OSError:
+                code = s.get("sig") or ""
+            parts.append(f"### F{i} {s['qualname']}\n{code}")
+        prompt = (f"A codebase uses {lib['name']} {lib['using'] or '(old version)'}; the latest is {lib['latest']}. Below are things newer releases added, "
+                  "then functions from the codebase that use the library. For each function that implements BY HAND something one of the listed "
+                  "additions now provides, report it. Report nothing when unsure: most functions will not match. Reply with ONLY a JSON list, "
+                  "possibly empty: [{\"f\": 0, \"n\": 2, \"why\": \"one sentence: what the function does by hand and how the addition replaces it\"}]\n\n"
+                  "ADDED IN NEWER RELEASES\n" + "\n".join(f"N{i}. {t}" for i, t in enumerate(feats)) + "\n\nFUNCTIONS\n" + "\n\n".join(parts))
+        try:
+            reply = provider.generate(prompt)
+            for item in json.loads(reply[reply.index("["): reply.rindex("]") + 1]):
+                s, line = fns[int(item["f"])], feats[int(item["n"])]
+                if (s["id"], lib["name"]) in known:
+                    continue
+                known.add((s["id"], lib["name"]))
+                tag, feat = line.split(": ", 1)
+                d["findings"].append({"id": s["id"], "rule": "ai-release", "name": s["qualname"], "file": s["file"], "line": s["line"], "symbol_line": s["line"],
+                                      "what": f"something {lib['name']} {tag} now does", "use": f"{lib['name']} {tag}: {feat}", "source": f"a newer release of {lib['name']}",
+                                      "kind": "library", "status": "upgrade", "lib": lib["name"], "confidence": "model", "evidence": (s.get("sig") or "")[:160],
+                                      "needs": f"requires upgrading {lib['name']} from {lib['using'] or 'the current version'} to {lib['latest']}; suggested by the model: verify against the release note",
+                                      "url": lib.get("notes_url", ""), "ai": {"verdict": "yes", "note": " ".join(str(item.get("why", "")).split())[:260]},
+                                      "callers": len({e["src"] for e in ix.inc.get(s["id"], []) if e["type"] == "calls"}), "lines": s.get("end_line", s["line"]) - s["line"] + 1})
+                added += 1
+        except Exception as e:
+            error = str(e)[:300]
+    (Path(ix.root) / PATH).write_text(json.dumps(d, indent=1), encoding="utf-8")
+    return {"added": added, "libraries": asked, "error": error}
+
+
 def refresh_latest(ix: Index) -> dict:
     """Bring in what is current, from the network: the latest version of every dependency, the latest docs for dependencies
     that have none on file, and the release notes between the version the repo uses and the latest. The scan then compares the
@@ -210,19 +354,16 @@ def refresh_latest(ix: Index) -> dict:
             if not repo:
                 return r["name"], None
             using = re.search(r"\d+(?:\.\d+)*", r.get("locked") or r.get("spec") or "")
-            rel = docs_mod.release_notes(repo, using.group(0) if using else "0", r["latest"])
-            lines = []
-            for tag, body in reversed(rel):                      # newest first
-                for ln in body.splitlines():
-                    t = re.sub(r"^[\s*+\-#>]+|\s+$", "", ln)
-                    t = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", t)
-                    if 20 <= len(t) <= 220 and NEWS.search(t) and not re.search(r"^(full changelog|what's changed|new contributors|@)", t, re.I):
-                        lines.append(f"{tag}: {t[:180]}")
-                    if len(lines) >= 6:
-                        break
-                if len(lines) >= 6:
-                    break
-            return r["name"], {"repo": repo, "url": f"https://github.com/{repo}/releases", "highlights": lines, "releases": len(rel)}
+            frm = using.group(0) if using else "0"
+            try:
+                rel = docs_mod.release_notes(repo, frm, r["latest"])
+            except Exception:
+                rel = []
+            if not rel:                                          # API refused or the project does not publish releases: read its changelog file
+                rel = changelog_notes(repo, frm, r["latest"])
+            if not rel:
+                out["notes_error"] = f"no release notes or changelog could be read for {r['name']} (set GITHUB_TOKEN if GitHub is refusing anonymous calls)"
+            return r["name"], {"repo": repo, "url": f"https://github.com/{repo}/releases", "highlights": feature_lines(rel), "releases": len(rel)}
         except Exception as e:   # usually GitHub's rate limit for anonymous calls: say so once, the rest of the scan is unaffected
             out["notes_error"] = f"release notes could not be read from GitHub ({str(e)[:80]}); set GITHUB_TOKEN on the machine that runs devmem"
             return r["name"], None
@@ -363,7 +504,8 @@ def scan(ix: Index, latest: dict | None = None) -> dict:
                                  "evidence": (s.get("sig") or "")[:160], "callers": callers, "lines": s.get("end_line", s["line"]) - s["line"] + 1})
 
     order = {"ready": 0, "upgrade": 1, "new-dependency": 2}
-    conf = {"high": 0, "medium": 1, "low": 2}
+    conf = {"high": 0, "medium": 1, "model": 2, "low": 3}
+    _pending_sort = True
     findings.sort(key=lambda f: (order[f["status"]], conf[f["confidence"]], -f["callers"], f["file"], f["line"]))
     try:
         libs = json.loads((root / ".devmem/libs.json").read_text(encoding="utf-8"))
@@ -381,6 +523,13 @@ def scan(ix: Index, latest: dict | None = None) -> dict:
                        "docs": _norm(l["name"]) in have_docs, "functions": len(fns), "top": [{"id": x["id"], "name": x["qualname"], "file": x["file"], "line": x["line"]} for x in fns[:5]],
                        "highlights": n.get("highlights", []), "notes_url": n.get("url", ""), "releases": n.get("releases", 0)})
     behind.sort(key=lambda l: (l["behind"] != "major", -l["functions"], l["name"]))
+    # what newer releases added, matched against the code; and what the model suggested in an earlier run, while that code still exists
+    have = {(f["id"], f.get("lib", "")) for f in findings}
+    for f in match_features(ix, behind, used) + [f for f in ((load(root) or {}).get("findings") or []) if f.get("rule") == "ai-release" and f["id"] in ix.symbols]:
+        if (f["id"], f.get("lib", "")) not in have:
+            have.add((f["id"], f.get("lib", "")))
+            findings.append(f)
+    findings.sort(key=lambda f: (order[f["status"]], conf[f["confidence"]], -f["callers"], f["file"], f["line"]))
     data = {"ts": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), "runtime": rt, "findings": findings, "behind": behind, "latest_info": latest,
             "libraries": len(libs), "docs_on_file": len(have_docs),
             "scanned": sum(1 for s in ix.symbols.values() if s["kind"] != "module" and not s.get("is_test")), "docs_checked": min(len(cands), DOCS_SCAN_CAP)}

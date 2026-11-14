@@ -50,7 +50,7 @@ const PAGES: [string, string, any][] = [
 ];
 const LABEL = Object.fromEntries(PAGES.map((p) => [p[0], p[1]]));
 // pages that show one repo at a time: the top bar offers the repo switcher on these
-const REPO_PAGES = new Set(["agents", "impact", "graph", "reuse", "hygiene", "memory", "metrics", "definitions", "analysis", "docs", "modernize"]);
+const REPO_PAGES = new Set(["agents", "impact", "graph", "reuse", "hygiene", "memory", "metrics", "definitions", "analysis", "docs", "modernize", "chat"]);
 
 /** The mark: a symbol and the blast radius around it, drawn in the one accent. */
 const Mark = () => (

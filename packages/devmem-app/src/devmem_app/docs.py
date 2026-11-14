@@ -281,6 +281,52 @@ def refresh(names: list[str] | None = None) -> dict:
     return res
 
 
+ONLINE = ("url", "pypi", "npm")
+
+
+def refresh_days() -> int:
+    """How often online docs are re-fetched on their own (days; 0 = never). Set on the Library docs page or with DEVMEM_DOCS_REFRESH_DAYS."""
+    import os
+    try:
+        if os.environ.get("DEVMEM_DOCS_REFRESH_DAYS"):
+            return max(0, int(os.environ["DEVMEM_DOCS_REFRESH_DAYS"]))
+        return max(0, int((json.loads((devmem_home() / "settings.json").read_text(encoding="utf-8")).get("docs") or {}).get("refresh_days", 7)))
+    except (OSError, ValueError, AttributeError):
+        return 7
+
+
+def set_refresh_days(days: int) -> int:
+    p = devmem_home() / "settings.json"
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {}
+    data.setdefault("docs", {})["refresh_days"] = max(0, min(int(days), 365))
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(data, indent=1), encoding="utf-8")
+    return data["docs"]["refresh_days"]
+
+
+def refresh_due(repos: dict | None = None, days: int | None = None) -> dict:
+    """Re-fetch docs that came from the web (a URL, PyPI or npm) and are older than `days`, then update the copies inside repos
+    that already carry docs, so agents read the current version without waiting for the next Publish. Uploaded and local docs
+    are left alone. Returns {name: result}; empty when nothing was due."""
+    days = refresh_days() if days is None else days
+    if days <= 0:
+        return {}
+    due = [l["name"] for l in list_libs() if l.get("kind") in ONLINE and (l.get("age_days") or 0) >= days]
+    if not due:
+        return {}
+    res = refresh(due)
+    for path in (repos or {}).values():
+        try:
+            if (Path(path) / ".devmem/docs").is_dir():
+                copy_relevant(Path(path))
+        except Exception:
+            pass
+    return res
+
+
 def remove(name: str) -> bool:
     d = docs_dir() / _slug(name)
     if d.is_dir():

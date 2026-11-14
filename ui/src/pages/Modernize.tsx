@@ -5,10 +5,10 @@ import { Badge, CopyPrompt, EditorLink, Empty, Err, Icon, editorHref, useAsync, 
 
 const STATUS: Record<string, [string, string, string]> = {
   ready: ["Ready now", "good", "The replacement is already available to this repo."],
-  upgrade: ["Needs an upgrade", "warn", "The repo's declared language version is older than the replacement needs."],
+  upgrade: ["Needs an upgrade", "warn", "The replacement is in a newer language version or a newer release of a library than the repo uses."],
   "new-dependency": ["New dependency", "", "A library the repo does not use yet. Usually only worth adding if this code has to grow."],
 };
-const CONF: Record<string, [string, string]> = { high: ["clear match", "good"], medium: ["likely", "warn"], low: ["name match only", ""] };
+const CONF: Record<string, [string, string]> = { high: ["clear match", "good"], medium: ["likely", "warn"], low: ["possible: word match", ""], model: ["model suggestion", "warn"] };
 
 export default function Modernize(_: any) {
   const repos = useRepos();
@@ -35,6 +35,11 @@ export default function Modernize(_: any) {
     try { const r = await api.post(`/api/repos/${repo}/modernize/ai`, { keys: [...sel].slice(0, 20) }); setMsg(`${r.checked} checked by the model.${r.error ? ` Some failed: ${r.error}` : ""}`); setSel(new Set()); setFresh(await api.get(`/api/repos/${repo}/modernize`)); } catch (e: any) { setErr(e.message); }
     setBusy("");
   };
+  const discover = async () => {
+    setBusy("discover"); setErr(""); setMsg("");
+    try { const r = await api.post(`/api/repos/${repo}/modernize/discover`); setMsg(r.added ? `The model found ${r.added} more function${r.added === 1 ? "" : "s"} that newer releases may replace. They are under “Needs an upgrade”, marked as model suggestions: check each against the release note.` : `The model read the release notes of ${r.libraries} librar${r.libraries === 1 ? "y" : "ies"} and found nothing more.${r.error ? ` (${r.error})` : ""}`); setFresh(await api.get(`/api/repos/${repo}/modernize`)); if (r.added) setShow("upgrade"); } catch (e: any) { setErr(e.message); }
+    setBusy("");
+  };
   const all: any[] = d?.findings || [];
   const list = useMemo(() => { const q = text.trim().toLowerCase(); return all.filter((f) => (show === "all" || f.status === show) && (!q || `${f.file} ${f.name} ${f.what} ${f.use}`.toLowerCase().includes(q))); }, [all, show, text]);
   const key = (f: any) => `${f.id}|${f.rule}`;
@@ -58,7 +63,7 @@ export default function Modernize(_: any) {
           <div className="card">
             <div className="kpis" style={{ marginBottom: 0 }}>
               <div className="kpi"><span className="k">Ready now</span><b className={d.counts.ready ? "good" : ""}>{d.counts.ready}</b><span className="t">about {d.lines.toLocaleString()} lines in those functions</span></div>
-              <div className="kpi"><span className="k">Needs an upgrade</span><b>{d.counts.upgrade}</b><span className="t">language version too old</span></div>
+              <div className="kpi"><span className="k">Needs an upgrade</span><b>{d.counts.upgrade}</b><span className="t">newer language or library release</span></div>
               <div className="kpi"><span className="k">New dependency</span><b>{d.counts["new-dependency"]}</b><span className="t">a library not used yet</span></div>
               <div className="kpi"><span className="k">Libraries behind</span><b>{d.behind.length}</b><span className="t">newer release available</span></div>
             </div>
@@ -114,8 +119,15 @@ export default function Modernize(_: any) {
 
           {d.behind.length > 0 && (
             <div className="card">
-              <h3>Libraries behind their latest release</h3>
-              <p className="hint" style={{ marginTop: -8 }}>Code written around an older release often does by hand what a newer one includes. For each library: what changed since your version, and the functions here that use it. Read the highlights against those functions before upgrading.</p>
+              <div className="toolbar">
+                <h3 style={{ margin: 0 }}>Libraries behind their latest release</h3>
+                <span className="toolbar-end">
+                  {d.llm?.configured
+                    ? <button disabled={!!busy || !d.behind.some((l: any) => l.highlights.length && l.functions)} onClick={discover} title="Sends each library's release highlights and the first lines of the functions that use it to the model, which reports functions that do by hand what a newer release provides"><Icon name="spark" />{busy === "discover" ? "Reading release notes…" : `Find what new releases replace, with ${d.llm.model}`}</button>
+                    : <button className="ghost" onClick={() => nav("ai")}>Set up AI for a deeper comparison</button>}
+                </span>
+              </div>
+              <p className="hint" style={{ marginTop: 0 }}>Code written around an older release often does by hand what a newer one includes. The scan matches what each newer release added against your function names and descriptions (those matches are listed above under “Needs an upgrade”); a model can read the same notes against the code itself.</p>
               <div className="libs">
                 {d.behind.map((l: any) => (
                   <div className="lib" key={l.eco + l.name}>

@@ -657,3 +657,32 @@ details > summary:hover { color: var(--text); }
 /* KPI strip without the inner grid lines some pages drew */
 .seg.big { margin-bottom: 14px; }
 @media (max-width: 900px) { main { padding: 18px 16px 40px; } nav.side a.on::before { left: -6px; } }
+
+/* ---------- Ask & plan: a conversation, with the composer at the bottom ---------- */
+.starters { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; margin-bottom: 18px; }
+.starter { height: auto; flex-direction: column; align-items: flex-start; justify-content: flex-start; gap: 4px; padding: 14px 16px; text-align: left; white-space: normal; border-radius: 12px; border-color: var(--line); }
+.starter span { font-size: 12px; font-weight: 500; } .starter b { font-weight: 500; line-height: 20px; }
+.starter:hover { border-color: var(--accent); background: var(--accent-soft); }
+.thread { display: grid; gap: 4px; }
+.turn { display: grid; gap: 8px; margin-bottom: 14px; }
+.turn-q { display: flex; justify-content: flex-end; }
+.turn-q span { max-width: min(760px, 85%); max-height: 180px; overflow: auto; white-space: pre-wrap; background: var(--surface-3); border-radius: 14px 14px 4px 14px; padding: 9px 14px; font-weight: 500; }
+.turn-a { margin-bottom: 0; }
+.turn-head, .turn-facts { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+.answer { white-space: pre-wrap; line-height: 22px; max-width: 90ch; }
+pre.prompt { padding: 14px 16px; white-space: pre-wrap; margin: 0; max-height: 420px; overflow: auto; font-size: 12.5px; line-height: 19px; }
+pre.prompt.open { max-height: none; }
+.sources { display: grid; gap: 4px; }
+.sources details { border: 1px solid var(--line); border-radius: 10px; padding: 0 12px; }
+.sources details[open] { padding-bottom: 10px; }
+.sources summary { display: flex; align-items: center; gap: 8px; min-height: 38px; width: auto; color: var(--text); list-style: none; }
+.sources summary::-webkit-details-marker { display: none; }
+.src-n { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: var(--surface-3); font-size: 11.5px; font-weight: 600; flex: none; }
+.src-title { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.src-where { margin-left: auto; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 45%; }
+.sources pre.code { margin: 0 0 8px; padding: 10px 12px; white-space: pre-wrap; font-size: 12.5px; max-height: 260px; overflow: auto; }
+.composer { position: sticky; bottom: 0; margin: 8px 0 0; display: grid; gap: 10px; box-shadow: 0 -8px 20px -12px rgba(0,0,0,.18); z-index: 5; }
+.composer .seg { justify-self: start; }
+.composer textarea { min-height: 56px; resize: none; border-radius: 10px; font-size: 14.5px; }
+.composer-foot { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; font-size: 13px; }
+@media (max-width: 900px) { .hide-sm { display: none; } .src-where { display: none; } }

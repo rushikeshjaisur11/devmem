@@ -225,6 +225,19 @@ def _main(argv=None) -> int:
         if not a.no_watch:
             from . import watch
             watch.start(lambda: _ws()["repos"], publish_too=a.publish)
+        def keep_docs_fresh():   # online library docs are re-fetched when older than the interval set on the Library docs page
+            import time
+            from . import docs as dm
+            while True:
+                time.sleep(120)
+                try:
+                    done = dm.refresh_due(_ws()["repos"])
+                    if done:
+                        print("docs refreshed: " + "; ".join(f"{k}: {v}" for k, v in done.items()), flush=True)
+                except Exception as e:
+                    print(f"docs refresh failed: {e}", flush=True)
+                time.sleep(6 * 3600)
+        threading.Thread(target=keep_docs_fresh, daemon=True).start()
         uvicorn.run("devmem_app.server:app", host=a.host, port=a.port, log_level="warning",
                     proxy_headers=True, forwarded_allow_ips=os.environ.get("FORWARDED_ALLOW_IPS", "127.0.0.1"))
     elif a.cmd == "watch":

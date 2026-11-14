@@ -1,137 +1,186 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
-import { Badge, EditorLink, Err, editorHref, useAsync, useRepos } from "../components";
+import { Badge, EditorLink, Err, Icon, editorHref, useAsync, useRepo, useRepos } from "../components";
 import { nav } from "../route";
 
+type Mode = "auto" | "ask" | "implement";
 interface Msg { q: string; res?: any; err?: string; busy?: boolean; target?: string; force?: "ask" | "implement" }
 
-const HINT = "Ask about your repos, describe something new to build, or paste a plan. Chat works out which.";
+const MODES: [Mode, string, string, string][] = [
+  ["auto", "Auto", "Ask about your code, describe something to build, or paste a plan", "devmem decides: a question gets an answer with sources, a requirement or plan becomes a prompt for your coding agent."],
+  ["ask", "Ask a question", "e.g. where do we validate email addresses?", "Find code, lessons and library docs that answer it, with file and line for each source."],
+  ["implement", "Make an agent prompt", "e.g. add retry with backoff to the export job", "Describe the change, or paste a plan. You get a step-by-step prompt with the code to start from, current docs and what not to touch."],
+];
+const PLAN = "## Step 1: \n\n## Step 2: \n\nConstraints: \nDocs: ";
+const KIND: Record<string, string> = { symbol: "code", test: "test", file: "file", table: "table", lesson: "lesson", rule: "rule", doc: "library docs", module: "module", overview: "overview" };
+const KEY = "devmem-chat";
 
 export default function Chat() {
   const repos = useRepos();
+  const { repo } = useRepo();
   const status = useAsync(() => api.get("/api/chat/status"), []);
   const [text, setText] = useState("");
+  const [mode, setMode] = useState<Mode>("auto");
   const [llm, setLlm] = useState(false);
   const [code, setCode] = useState(true);
-  const [scope, setScope] = useState<string[]>([]);
-  const [msgs, setMsgs] = useState<Msg[]>([]);
-  const [copied, setCopied] = useState(-1);
+  const [everywhere, setEverywhere] = useState(true);
+  const [msgs, setMsgs] = useState<Msg[]>(() => { try { return JSON.parse(sessionStorage.getItem(KEY) || "[]"); } catch { return []; } });
+  const [copied, setCopied] = useState("");
+  const [wide, setWide] = useState<Set<number>>(new Set());
   const box = useRef<HTMLTextAreaElement>(null);
   useEffect(() => { if (status.data?.configured) setLlm(true); }, [status.data]);
-  useEffect(() => { const el = box.current; if (el) { el.style.height = "auto"; el.style.height = Math.min(el.scrollHeight, 280) + "px"; } }, [text]);
+  useEffect(() => { const el = box.current; if (el) { el.style.height = "auto"; el.style.height = Math.min(el.scrollHeight, 300) + "px"; } }, [text]);
+  // the conversation survives moving to another page and back (this browser tab only)
+  useEffect(() => { try { sessionStorage.setItem(KEY, JSON.stringify(msgs.filter((m) => !m.busy).slice(-20))); } catch { /* storage full or off */ } }, [msgs]);
+  const settled = msgs.filter((m) => !m.busy).length;
+  useEffect(() => { if (msgs.length) document.querySelector(".thread .turn:last-of-type")?.scrollIntoView({ behavior: "smooth", block: "start" }); }, [msgs.length, settled]); // eslint-disable-line
 
   async function send(q: string, opts: { target?: string; force?: "ask" | "implement"; at?: number } = {}) {
     const question = q.trim();
     if (!question) return;
+    const force = opts.force ?? (mode === "auto" ? undefined : mode);
+    const target = opts.target ?? repo ?? undefined;
     const i = opts.at ?? msgs.length;
     if (opts.at === undefined) { setText(""); setMsgs((m) => [...m, { q: question, busy: true }]); }
     else setMsgs((m) => m.map((x, j) => (j === i ? { ...x, busy: true, err: undefined } : x)));
     try {
-      const res = await api.post("/api/chat", { question, llm, detail: code ? "code" : "pointers", target: opts.target, force: opts.force, repos: scope.length ? scope : undefined });
-      setMsgs((m) => m.map((x, j) => (j === i ? { q: question, res, target: opts.target, force: opts.force } : x)));
+      const res = await api.post("/api/chat", { question, llm, detail: code ? "code" : "pointers", target, force, repos: everywhere || !repo ? undefined : [repo] });
+      setMsgs((m) => m.map((x, j) => (j === i ? { q: question, res, target, force } : x)));
     } catch (e: any) {
       setMsgs((m) => m.map((x, j) => (j === i ? { q: question, err: e.message } : x)));
     }
   }
+  const copy = (key: string, value: string) => navigator.clipboard?.writeText(value).then(() => { setCopied(key); setTimeout(() => setCopied(""), 1600); });
+  const save = (name: string, value: string) => { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([value], { type: "text/markdown" })); a.download = name; a.click(); URL.revokeObjectURL(a.href); };
   const open = (h: any) => h.kind === "doc" ? window.open(h.path, "_blank", "noopener") : h.kind === "lesson" || h.kind === "rule" ? nav("memory", { repo: h.repo })
-    : nav("impact", { repo: h.repo, target: h.ref });
-  const openable = (h: any) => ["doc", "lesson", "rule", "symbol", "test"].includes(h.kind);
-  // examples from the user's own code: the most-called functions of the first indexed repo
-  const first = (repos.data || []).find((r) => r.indexed)?.name;
-  const examples = useAsync(async () => {
-    if (!first) return [];
-    const g: any[] = await api.get(`/api/repos/${first}/gaps?limit=2`);
-    const names = g.map((x) => x.id.split("#")[1]);
-    return names.length ? [`who calls ${names[0]}?`, ...(names[1] ? [`add a test for ${names[1]}`] : [])] : ["where is retry logic?"];
-  }, [first]);
+    : h.kind === "module" || h.kind === "overview" ? nav("analysis", { repo: h.repo }) : nav("impact", { repo: h.repo, target: h.ref });
+  const openable = (h: any) => ["doc", "lesson", "rule", "symbol", "test", "module", "overview"].includes(h.kind);
+  // starters taken from the user's own code, so the first click already shows something real
+  const gaps = useAsync<any[]>(() => (repo ? api.get(`/api/repos/${repo}/gaps?limit=2`) : Promise.resolve([])), [repo]);
+  const fn = gaps.data?.[0]?.id.split("#")[1];
+  const starters: [Mode, string, string][] = [
+    ["ask", "Find code", fn ? `where is ${fn} used and what does it do?` : "where is the retry logic?"],
+    ["ask", "Understand", `what does ${repo || "this repo"} do and how is it organised?`],
+    ["implement", "Change something", fn ? `add input validation and a test to ${fn}` : "add retry with backoff to the export job"],
+  ];
+  const current = MODES.find((m) => m[0] === mode)!;
+  const indexed = (repos.data || []).filter((r) => r.indexed);
 
   return (
     <>
-      <h1>Ask &amp; plan</h1>
-      <p className="sub">Ask a question and get answers that point to code and current library docs. Describe something to build, or paste a plan, and get a short prompt to hand to your agent: what already exists, what the libraries provide, and what not to touch.</p>
-      <div className="card">
-        <textarea ref={box} value={text} rows={2} placeholder={HINT} aria-label="Message" style={{ minHeight: 56, resize: "none" }}
-          onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(text); } }} />
-        <div className="row" style={{ marginTop: 10, justifyContent: "space-between" }}>
-          <span className="muted" style={{ fontSize: 12.5 }}>Enter to send · Shift+Enter for a new line</span>
-          <button className="primary" disabled={!text.trim()} onClick={() => send(text)}>Send</button>
-        </div>
-        <details style={{ marginTop: 10 }}>
-          <summary className="muted" style={{ cursor: "pointer", fontSize: 12.5 }}>Options</summary>
-          <div className="row" style={{ marginTop: 8, gap: 18 }}>
-            <label className="row"><input type="checkbox" checked={llm} disabled={!status.data?.configured} onChange={(e) => setLlm(e.target.checked)} />Write answers with {status.data?.model || "an LLM"}{!status.data?.configured && <span className="muted"> (<a href="#/ai">set up AI</a> to enable; optional)</span>}</label>
-            <label className="row"><input type="checkbox" checked={code} onChange={(e) => setCode(e.target.checked)} />Step-by-step prompts for a small agent: include the code to start from, its callers and the existing solutions (untick for a shorter prompt, for an agent that explores well on its own)</label>
-          </div>
-          <div className="row" style={{ marginTop: 8 }}>
-            <span className="muted">Limit to repos:</span>
-            {(repos.data || []).filter((r) => r.indexed).map((r) => (
-              <label key={r.name} className="row"><input type="checkbox" checked={scope.includes(r.name)}
-                onChange={(e) => setScope((s) => (e.target.checked ? [...s, r.name] : s.filter((x) => x !== r.name)))} />{r.name}</label>
-            ))}
-            <span className="muted">{scope.length ? "" : "(all)"}</span>
-          </div>
-        </details>
+      <div className="row">
+        <h1>Ask &amp; plan</h1>
+        <span className="grow" />
+        {msgs.length > 0 && <button className="ghost" onClick={() => { setMsgs([]); setWide(new Set()); }}><Icon name="trash" />Clear conversation</button>}
       </div>
-      {msgs.length === 0 && <div className="examples"><span className="muted">Try:</span>
-        {(examples.data || []).map((x: string) => <button key={x} className="chip" onClick={() => send(x)}>{x}</button>)}
-        <span className="muted">or paste a step-by-step plan.</span></div>}
-      {[...msgs].reverse().map((m, k) => {
-        const idx = msgs.length - 1 - k, r = m.res;
-        const impl = r?.intent === "implement";
-        return (
-          <div className="card" key={idx}>
-            <div style={{ whiteSpace: "pre-wrap", fontWeight: 600, maxHeight: 120, overflow: "auto" }}>{m.q}</div>
-            {m.busy && <p className="muted">Working…</p>}
-            <Err msg={m.err || ""} />
-            {r && (
-              <div className="row" style={{ margin: "8px 0", gap: 8 }}>
-                <Badge kind={impl ? "warn" : ""}>{impl ? "New requirement → agent prompt" : "Question"}</Badge>
-                <span className="muted" style={{ fontSize: 12.5 }}>{r.reason}</span>
-                <a style={{ fontSize: 12.5, marginLeft: "auto" }} onClick={() => send(m.q, { at: idx, target: m.target, force: impl ? "ask" : "implement" })}>{impl ? "Treat as a question instead" : "Make an agent prompt instead"}</a>
-              </div>
-            )}
-            {r?.needs_repo && (
-              <div>
-                <p style={{ margin: "6px 0" }}>Which repo will the agent work in?</p>
-                <div className="chips">{r.needs_repo.map((n: string) => <button key={n} className="chip" onClick={() => send(m.q, { at: idx, target: n, force: "implement" })}>{n}</button>)}</div>
-              </div>
-            )}
-            {r && impl && !r.needs_repo && (
-              <>
-                <div className="row" style={{ justifyContent: "space-between", margin: "6px 0" }}>
-                  <div className="chips">
-                    <Badge>for {r.target}</Badge>
-                    <Badge>~{r.tokens.toLocaleString()} tokens</Badge>
-                    <Badge kind={r.counts.org_solutions ? "good" : ""}>{r.counts.org_solutions} existing solution(s)</Badge>
-                    <Badge kind={r.counts.modernize ? "warn" : ""}>{r.counts.modernize} modernize</Badge>
-                    <Badge kind={r.counts.doc_excerpts ? "good" : ""}>{r.counts.doc_excerpts} current-docs excerpt(s)</Badge>
-                    {(r.docs_fetched || []).map((d: any) => <Badge key={d.source} kind={d.status === "fetched" ? "good" : d.status === "cached" ? "warn" : "bad"}>{d.name || d.source}: {d.status}</Badge>)}
+      <p className="sub">Ask about your code and get an answer with the exact files and lines. Or describe a change and get a prompt to paste into your coding agent. Nothing here edits your repos.</p>
+      {repos.data && !indexed.length && <div className="card callout"><div className="grow"><b>No repo is indexed yet.</b><div className="muted">Add one first; then you can ask about it here.</div></div><button className="primary" onClick={() => nav("repos")}><Icon name="plus" />Add a repo</button></div>}
+
+      {msgs.length === 0 && indexed.length > 0 && (
+        <div className="starters">
+          {starters.map(([m, label, q]) => (
+            <button key={q} className="starter" onClick={() => { setMode(m); send(q, { force: m === "auto" ? undefined : m }); }}>
+              <span className="muted">{label}</span><b>{q}</b>
+            </button>
+          ))}
+          <button className="starter" onClick={() => { setMode("implement"); setText(PLAN); box.current?.focus(); }}>
+            <span className="muted">Hand over a plan</span><b>Start from a plan template: steps, constraints, docs to follow</b>
+          </button>
+        </div>
+      )}
+
+      <div className="thread">
+        {msgs.map((m, idx) => {
+          const r = m.res, impl = r?.intent === "implement";
+          return (
+            <div className="turn" key={idx}>
+              <div className="turn-q"><span>{m.q}</span></div>
+              <div className="card turn-a">
+                {m.busy && <p className="muted" style={{ margin: 0 }}>Searching your code{llm ? " and writing an answer" : ""}…</p>}
+                {m.err && <><Err msg={m.err} /><button className="sm" onClick={() => send(m.q, { at: idx, target: m.target, force: m.force })}><Icon name="refresh" />Try again</button></>}
+                {r && (
+                  <div className="turn-head">
+                    <Badge kind={impl ? "warn" : ""}>{impl ? "Prompt for your agent" : "Answer"}</Badge>
+                    <span className="muted">{r.reason}</span>
+                    <span className="grow" />
+                    <button className="ghost sm" onClick={() => send(m.q, { at: idx, target: m.target, force: impl ? "ask" : "implement" })}>{impl ? "Answer it as a question instead" : "Turn this into an agent prompt"}</button>
                   </div>
-                  <button className="primary" onClick={() => navigator.clipboard?.writeText(r.prompt).then(() => { setCopied(idx); setTimeout(() => setCopied(-1), 1400); })}>{copied === idx ? "Copied" : "Copy prompt"}</button>
-                </div>
-                {r.summary.some((s: any) => s.modernize.length) && r.summary.filter((s: any) => s.modernize.length).map((s: any) => s.modernize.map((x: string, i: number) =>
-                  <p key={s.n + "-" + i} style={{ margin: "0 0 6px" }}><Badge kind="warn">modernize</Badge> {x}</p>))}
-                {!r.counts.doc_excerpts && <p className="muted" style={{ fontSize: 12.5, margin: "4px 0" }}>No library docs matched. Add the libraries on the <a onClick={() => nav("docs")}>Library docs</a> page so the agent follows current APIs, not older org code.</p>}
-                <pre className="code" style={{ padding: 12, whiteSpace: "pre-wrap", margin: "8px 0 0", maxHeight: 460 }}>{r.prompt}</pre>
-                <p className="muted" style={{ marginBottom: 0, fontSize: 12.5 }}>Paste it into your coding agent. Read-only: nothing was written to your repos.</p>
-              </>
-            )}
-            {r && !impl && (
-              <>
-                <pre style={{ whiteSpace: "pre-wrap", font: "inherit", margin: "8px 0" }}>{r.answer}</pre>
-                {r.llm_error && <p className="muted">LLM unavailable ({r.llm_error}); showing retrieval only.</p>}
-                <div className="muted" style={{ marginBottom: 6 }}>{r.mode === "llm" ? `Answered by ${r.model}` : "Retrieval only"} · {r.hits.length} sources</div>
-                {r.hits.map((h: any) => (
-                  <details key={h.n} open={r.cited?.includes(h.n)} style={{ marginBottom: 6 }}>
-                    <summary><span className="mono">[{h.n}]</span> <Badge>{h.kind}</Badge> {h.title} {openable(h) ? <a className="mono" href="#" onClick={(e) => { e.preventDefault(); open(h); }}>{h.pointer}</a> : <span className="mono">{h.pointer}</span>}{h.kind !== "doc" && <EditorLink href={editorHref(repos.data, h.repo, h.path, h.line)} />}</summary>
-                    {h.snippet && <pre>{h.snippet}</pre>}
-                  </details>
-                ))}
-              </>
-            )}
-          </div>
-        );
-      })}
+                )}
+                {r?.needs_repo && (
+                  <div>
+                    <p style={{ margin: "6px 0 8px" }}>Which repo will the agent work in?</p>
+                    <div className="chips">{r.needs_repo.map((n: string) => <button key={n} className="chip" onClick={() => send(m.q, { at: idx, target: n, force: "implement" })}>{n}</button>)}</div>
+                  </div>
+                )}
+                {r && impl && !r.needs_repo && (
+                  <>
+                    <div className="turn-facts">
+                      <span className="tag">repo <b>{r.target}</b></span>
+                      <span className="tag">about <b>{r.tokens.toLocaleString()}</b> tokens</span>
+                      <span className="tag"><b>{r.steps}</b> step{r.steps === 1 ? "" : "s"}</span>
+                      <span className="tag" title="Code in your other repos that already does this"><b>{r.counts.org_solutions}</b> existing solution{r.counts.org_solutions === 1 ? "" : "s"}</span>
+                      <span className="tag" title="Sections of current library docs included"><b>{r.counts.doc_excerpts}</b> docs excerpt{r.counts.doc_excerpts === 1 ? "" : "s"}</span>
+                      {r.counts.modernize > 0 && <span className="tag warn"><b>{r.counts.modernize}</b> a library now provides</span>}
+                      {(r.docs_fetched || []).map((d: any) => <span key={d.source} className={`tag ${d.status === "failed" ? "warn" : ""}`}>{d.name || d.source}: {d.status === "fetched" ? "docs fetched" : d.status === "cached" ? "using docs on file" : "docs not fetched"}</span>)}
+                      <span className="grow" />
+                      <button className="ghost sm" onClick={() => save(`${r.target}-task.md`, r.prompt)}><Icon name="download" />Save .md</button>
+                      <button className="primary sm" onClick={() => copy("p" + idx, r.prompt)}><Icon name="check" />{copied === "p" + idx ? "Copied" : "Copy prompt"}</button>
+                    </div>
+                    {r.summary.flatMap((s: any) => s.modernize.map((x: string, i: number) => <p key={s.n + "-" + i} className="hint" style={{ margin: "0 0 6px" }}><Badge kind="warn">a library provides this</Badge> {x}</p>))}
+                    {!r.counts.doc_excerpts && <p className="hint" style={{ margin: "0 0 8px" }}>No library docs matched this task. Add the libraries on <a onClick={() => nav("docs")}>Library docs</a> so the agent follows current APIs.</p>}
+                    <pre className={`code prompt ${wide.has(idx) ? "open" : ""}`}>{r.prompt}</pre>
+                    <div className="row" style={{ marginTop: 8 }}>
+                      {r.prompt.split("\n").length > 22 && <button className="ghost sm" onClick={() => { const n = new Set(wide); n.has(idx) ? n.delete(idx) : n.add(idx); setWide(n); }}>{wide.has(idx) ? "Show less" : "Show the whole prompt"}</button>}
+                      <span className="muted" style={{ fontSize: 12.5 }}>Paste it into your coding agent. devmem wrote nothing to your repos.</span>
+                    </div>
+                  </>
+                )}
+                {r && !impl && (
+                  <>
+                    <div className="answer">{r.answer}</div>
+                    {r.llm_error && <p className="hint">The model could not be reached ({r.llm_error}); these are the matching sources.</p>}
+                    <div className="row" style={{ margin: "10px 0 6px" }}>
+                      <b style={{ fontSize: 13 }}>{r.hits.length ? `${r.hits.length} source${r.hits.length === 1 ? "" : "s"}` : "No sources"}</b>
+                      <span className="muted" style={{ fontSize: 12.5 }}>{r.mode === "llm" ? `written by ${r.model} from these sources only` : status.data?.configured ? "matching code and docs" : <>matching code and docs. <a href="#/ai">Set up AI</a> for written answers (optional)</>}</span>
+                      <span className="grow" />
+                      {r.mode === "llm" && <button className="ghost sm" onClick={() => copy("a" + idx, r.answer)}>{copied === "a" + idx ? "Copied" : "Copy answer"}</button>}
+                    </div>
+                    <div className="sources">
+                      {r.hits.map((h: any) => (
+                        <details key={h.n} open={r.cited?.includes(h.n) || (r.mode !== "llm" && h.n === 1)}>
+                          <summary>
+                            <span className="src-n">{h.n}</span><span className="tag">{KIND[h.kind] || h.kind}</span><span className="src-title">{h.title}</span>
+                            <span className="mono muted src-where">{h.kind === "doc" ? h.repo : `${h.repo}: ${h.path}${h.line > 1 ? ":" + h.line : ""}`}</span>
+                            {h.kind !== "doc" && h.kind !== "module" && h.kind !== "overview" && <EditorLink href={editorHref(repos.data, h.repo, h.path, h.line)} />}
+                          </summary>
+                          {h.snippet && <pre className="code">{h.snippet}</pre>}
+                          {openable(h) && <a className="btn-link" onClick={() => open(h)}>{h.kind === "doc" ? "Open the page" : h.kind === "lesson" || h.kind === "rule" ? "Open in Lessons & rules" : h.kind === "module" || h.kind === "overview" ? "Open AI analysis" : "See what depends on it"}</a>}
+                        </details>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="composer card">
+        <div className="seg" role="tablist" aria-label="What to do with your message">
+          {MODES.map(([m, label, , tip]) => <button key={m} role="tab" aria-selected={mode === m} className={mode === m ? "on" : ""} title={tip} onClick={() => setMode(m)}>{label}</button>)}
+        </div>
+        <textarea ref={box} value={text} rows={2} placeholder={current[2]} aria-label="Message" disabled={!indexed.length}
+          onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(text); } }} />
+        <div className="composer-foot">
+          <label className="row" title={`On: search every onboarded repo. Off: only ${repo || "the repo in the top bar"}.`}><input type="checkbox" checked={everywhere} onChange={(e) => setEverywhere(e.target.checked)} />Search all repos</label>
+          <label className="row" title={status.data?.configured ? "The model writes the answer from the matching sources only and cites them." : "Optional. Without a model you get the matching sources."}><input type="checkbox" checked={llm} disabled={!status.data?.configured} onChange={(e) => setLlm(e.target.checked)} />Written answers{status.data?.configured ? ` (${status.data.model})` : <> (<a href="#/ai">set up AI</a>)</>}</label>
+          <label className="row" title="On: prompts include the code to start from, its callers and exact commands, so a small model can follow them. Off: a shorter prompt for an agent that explores well on its own."><input type="checkbox" checked={code} onChange={(e) => setCode(e.target.checked)} />Step-by-step prompts</label>
+          <span className="grow" />
+          <span className="muted hide-sm">{mode !== "ask" && repo ? <>prompts are written for <b>{repo}</b> · </> : null}Enter to send, Shift+Enter for a new line</span>
+          <button className="primary" disabled={!text.trim() || !indexed.length} onClick={() => send(text)}><Icon name="send" />Send</button>
+        </div>
+      </div>
     </>
   );
 }
