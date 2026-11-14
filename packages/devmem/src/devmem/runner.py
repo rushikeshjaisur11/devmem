@@ -73,10 +73,18 @@ def find_tool(name: str) -> list[str] | None:
     return None
 
 
-def run_argv(argv: list[str], cwd, input: str | None = None, timeout: int = TIMEOUT) -> dict:
+def tool_env() -> dict:
+    """Environment for a Python tool that devmem runs ON a repo (a linter, Graphify): PYTHONSAFEPATH stops Python putting the
+    repo's folder first on the import path, where a repo file named like a standard module (types.py, logging.py) would
+    replace that module and crash the tool. Not for the repo's own commands (tests), which rely on importing from it."""
+    import os
+    return {**os.environ, "PYTHONSAFEPATH": "1"}
+
+
+def run_argv(argv: list[str], cwd, input: str | None = None, timeout: int = TIMEOUT, isolate: bool = False) -> dict:
     try:
         r = subprocess.run(argv, cwd=str(cwd), input=input, capture_output=True, text=True, errors="replace",
-                           timeout=timeout)
+                           timeout=timeout, env=tool_env() if isolate else None)
         return {"code": r.returncode, "out": r.stdout or "", "err": r.stderr or ""}
     except (subprocess.TimeoutExpired, OSError) as e:
         return {"code": 124, "out": "", "err": str(e)}

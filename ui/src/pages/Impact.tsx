@@ -52,23 +52,30 @@ export default function Impact({ params }: { params: Record<string, string> }) {
         {(examples.data || []).length > 0 && <div className="examples" style={{ justifyContent: "center" }}><span className="muted">Widely used here:</span>{examples.data.map((g: any) => <button key={g.id} className="chip" onClick={() => pickExample(g.id)}>{g.id.split("#")[1]}</button>)}</div>}
       </Empty></div>}
       {res?.kind === "symbol" && (() => {
-        const name = res.targets[0]?.split("#")[1] || target, risk = riskOf(res.hop1.length, res.tests.length, !!res.capped?.length);
+        const name = res.targets[0]?.split("#")[1] || target, risk = riskOf(res.hop1.filter((i: any) => i.conf !== "ambiguous").length, res.tests.length, !!res.capped?.length);
         const tests = res.tests.length ? `${res.tests.length} test${res.tests.length === 1 ? "" : "s"} reach it, so run those after the change` : "no test reaches it, so add one before you change it";
         const cap = (res.capped || []).find((c: any) => res.targets.includes(c.symbol));   // too many callers to list one by one
         const who = cap ? `${cap.callers} places call it (a widely used utility, so they are not listed one by one)`
-          : res.hop1.length ? `${res.hop1.length} function${res.hop1.length === 1 ? "" : "s"} call${res.hop1.length === 1 ? "s" : ""} it directly${res.hop2.length ? ` and ${res.hop2.length} more depend on those` : ""}` : "nothing in this repo calls it";
+          : res.hop1.filter((i: any) => i.conf !== "ambiguous").length ? `${res.hop1.filter((i: any) => i.conf !== "ambiguous").length} function${res.hop1.filter((i: any) => i.conf !== "ambiguous").length === 1 ? "" : "s"} call${res.hop1.filter((i: any) => i.conf !== "ambiguous").length === 1 ? "s" : ""} it directly${res.hop2.length ? ` and ${res.hop2.length} more depend on those` : ""}` : "nothing in this repo calls it";
         return <div className={`card verdict ${risk}`}><p>Changing <code>{name}</code>: {who}; {tests}.</p>
           <div className="tags"><span className={`badge ${risk === "high" ? "bad" : risk === "medium" ? "warn" : "good"}`}>{risk} risk</span>{res.capped?.length ? <span className="tag">widely used utility: change it backwards-compatibly</span> : null}<span className="tag">{res.files.length} file{res.files.length === 1 ? "" : "s"} in scope</span></div></div>;
       })()}
       {res?.kind === "symbol" && <>
         <div className="card"><span className="stat"><b>{(res.capped || []).find((c: any) => res.targets.includes(c.symbol))?.callers ?? res.hop1.length}</b><span>direct callers</span></span><span className="stat"><b>{res.hop2.length}</b><span>indirect callers</span></span><span className="stat"><b>{res.tests.length}</b><span>tests reach it</span></span><span className="stat"><b>{res.files.length}</b><span>files</span></span>
           {res.capped?.length ? <div>{res.capped.map((c: any) => <Badge key={c.symbol} kind="warn">{c.symbol} has {c.callers} callers: widely used</Badge>)}</div> : null}</div>
-        <List title={<><Term k="hop1">Direct callers</Term>: must still work</>} items={res.hop1} repo={repo} link={link} hint="[structural] = resolved from imports, [ambiguous] = several functions share the name: check it in the code." />
+        {(res.blind_spots || []).length > 0 && <div className="card blind"><b>The call graph cannot see every caller of this.</b><ul className="plain">{res.blind_spots.map((b: string) => <li key={b}>{b}</li>)}</ul><span className="hint">Search for the name before treating it as unused or changing its signature.</span></div>}
+        <List title={<><Term k="hop1">Direct callers</Term>: must still work</>} items={res.hop1.filter((i: any) => i.conf !== "ambiguous")} repo={repo} link={link} hint="Resolved from imports, types or a type checker. [by-name] = the function is passed somewhere (a callback, a handler table), not called directly." />
+        {res.overridden_by?.length ? <List title="Overridden by: keep their signatures in step" items={res.overridden_by} repo={repo} link={link} /> : null}
+        {res.overrides?.length ? <List title="Overrides: callers of the base method reach this too" items={[...res.overrides, ...(res.via_base || [])]} repo={repo} link={link} /> : null}
+        {res.hop1.some((i: any) => i.conf === "ambiguous") && <List title="Possible callers: name match only" items={res.hop1.filter((i: any) => i.conf === "ambiguous")} repo={repo} link={link} hint="Several functions share this name and the caller's object type is unknown. Usually a different function: check one in the code before relying on it." />}
         <List title={<><Term k="hop2">Indirect callers</Term>: check what they rely on</>} items={res.hop2} repo={repo} link={link} />
         <List title="Tests that reach it" items={res.tests} repo={repo} link={link} />
         <List title="Files in scope" items={res.files} repo={repo} link={link} />
         {res.cochange?.length ? <List title="Usually changes together with" items={res.cochange} repo={repo} link={link} /> : null}
       </>}
+      {res?.kind === "not_found" && <div className="card"><Empty>
+        <b>{res.not_found}</b> is not a function, class or table in {repo}.{res.suggestions?.length ? <> Did you mean: {res.suggestions.map((id: string, i: number) => <span key={id}>{i ? ", " : " "}<a onClick={() => { setTarget(id); run(id); }} className="mono">{id}</a></span>)}?</> : " Describe it in words above to search for it."}
+      </Empty></div>}
       {res?.kind === "table" && <>
         <List title={`${res.table} writers`} items={res.writers} repo={repo} link={link} />
         <List title={`${res.table} readers`} items={res.readers} repo={repo} link={link} />

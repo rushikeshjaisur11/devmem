@@ -54,7 +54,22 @@ def _step_findings(tix: Index, pool: list[dict], ixs: dict[str, Index], q: str, 
             continue
         full = _entry(ixs[e["repo"]], ixs[e["repo"]].symbols[e["id"]], _internal_names(ixs[e["repo"]]), 30 if detail == "code" else 0)
         org.append({"score": score, "entry": full, "fit": core.fit(full, tix, extra)})
-    local = [s for sc, s in tix.find(q[:200], 4) if sc >= 3 and not s["is_test"]]   # >= 3: a word of the task is in the symbol's name
+    # code the task names outright (`Request.body`, `load_user`, `RetryPolicy`) comes first, then what search finds
+    named = []
+    for ref in dict.fromkeys(re.findall(r"`([^`]+)`|\b([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+|[a-z]+_[a-z_]+|[A-Z][a-z]+[A-Z]\w*)\b", q)):
+        ref = next(r for r in ref if r)
+        hits = [x for x in tix.resolve(ref.strip("()")) if not x["is_test"]]
+        if 1 <= len(hits) <= 2:
+            named += hits
+    found = [s for sc, s in tix.find(q[:200], 4) if sc >= 3 and not s["is_test"]]   # >= 3: a word of the task is in the symbol's name
+    local = []
+    for s in named + found:
+        cls = f"{s['file']}#{s['qualname'].split('.')[0]}"
+        have = {x["id"] for x in local}
+        if s["id"] in have or ("." in s["qualname"] and cls in have) or (s["kind"] == "class" and any(h.startswith(s["id"] + ".") for h in have)):
+            continue                     # already listed; its class is (the class's code shows it); or one of its methods is (more specific)
+        local.append(s)
+    local = local[:4]
     pats = notouch.patterns(tix.root)
     protected = sorted({p for p in re.findall(r"[\w./-]+\.\w{1,5}\b", q) if notouch.matches(p, pats)})
     return {"docs": docs_hits, "org": org, "local": local, "protected": protected, "tix": tix}

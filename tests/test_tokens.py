@@ -220,3 +220,15 @@ def test_prompt_and_docs_upload_endpoints(tmp_path, monkeypatch):
     assert api.post("/api/docs/upload?name=x", content=b"not a zip", headers=H).status_code == 400
     monkeypatch.setenv("DEVMEM_TOKEN", "t")                                        # a deployed server does not read docs from its own disk
     assert api.post("/api/docs", json={"spec": "/etc"}, headers={**H, "Authorization": "Bearer t"}).status_code == 403
+
+
+def test_task_prompt_includes_code_the_task_names(tmp_path, monkeypatch):
+    from devmem_app.implement import build
+    monkeypatch.setenv("DEVMEM_HOME", str(tmp_path / "home"))
+    root = _repo(tmp_path)
+    p = build("py_app", {"py_app": root}, "Log each attempt in ApiClient.get before it retries", detail="code", fetch_docs=False)["prompt"]
+    i = p.index("## What to use")
+    assert p[i:].index("`app/client.py` lines 8-10: `def get(self, path)`") < 200                 # named in the task, so it comes first
+    assert "class ApiClient`" not in p                                                       # its class would only repeat it
+    q = build("py_app", {"py_app": root}, "Change `build_client` and ApiClient to take a timeout", detail="code", fetch_docs=False)["prompt"]
+    assert "def build_client(base):" in q and q.count("def get(self, path)") <= 1          # ApiClient's methods are not repeated after it

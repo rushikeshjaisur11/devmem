@@ -105,6 +105,10 @@ def cmd_impact(ix: Index, a) -> int:
             print(lineage.format_impact(lineage.column_impact(lin, *sc)))
             return 0
     r = ix.impact(a.target)
+    if "not_found" in r:
+        print(f"not found: {r['not_found']} is neither a function, class nor table in this index"
+              + (f". Closest: {', '.join(r['suggestions'])}" if r["suggestions"] else "") + '. `devmem find "<words>"` lists ids.')
+        return 1
     if "table" in r:
         print(f"{r['table']}\n  readers: {', '.join(r['readers']) or '-'}\n  writers: {', '.join(r['writers']) or '-'}")
         return 0

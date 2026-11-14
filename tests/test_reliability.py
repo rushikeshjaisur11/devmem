@@ -296,3 +296,29 @@ def test_ai_descriptions_are_labelled_weighted_lower_and_dropped_when_stale(tmp_
     assert [s["id"] for _, s in ix.find("settle nightly ledger")] == ["pkg/a.py#go"]
     indexer.index_repo(root, "r", accuracy="fast")                                            # also after a re-index (the search cache)
     assert [s["id"] for _, s in Index.load(root).find("settle nightly ledger")] == ["pkg/a.py#go"]
+
+
+def test_repo_files_named_like_standard_modules_do_not_break_the_tools(tmp_path):
+    """A repo with its own types.py (Starlette has one) crashed Graphify: Python imported the repo's file in place of the
+    standard module. Tools devmem runs on a repo now start with PYTHONSAFEPATH."""
+    from devmem_app import graphify
+    if not shutil.which("graphify"):
+        pytest.skip("graphify not installed")
+    root = tmp_path / "flat"
+    root.mkdir()
+    (root / "types.py").write_text("X = 1\n")
+    (root / "app.py").write_text("def f():\n    return g()\n\n\ndef g():\n    return 1\n")
+    graph, msg = graphify.run_graphify(root)
+    assert graph is not None and graph.exists(), msg
+    from devmem.runner import run_argv
+    import sys
+    r = run_argv([sys.executable, "-c", "import types; print(types.ModuleType.__name__)"], root, isolate=True)
+    assert r["code"] == 0 and r["out"].strip() == "module"
+
+
+def test_unknown_impact_target_is_reported_not_treated_as_an_empty_table(tmp_path, capsys):
+    root = _repo(tmp_path)
+    code, out = _run(capsys, root, "impact", "app/retry.py#retri")
+    assert code == 1 and out.startswith("not found: app/retry.py#retri is neither a function, class nor table") and "app/retry.py#retry" in out
+    r = Index.load(root).impact("table:orders")
+    assert r == {"not_found": "orders", "suggestions": []}

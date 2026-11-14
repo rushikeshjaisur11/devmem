@@ -49,8 +49,7 @@ function Trust({ repo }: { repo: string }) {
       {r.accuracy_mode === "fast" && <Badge kind="warn">indexed with --fast</Badge>}
       {weak.length > 0 && <Badge kind="warn" >{weak.join(", ")}: names only</Badge>}
       <span className="grow" />
-      <span className="muted">{String(r.ts).slice(0, 10)}</span>
-      <button className="ghost sm" disabled={busy} onClick={run}>{busy ? "Measuring…" : "Measure again"}</button>
+      <button className="ghost sm" disabled={busy} onClick={run} title={`Last measured ${String(r.ts).slice(0, 16).replace("T", " ")}`}>{busy ? "Measuring…" : "Measure again"}</button>
     </div>
   );
 }

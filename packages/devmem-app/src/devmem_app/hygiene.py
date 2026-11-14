@@ -50,7 +50,7 @@ def run_ruff(root, py):
     base = [*t, "check", "--output-format", "json", "--no-cache"] + ([] if _has_ruff_config(root) else ["--select", "E,F,W,B"])
     out = []
     for ch in _chunks(py):
-        r = run_argv(base + ch, root)
+        r = run_argv(base + ch, root, isolate=True)
         try:
             for d in json.loads(r["out"] or "[]"):
                 out.append(_issue("ruff", _rel(root, d["filename"]), d["location"]["row"], d["code"], d["message"]))
@@ -103,7 +103,7 @@ def run_eslint(root, js):
         return None, "unavailable: run npm install"
     out = []
     for ch in _chunks(js):
-        r = run_argv([*t, "-f", "json", *ch], root)
+        r = run_argv([*t, "-f", "json", *ch], root, isolate=True)
         try:
             out += parse_eslint(r["out"], root)
         except (json.JSONDecodeError, KeyError):
@@ -117,7 +117,7 @@ def run_knip(root, js):
     t = _js_tool(root, "knip")
     if not t:
         return None, "unavailable: add knip as a devDependency"
-    r = run_argv([*t, "--reporter", "json"], root)
+    r = run_argv([*t, "--reporter", "json"], root, isolate=True)
     try:
         return parse_knip(r["out"]), "ok"
     except (json.JSONDecodeError, KeyError):
@@ -137,7 +137,7 @@ def run_vulture(root, py, ix=None):
     if ix:
         for s in ix["symbols"]:
             by_file_name.setdefault((s["file"], s["name"]), []).append(s)
-    r = run_argv([*t, *py, "--min-confidence", "60"], root)
+    r = run_argv([*t, *py, "--min-confidence", "60"], root, isolate=True)
     for line in r["out"].splitlines():
         m = re.match(r"(.+?):(\d+): unused (\w[\w ]*?) '(.+?)' \((\d+)% confidence\)", line)
         if not m:
@@ -161,7 +161,7 @@ def run_radon(root, py):
         return None, "unavailable"
     out = []
     for ch in _chunks(py):
-        r = run_argv([*t, "cc", "-j", "-n", COMPLEXITY_MIN_RANK, *ch], root)
+        r = run_argv([*t, "cc", "-j", "-n", COMPLEXITY_MIN_RANK, *ch], root, isolate=True)
         try:
             for f, items in json.loads(r["out"] or "{}").items():
                 for it in items:
@@ -180,7 +180,7 @@ def run_deptry(root):
         return [], "skipped: no dependency spec"
     with tempfile.TemporaryDirectory() as td:
         j = Path(td) / "d.json"
-        r = run_argv([*t, ".", "--json-output", str(j)], root)
+        r = run_argv([*t, ".", "--json-output", str(j)], root, isolate=True)
         if not j.exists():
             return [], f"error: {(r['err'] or r['out'])[-100:].strip()}"
         data = json.loads(j.read_text() or "[]")
@@ -195,7 +195,7 @@ def run_bandit(root, py):
     files = [f for f in py if "/tests/" not in f"/{f}" and not Path(f).name.startswith("test_")]
     out = []
     for ch in _chunks(files):
-        r = run_argv([*t, "-f", "json", "-q", *ch], root)
+        r = run_argv([*t, "-f", "json", "-q", *ch], root, isolate=True)
         try:
             for d in json.loads(r["out"] or "{}").get("results", []):
                 if d["issue_severity"] in ("MEDIUM", "HIGH"):
@@ -215,7 +215,7 @@ def run_sqlfluff(root, sql):
     dialect = [] if (root / ".sqlfluff").exists() else ["--dialect", "sparksql"]
     out = []
     for ch in _chunks(sql):
-        r = run_argv([*t, "lint", "--format", "json", *dialect, *ch], root)
+        r = run_argv([*t, "lint", "--format", "json", *dialect, *ch], root, isolate=True)
         try:
             for f in json.loads(r["out"] or "[]"):
                 for v in f["violations"]:

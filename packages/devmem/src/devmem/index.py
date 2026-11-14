@@ -332,6 +332,15 @@ class Index:
     def _table_impact(self, tname: str) -> dict:
         readers = sorted({e["src"] for e in self.inc.get(tname, []) if e["type"] == "reads"})
         writers = sorted({e["src"] for e in self.inc.get(tname, []) if e["type"] == "writes"})
+        if not readers and not writers and tname not in self.inc:
+            # neither a symbol nor a table devmem knows: say so, with the closest names, instead of an empty table report
+            import difflib
+            name = tname[6:]
+            want = name.split("#")[-1]
+            quals = list(self.by_qual)
+            close = [sym["id"] for q in difflib.get_close_matches(want, quals, 3, 0.75) for sym in self.by_qual[q]][:3]   # a typo
+            near = list(dict.fromkeys(close + [s["id"] for _, s in self.find(want.replace(".", " "), 5)]))[:5]
+            return {"not_found": name, "suggestions": near}
         return {"table": tname, "readers": readers, "writers": writers,
                 "files": sorted({x.split("#")[0] for x in readers + writers})}
 

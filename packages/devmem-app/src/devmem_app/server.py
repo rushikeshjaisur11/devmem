@@ -798,6 +798,8 @@ def create_app() -> FastAPI:
             if sc:
                 return {"kind": "column", **agent_lineage.column_impact(lin, *sc)}
         r = ix.impact(target)
+        if "not_found" in r:
+            return {"kind": "not_found", **r}
         if "table" in r:
             return {"kind": "table", **r}
         ids = r["targets"] + [i["id"] for i in r["hop1"] + r["hop2"]] + r["tests"]

@@ -18,6 +18,28 @@ files, and builds prompts for the agent that will do the work.
 - **Runs on a server too**: `devmem-app ui --host 0.0.0.0` adds sign-in with an access token; repos are onboarded by upload or
   Git URL instead of a path (`docs/DEPLOY.md`, `Dockerfile`).
 
+## Screenshots
+
+![Ask & plan: a change described in words becomes a step-by-step prompt with the code to start from](docs/screenshots/ask-and-plan.png)
+
+| | |
+|---|---|
+| ![What breaks if I change](docs/screenshots/impact.png) | ![Code health](docs/screenshots/code-health.png) |
+| **What breaks if…**: direct and indirect callers, overriding methods, tests that reach the code, and what the call graph cannot see. | **Code health**: devmem's checks and SonarQube findings in one list, ordered by severity, callers and test coverage, each with a fix prompt. |
+| ![Modernize](docs/screenshots/modernize.png) | ![Library docs](docs/screenshots/library-docs.png) |
+| **Modernize**: hand-written code that the language or a library now provides, and whether the replacement is usable at the repo's declared versions. | **Library docs**: current docs from PyPI, npm or the web, or your own guides uploaded as a folder or zip; online docs refresh on their own. |
+| ![Repos](docs/screenshots/repos.png) | ![Code map](docs/screenshots/code-map.png) |
+| **Repos**: add a repo by upload, Git URL or path; publish writes the knowledge agents read. | **Code map** (dark theme): every file or function of every repo and how they connect. |
+
+![How far to trust an index](docs/screenshots/overview-repo.png)
+
+Each repo's card on the Overview shows what an agent pays per session and how far to trust the index: calls confirmed by a second
+tool, name-only guesses, call sites still in the code, and how often search finds a function from a description of it.
+
+The screenshots are of the app running on Starlette's own source (indexed in full-accuracy mode, with Graphify and SCIP) and on the
+small sample repos in `fixtures/`. The SonarQube findings come from a local test server with sample data; library docs were fetched
+live from PyPI.
+
 ## Requirements
 Python 3.10+, git, **Node.js 18+**, and network access the first time (npx downloads the SCIP indexers; docs are fetched from the web).
 
