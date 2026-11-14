@@ -20,3 +20,6 @@ Read the output as:
 - Utilities with many callers are capped and listed as such: change them backwards-compatibly or not at all.
 
 If the radius is larger than the task justifies, change the call site instead of the shared function, or add a new function and leave the old one.
+- `[passed by name]` means the function is handed over (a callback, `Thread(target=...)`, a handler table) rather than called: treat it as a caller.
+- `overridden by` lists subclass methods whose signatures must follow a change to this one; `overrides` means callers of the base method reach this code too.
+- A `BLIND SPOT` line means the call graph cannot see every caller (a decorator that registers the function, an export in `__all__`, the name used as text). "No callers found" is then not proof that nothing uses it: search for the name before removing or renaming it.

@@ -215,8 +215,8 @@ class Index:
             cur, hop = frontier.popleft()
             if hop >= MAX_HOPS:
                 continue
-            callers = [e for e in self.inc.get(cur, []) if e["type"] in ("calls", "tests")]
-            real = [e for e in callers if e["type"] == "calls"]
+            callers = [e for e in self.inc.get(cur, []) if e["type"] in ("calls", "tests", "refs")]
+            real = [e for e in callers if e["type"] in ("calls", "refs")]
             if len(real) > UTILITY_CALLER_CAP:
                 res["capped"].append({"symbol": cur, "callers": len(real)})
                 real = []
@@ -227,7 +227,7 @@ class Index:
                 if e["src"] in seen:
                     continue
                 seen.add(e["src"])
-                item = {"id": e["src"], "conf": e["conf"]}
+                item = {"id": e["src"], "conf": "by-name" if e["type"] == "refs" else e["conf"]}
                 res["hop1" if hop == 0 else "hop2"].append(item)
                 frontier.append((e["src"], hop + 1))
         # tests that cover any affected symbol
@@ -239,7 +239,30 @@ class Index:
         res["files"] = sorted({i.split("#")[0] for k in ("hop1", "hop2") for i in (x["id"] for x in res[k])}
                               | {s["file"] for s in targets})
         res["cochange"] = self._cochange_for(res["files"])
+        # inheritance: who overrides the target (their signatures must follow it), and whose callers reach it through a base class
+        res["overridden_by"] = sorted({e["src"] for t in targets for e in self.inc.get(t["id"], []) if e["type"] == "overrides"})
+        bases = sorted({e["dst"] for t in targets for e in self.out.get(t["id"], []) if e["type"] == "overrides"})
+        res["overrides"] = bases
+        res["via_base"] = sorted({e["src"] for b in bases for e in self.inc.get(b, []) if e["type"] in ("calls", "refs")} - seen)
+        res["blind_spots"] = [n for t in targets for n in self.blind_spots(t)]
         return res
+
+    def blind_spots(self, s: dict) -> list[str]:
+        """What the call graph cannot show about a symbol, in plain words. "No callers" is only safe to rely on when this is
+        empty: a decorator, a public export or the name appearing as text all mean something may call it unseen."""
+        out = []
+        decos = [d for d in s.get("decorators", []) if d.split(".")[-1] not in ("staticmethod", "classmethod", "property", "abstractmethod", "override", "wraps",
+                                                                               "lru_cache", "cache", "cached_property", "dataclass", "contextmanager")]
+        if decos:
+            out.append(f"{s['qualname']} is decorated with @{', @'.join(decos[:3])}: a framework may call it without any call appearing in the code")
+        rec = self.data["files"].get(s["file"], {})
+        if s["name"] in rec.get("exports", []) and "." not in s["qualname"]:
+            out.append(f"{s['qualname']} is exported in __all__: code outside this repo may use it")
+        if "." not in s["qualname"] and len(s["name"]) >= 4:
+            named = [f for f, r in self.data["files"].items() if s["name"] in r.get("strs", ())][:3]
+            if named:
+                out.append(f"the name \"{s['name']}\" appears as text in {', '.join(named)}: it may be looked up by name (getattr, a routing or config table)")
+        return out
 
     def _cochange_for(self, files: list[str], top: int = 5) -> list[str]:
         score: dict[str, int] = defaultdict(int)

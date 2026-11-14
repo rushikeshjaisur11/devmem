@@ -217,4 +217,70 @@ def build_edges(idx: dict) -> list[dict]:
             src = f"{path}#{t['caller']}"
             add(src if src in by_id else path, f"table:{t['name']}", t["mode"], CONF_STRUCTURAL)
 
+        # functions handed over by name (callbacks, targets, handler tables): the receiver calls them later, so a change to
+        # the function affects this code although no call to it is written here
+        for r in rec.get("refs", []):
+            src_id = f"{path}#{r['caller']}"
+            if src_id not in by_id:
+                continue
+            name, cands = r["name"], []
+            if r.get("recv"):
+                if r["recv"] in mod_alias:
+                    for f in _module_files(files, mod_alias[r["recv"]]):
+                        cands += [s for q, s in by_file.get(f, {}).items() if s["name"] == name and "." not in q and s["kind"] == "function"]
+                elif r["recv"] in ("self", "cls") and "." in r["caller"]:
+                    q = f"{r['caller'].split('.')[0]}.{name}"
+                    cands = [local[q]] if q in local else []
+            elif name in from_imp:
+                imp = from_imp[name]
+                for f in _module_files(files, imp["module"]):
+                    cands += [s for q, s in by_file.get(f, {}).items() if s["name"] == imp["name"] and "." not in q and s["kind"] == "function"]
+            elif name in local and local[name]["kind"] == "function":
+                cands = [local[name]]
+            for d in cands[:2]:
+                if d["id"] != src_id:
+                    add(src_id, d["id"], "refs", CONF_STRUCTURAL)
+
+    # inheritance: a method that overrides a base-class method. Callers of the base reach the override, and a change to the
+    # base method's signature breaks every override.
+    def base_class(cls: dict, name: str) -> dict | None:
+        rec = files.get(cls["file"], {})
+        simple = name.split(".")[-1]
+        loc = by_file.get(cls["file"], {}).get(simple)
+        if loc and loc["kind"] == "class" and "." not in name:
+            return loc
+        for i in rec.get("imports", []):
+            if i["name"] and i["alias"] == name.split(".")[0] and "." not in name:
+                for f in _module_files(files, i["module"]):
+                    hit = by_file.get(f, {}).get(i["name"])
+                    if hit and hit["kind"] == "class":
+                        return hit
+            if not i["name"] and "." in name and i["alias"] == name.split(".")[0]:
+                for f in _module_files(files, i["module"]):
+                    hit = by_file.get(f, {}).get(simple)
+                    if hit and hit["kind"] == "class":
+                        return hit
+        return None
+
+    for cls in idx["symbols"]:
+        if cls["kind"] != "class" or not cls.get("bases"):
+            continue
+        seen_cls, queue = {cls["id"]}, list(cls["bases"])
+        owner = cls
+        chain = []
+        while queue and len(chain) < 6:                      # walk up: direct bases, then theirs
+            b = base_class(owner, queue.pop(0))
+            if b and b["id"] not in seen_cls:
+                seen_cls.add(b["id"]); chain.append(b)
+                if owner is cls:
+                    add(cls["id"], b["id"], "inherits", CONF_STRUCTURAL)
+                if not queue and b.get("bases"):
+                    owner, queue = b, list(b["bases"])
+        mine = {q.split(".", 1)[1]: s for q, s in by_file.get(cls["file"], {}).items() if q.startswith(cls["qualname"] + ".")}
+        for b in chain:
+            for m, s in mine.items():
+                parent = by_file.get(b["file"], {}).get(f"{b['qualname']}.{m}")
+                if parent and not m.startswith("__"):
+                    add(s["id"], parent["id"], "overrides", CONF_STRUCTURAL)
+
     return [{"src": s, "dst": d, "type": t, "conf": c} for (s, d, t), c in sorted(best.items())]

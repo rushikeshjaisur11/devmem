@@ -132,13 +132,19 @@ def build(ix: Index, task: str, files: list[str] | None = None, budget: int = DE
         add("OTHER MATCHES: " + "; ".join(f"{h['id']}:{h['line']}" for h in others))
 
     imp = ix.impact(s["id"])
-    tags = {i["id"]: i["conf"] for i in imp["hop1"] if i["conf"] in ("ambiguous", "co-change")}
+    tags = {i["id"]: ("passed by name" if i["conf"] == "by-name" else i["conf"]) for i in imp["hop1"] if i["conf"] in ("ambiguous", "co-change", "by-name")}
     facts = [f"FOCUS {s['id']} (lines {s['line']}-{s.get('end_line', s['line'])})",
              " callers (must still work): " + grouped([i["id"] for i in imp["hop1"]], 8, tags)]
     if imp["hop2"]:
         facts.append(f" their callers: {len(imp['hop2'])} (`devmem impact {s['id']}`)")
     for c in imp["capped"]:
         facts.append(f" {c['symbol'].split('#')[-1]} has {c['callers']} callers: widely used, keep its signature")
+    if imp.get("overridden_by"):
+        facts.append(" overridden by (keep signatures in step): " + grouped(imp["overridden_by"], 5))
+    if imp.get("via_base"):
+        facts.append(" also reached through its base class by: " + grouped(imp["via_base"], 5))
+    for b in imp.get("blind_spots", [])[:2]:
+        facts.append(f" blind spot: {b}")
     facts.append(" tests: " + (grouped(imp["tests"], 5) if imp["tests"] else "none reach it: add one, or run the suite"))
     issues = known_issues(ix, s)
     if issues:

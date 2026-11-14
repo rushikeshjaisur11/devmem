@@ -112,12 +112,20 @@ def cmd_impact(ix: Index, a) -> int:
     print("targets: " + ", ".join(r["targets"]))
     cap = 0 if a.all else LIST_CAP
     # callers are grouped by file (the path once, not once per caller); only edges that need checking carry a tag
-    unsure = {i["id"]: i["conf"] for i in r["hop1"] if i["conf"] in ("ambiguous", "co-change")}
+    unsure = {i["id"]: ("passed by name" if i["conf"] == "by-name" else i["conf"]) for i in r["hop1"] if i["conf"] in ("ambiguous", "co-change", "by-name")}
     print("hop 1 (must check): " + grouped([i["id"] for i in r["hop1"]], cap, unsure))
     print("hop 2 (contract check): " + grouped([i["id"] for i in r["hop2"]], cap))
     print("tests: " + grouped(r["tests"], cap))
     for c in r["capped"]:
         print(f"capped: {c['symbol']} has {c['callers']} callers (widely used utility)")
+    if r.get("overridden_by"):
+        print("overridden by (keep their signatures in step): " + grouped(r["overridden_by"], cap))
+    if r.get("overrides"):
+        print("overrides: " + grouped(r["overrides"], cap) + (f"; callers of the base method reach this too: {grouped(r['via_base'], cap)}" if r.get("via_base") else ""))
+    for b in r.get("blind_spots", []):
+        print(f"BLIND SPOT: {b}")
+    if not r["hop1"] and not r.get("via_base") and not r["capped"]:
+        print("no callers found" + (": but see the blind spots above before treating it as unused" if r.get("blind_spots") else " in this repo (other repos are not searched)"))
     stale = ix.changed_files(r["files"])
     if stale:   # the lists above were computed when the index was built: say which of the files they name have moved on
         print(f"NOTE: changed since the index was built: {', '.join(stale[:6])}{' …' if len(stale) > 6 else ''}. "

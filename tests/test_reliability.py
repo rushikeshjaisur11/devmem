@@ -148,3 +148,117 @@ def test_survived_failures_are_recorded_and_shown(tmp_path, monkeypatch):
     texts = [a["text"] for a in api.get("/api/alerts").json()]
     assert texts.count("docs: requests could not be refreshed: failed: timed out") == 1 and "index: re-index failed: OSError: disk error" in texts
     assert len(api.get("/api/diagnostics").json()) == 3
+
+
+# ---------- what the call graph cannot see ----------
+SHAPES = '''from app.jobs import nightly
+
+
+class Shape:
+    def area(self):
+        return 0
+
+    def describe(self):
+        return f"area {self.area()}"
+
+
+class Square(Shape):
+    def __init__(self, side):
+        self.side = side
+
+    def area(self):
+        return self.side ** 2
+
+
+class BigSquare(Square):
+    def area(self):
+        return super().area() * 2
+
+
+def report(shape):
+    return shape.describe()
+'''
+JOBS = '''import threading
+from app.web import route
+
+__all__ = ["nightly"]
+
+
+def work(item):
+    return item * 2
+
+
+def unused_helper(x):
+    return x
+
+
+@route("/health")
+def health():
+    return "ok"
+
+
+def nightly(items):
+    t = threading.Thread(target=work)
+    HANDLERS = {"again": work}
+    return list(map(work, items)), t, HANDLERS
+
+
+def dispatch(name):
+    return globals()["unused_helper"]
+'''
+
+
+def _shapes(tmp_path):
+    root = tmp_path / "geo"
+    (root / "app").mkdir(parents=True)
+    (root / "app/__init__.py").write_text("")
+    (root / "app/shapes.py").write_text(SHAPES)
+    (root / "app/jobs.py").write_text(JOBS)
+    (root / "app/web.py").write_text("def route(path):\n    def deco(fn):\n        return fn\n    return deco\n")
+    indexer.index_repo(root, "geo", accuracy="fast")
+    return root
+
+
+def test_functions_passed_by_name_count_as_callers(tmp_path, capsys):
+    root = _shapes(tmp_path)
+    ix = Index.load(root)
+    r = ix.impact("work")
+    assert r["hop1"] == [{"id": "app/jobs.py#nightly", "conf": "by-name"}]              # Thread(target=work), map(work, ...), a handler table
+    _, out = _run(capsys, root, "impact", "work")
+    assert "hop 1 (must check): app/jobs.py: nightly [passed by name]" in out and "no callers found" not in out
+    edges = {(e["src"], e["dst"], e["type"]) for e in ix.data["edges"]}
+    assert ("app/jobs.py#nightly", "app/jobs.py#work", "refs") in edges
+
+
+def test_blind_spots_are_stated_when_no_caller_is_found(tmp_path, capsys):
+    root = _shapes(tmp_path)
+    _, out = _run(capsys, root, "impact", "health")
+    assert "BLIND SPOT: health is decorated with @route: a framework may call it" in out
+    assert "no callers found: but see the blind spots above before treating it as unused" in out
+    _, out = _run(capsys, root, "impact", "unused_helper")
+    assert 'BLIND SPOT: the name "unused_helper" appears as text in app/jobs.py: it may be looked up by name' in out
+    _, out = _run(capsys, root, "impact", "nightly")
+    assert "BLIND SPOT: nightly is exported in __all__: code outside this repo may use it" in out
+    ix = Index.load(root)
+    assert ix.blind_spots(ix.symbols["app/jobs.py#work"]) == []                          # nothing hidden: a plain helper
+    _, out = _run(capsys, root, "impact", "route")
+    assert "BLIND SPOT" not in out
+    _, out = _run(capsys, root, "context", "health")
+    assert "blind spot: health is decorated with @route" in out
+
+
+def test_impact_follows_inheritance_both_ways(tmp_path, capsys):
+    root = _shapes(tmp_path)
+    ix = Index.load(root)
+    base = ix.impact("app/shapes.py#Shape.area")
+    assert base["overridden_by"] == ["app/shapes.py#BigSquare.area", "app/shapes.py#Square.area"]        # two levels down
+    sub = ix.impact("app/shapes.py#Square.area")
+    assert sub["overrides"] == ["app/shapes.py#Shape.area"] and "app/shapes.py#Shape.describe" in sub["via_base"]
+    _, out = _run(capsys, root, "impact", "app/shapes.py#Shape.area")
+    assert "overridden by (keep their signatures in step): app/shapes.py: BigSquare.area, Square.area" in out
+    _, out = _run(capsys, root, "impact", "app/shapes.py#Square.area")
+    assert "overrides: app/shapes.py: Shape.area; callers of the base method reach this too: app/shapes.py: Shape.describe" in out
+    assert "no callers found" not in out
+    edges = {(e["src"], e["dst"], e["type"]) for e in ix.data["edges"]}
+    assert ("app/shapes.py#Square", "app/shapes.py#Shape", "inherits") in edges
+    assert not any(t == "overrides" and "__init__" in s for s, _, t in edges)            # constructors are not overrides
