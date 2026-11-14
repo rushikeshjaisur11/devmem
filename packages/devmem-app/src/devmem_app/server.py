@@ -532,6 +532,38 @@ def create_app() -> FastAPI:
         return {"issues": len(d["issues"]), "hotspots": len(d["hotspots"]), "total": d["total_issues"], "matched": d["matched"],
                 "truncated": d["truncated"], "notes": d["notes"], "gate": d.get("gate")}
 
+    # ---------- modernize: hand-written code that the language or a library now provides ----------
+    class ModernizeAi(BaseModel):
+        keys: list[str]
+
+    @app.get("/api/repos/{name}/modernize")
+    def modernize_view(name: str):
+        from . import modernize as mz
+        return {**mz.view(ix_of(name)), "llm": chat_mod.llm_status()}
+
+    @app.post("/api/repos/{name}/modernize")
+    def modernize_scan(name: str):
+        from . import docs as dm
+        from . import modernize as mz
+        root = root_of(name)
+        try:
+            dm.write_libs(root, online=True)     # which dependencies are behind their latest release; needs the network
+        except Exception:
+            pass
+        mz.scan(ix_of(name))
+        return {**mz.view(ix_of(name)), "llm": chat_mod.llm_status()}
+
+    @app.post("/api/repos/{name}/modernize/ai")
+    def modernize_ai(name: str, body: ModernizeAi):
+        from . import modernize as mz
+        try:
+            prov = chat_mod.provider_from_env()
+        except ImportError as e:
+            raise HTTPException(409, f"LLM client not installed: {e}")
+        if prov is None:
+            raise HTTPException(409, "no AI model is set up: open AI setup. The scan itself does not need one.")
+        return mz.verify_with_ai(ix_of(name), body.keys, prov)
+
     class PromptReq(BaseModel):
         kind: str
         data: dict = {}

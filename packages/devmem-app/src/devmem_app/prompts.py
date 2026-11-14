@@ -167,7 +167,28 @@ def duplicate(ix: Index, c: dict) -> str:
     return render(task, where, steps, _rules(ix, [c["a"], c["b"]]), ["Both places call the one shared function.", *done])
 
 
-KINDS = {"finding": lambda ix, d: finding(ix, d), "file": lambda ix, d: file_findings(ix, d["path"], d.get("findings") or []),
+def modernize(ix: Index, f: dict) -> str:
+    """Replace hand-written code with what the language or a library provides."""
+    s = ix.symbols[f["id"]]
+    task = f"`{s['qualname']}` in `{s['file']}` hand-writes {f['what']}. Replace that part with {f['use']}, keeping its behaviour for callers."
+    where = symbol_block(ix, s, mark=f.get("line"))
+    where.append(f"- Replacement: {f['use']} (from {f['source']}). Status: {f['needs']}.")
+    if f.get("url"):
+        where.append(f"- Documentation: {f['url']}")
+    if (f.get("ai") or {}).get("note") and f["ai"]["note"].lower() != "nothing":
+        where.append(f"- Watch out: {f['ai']['note']}")
+    v_steps, done = _verify_steps(ix, [s["file"]])
+    first = ("Confirm the version first: check the repo's minimum Python / Node version. If it is older than the replacement needs, stop and report that."
+             if f["kind"] == "stdlib" else
+             "Confirm the library is installed at a version that has this feature (look in the dependency file). If it is not a dependency, stop and ask before adding it."
+             if f["status"] != "new-dependency" else "This adds a new dependency. Stop and ask for approval before adding it; continue only if approved.")
+    steps = [first, "Read the function above. Write down every behaviour of the hand-written part: what it returns, what it raises, its defaults, any logging or special cases.",
+             "Replace only that part with the built-in. Keep the function's name, parameters and return value, so no caller changes.",
+             "If the built-in cannot reproduce a behaviour from your list, keep the hand-written code for that case, or stop and report it. Do not silently drop it.", *v_steps]
+    return render(task, where, steps, _rules(ix, [s["file"]]), ["The hand-written part is gone and the built-in is used.", "Every behaviour on your list still holds.", *done])
+
+
+KINDS = {"modernize": lambda ix, d: modernize(ix, d), "finding": lambda ix, d: finding(ix, d), "file": lambda ix, d: file_findings(ix, d["path"], d.get("findings") or []),
          "test": lambda ix, d: test_gap(ix, d["id"]), "duplicate": lambda ix, d: duplicate(ix, d)}
 
 

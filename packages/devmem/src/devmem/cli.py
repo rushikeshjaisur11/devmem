@@ -230,6 +230,13 @@ def cmd_hygiene(ix: Index, a) -> int:
         except ValueError:
             continue
         issues += [i for k in keys for i in d.get(k, []) if i.get("path") == a.file]
+    try:   # hand-written code the language or a library provides (Modernize page): only what can be used right now
+        mz = json.loads((ix.root / ".devmem/modernize.json").read_text(encoding="utf-8"))
+        seen_any = True
+        issues += [{"tool": "modernize", "path": f["file"], "line": f["line"], "code": f["rule"], "msg": f"hand-written {f['what']}; use {f['use']}"}
+                   for f in mz.get("findings", []) if f.get("file") == a.file and f.get("status") == "ready" and (f.get("ai") or {}).get("verdict") != "no"]
+    except (OSError, ValueError):
+        pass
     if not seen_any:
         print("no hygiene data (run `devmem-app hygiene <repo>`)")
         return 0

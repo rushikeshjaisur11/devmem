@@ -19,6 +19,7 @@ const Ai = lazy(() => import("./pages/Ai"));
 const Definitions = lazy(() => import("./pages/Definitions"));
 const Analysis = lazy(() => import("./pages/Analysis"));
 const Integrations = lazy(() => import("./pages/Integrations"));
+const Modernize = lazy(() => import("./pages/Modernize"));
 
 const ic = (d: string) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" dangerouslySetInnerHTML={{ __html: d }} />;
 const ICONS: Record<string, string> = {
@@ -35,20 +36,21 @@ const ICONS: Record<string, string> = {
   chat: '<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/>',
   metrics: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
   ai: '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 16l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7z"/>',
+  modernize: '<path d="M4 17 10 11l4 4 6-7"/><path d="M15 8h5v5"/>',
   integrations: '<path d="M9 3v5M15 3v5M7 8h10v3a5 5 0 0 1-10 0zM12 16v5"/>',
   analysis: '<path d="M10 3 8 9l-6 2 6 2 2 6 2-6 6-2-6-2z"/><path d="M19 15v5M16.5 17.5h5"/>',
   definitions: '<path d="M4 5h16M4 10h10M4 15h7"/><path d="m15 17 2 2 4-5"/>',
   reuse: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>',
 };
-const GROUPS: [string, string[]][] = [["Start here", ["overview", "agents", "repos"]], ["Before you change code", ["reuse", "impact", "graph", "lineage"]], ["Guide agents", ["chat", "memory", "analysis", "definitions", "docs", "hub"]], ["Health", ["hygiene", "metrics"]], ["Settings", ["ai", "integrations"]]];
+const GROUPS: [string, string[]][] = [["Start here", ["overview", "agents", "repos"]], ["Before you change code", ["reuse", "impact", "graph", "lineage"]], ["Guide agents", ["chat", "memory", "analysis", "definitions", "docs", "hub"]], ["Health", ["hygiene", "modernize", "metrics"]], ["Settings", ["ai", "integrations"]]];
 const PAGES: [string, string, any][] = [
   ["overview", "Overview", Overview], ["agents", "Agents", Agents], ["repos", "Repos", Repos], ["impact", "What breaks if…", Impact], ["graph", "Code map", Graph], ["reuse", "Already built elsewhere", Reuse],
   ["lineage", "Data flow", Lineage], ["hygiene", "Code health", Hygiene], ["memory", "Lessons & rules", Memory], ["docs", "Library docs", Docs], ["hub", "Team hub", Hub],
-  ["chat", "Ask & plan", Chat], ["metrics", "Results", Metrics], ["analysis", "AI analysis", Analysis], ["definitions", "Improve descriptions", Definitions], ["ai", "AI setup", Ai], ["integrations", "Integrations", Integrations],
+  ["chat", "Ask & plan", Chat], ["metrics", "Results", Metrics], ["analysis", "AI analysis", Analysis], ["definitions", "Improve descriptions", Definitions], ["ai", "AI setup", Ai], ["integrations", "Integrations", Integrations], ["modernize", "Modernize", Modernize],
 ];
 const LABEL = Object.fromEntries(PAGES.map((p) => [p[0], p[1]]));
 // pages that show one repo at a time: the top bar offers the repo switcher on these
-const REPO_PAGES = new Set(["agents", "impact", "graph", "reuse", "hygiene", "memory", "metrics", "definitions", "analysis", "docs"]);
+const REPO_PAGES = new Set(["agents", "impact", "graph", "reuse", "hygiene", "memory", "metrics", "definitions", "analysis", "docs", "modernize"]);
 
 /** The mark: a symbol and the blast radius around it, drawn in the one accent. */
 const Mark = () => (

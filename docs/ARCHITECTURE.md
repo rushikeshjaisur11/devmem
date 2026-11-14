@@ -83,6 +83,7 @@ Budgets in `knowledge.py`: `AGENTS.md` index 300 tokens, `map.md` 1,500, any oth
 - Optional AI pass: `devmem_app/analysis.py` (descriptions in bulk, module summaries, overview; background job with progress) -> `.devmem/analysis.json`, read by `publisher.py` and `chat.py`
 - Code health: `devmem_app/hygiene.py` (built-in tools), `sonar.py` (SonarQube Web API, read-only -> `.devmem/sonar.json`), `health.py` (merges both, maps findings to symbols, ranks by severity x callers x tested)
 - Prompts for agents: `devmem_app/prompts.py` (fix / file / test / duplicate prompts in one fixed shape, with code, callers and the test command), `implement.py` (task and plan prompts)
+- Modernize: `devmem_app/modernize.py` (pattern catalog `RULES`, docs match, declared runtime versions and dependencies -> `.devmem/modernize.json`); add a rule there to teach it a new pattern
 - Server mode: `devmem_app/server.py` (token sign-in), `uploads.py` (safe unpacking), `settings.py` (AI settings); see `DEPLOY.md`
 - Freshness: `devmem_app/watch.py` (re-index when HEAD moves; runs inside `devmem-app ui`)
 - Web UI: `devmem_app/server.py` (API under `/api`), `ui/src` (React, built into `devmem_app/ui_dist`)

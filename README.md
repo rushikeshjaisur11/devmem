@@ -124,6 +124,14 @@ every row has a ready fix prompt and a link back to SonarQube. Connect the serve
 project key per repo; a `sonar-project.properties` in the repo is picked up), then *Sync*. Agents get the same findings from
 `devmem hygiene <file>`. CLI and CI: `DEVMEM_SONAR_URL` / `DEVMEM_SONAR_TOKEN` (or Sonar's `SONAR_HOST_URL` / `SONAR_TOKEN`).
 
+**Stop maintaining what a library already does.** **Modernize** scans every function for code written by hand that the language, a
+library you already use, or a well-known library provides: a retry loop with sleep (`tenacity`), a dict used as a cache
+(`functools.lru_cache`), `zip(x, x[1:])` (`itertools.pairwise`), `JSON.parse(JSON.stringify(x))` (`structuredClone`) and about 25 more
+patterns for Python and JS/TS, plus functions named after a feature in the library docs on file and dependencies behind their latest
+release. Each candidate says whether it is usable now: the repo's declared Python / Node version is compared with what the replacement
+needs, and a library replacement says whether you already depend on it. The scan needs no AI and changes nothing; a model can
+optionally confirm or reject candidates, and each has a step-by-step replace prompt. Agents see the ready ones in `devmem hygiene <file>`.
+
 **6. Keep it fresh.** While `devmem-app ui` runs it re-indexes any repo whose HEAD moved (pull, merge, commit, branch switch); add
 `--publish` to republish too, or `--no-watch` to turn it off. Without the UI: `devmem-app watch` (or `watch --once` from cron or a git
 hook). Overview flags an index behind HEAD and any knowledge file over its token budget.
