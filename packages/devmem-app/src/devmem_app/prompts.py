@@ -174,7 +174,7 @@ def modernize(ix: Index, f: dict) -> str:
     where = symbol_block(ix, s, mark=f.get("line"))
     where.append(f"- Replacement: {f['use']} (from {f['source']}). Status: {f['needs']}.")
     if f.get("url"):
-        where.append(f"- Documentation: {f['url']}")
+        where.append(f"- Current documentation: {f['url']} (you may not have web access: `devmem docs \"{f['use'].strip('`').split('`')[0]}\"` searches the copy in the repo)")
     if (f.get("ai") or {}).get("note") and f["ai"]["note"].lower() != "nothing":
         where.append(f"- Watch out: {f['ai']['note']}")
     v_steps, done = _verify_steps(ix, [s["file"]])

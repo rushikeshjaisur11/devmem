@@ -127,8 +127,10 @@ project key per repo; a `sonar-project.properties` in the repo is picked up), th
 **Stop maintaining what a library already does.** **Modernize** scans every function for code written by hand that the language, a
 library you already use, or a well-known library provides: a retry loop with sleep (`tenacity`), a dict used as a cache
 (`functools.lru_cache`), `zip(x, x[1:])` (`itertools.pairwise`), `JSON.parse(JSON.stringify(x))` (`structuredClone`) and about 25 more
-patterns for Python and JS/TS, plus functions named after a feature in the library docs on file and dependencies behind their latest
-release. Each candidate says whether it is usable now: the repo's declared Python / Node version is compared with what the replacement
+patterns for Python and JS/TS. With *Compare with the latest releases and docs* ticked, the scan first asks the package
+registries for the newest release of every library the repo uses, downloads the current docs for libraries that have none on file,
+and reads the release notes since the version in use (set `GITHUB_TOKEN` to avoid GitHub's anonymous rate limit); it then shows, per
+library that is behind, what changed and which functions here use it, and every candidate links to the current documentation. Each candidate says whether it is usable now: the repo's declared Python / Node version is compared with what the replacement
 needs, and a library replacement says whether you already depend on it. The scan needs no AI and changes nothing; a model can
 optionally confirm or reject candidates, and each has a step-by-step replace prompt. Agents see the ready ones in `devmem hygiene <file>`.
 

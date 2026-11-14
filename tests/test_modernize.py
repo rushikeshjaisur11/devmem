@@ -194,3 +194,61 @@ def test_prompt_agents_and_api(tmp_path, capsys, monkeypatch):
     r = api.post("/api/repos/shop/modernize", headers=H).json()
     assert r["available"] and r["counts"]["ready"] >= 8 and r["lines"] > 0 and r["llm"]["configured"] is False
     assert api.post("/api/repos/shop/modernize/ai", json={"keys": ["x|y"]}, headers=H).status_code == 409
+
+
+def test_scan_compares_with_latest_releases_docs_and_release_notes(tmp_path, monkeypatch):
+    from devmem_app import docs as dm
+    monkeypatch.setenv("DEVMEM_HOME", str(tmp_path / "home"))
+    root = _repo(tmp_path, requires="3.12", deps="requests==2.25.0\ntenacity>=8\npyyaml==6.0\n")
+    (root / "app/net.py").write_text("import requests\nimport yaml\n\n\ndef get_json(url):\n    return requests.get(url).json()\n\n\ndef load_cfg(p):\n    return yaml.safe_load(open(p))\n")
+    (root / "app/svc.py").write_text("from app.net import get_json\n\n\ndef user(i):\n    return get_json(f'/u/{i}')\n")
+    indexer.index_repo(root, "shop", accuracy="fast")
+    ix = Index.load(root)
+    latest = {"requests": "2.34.2", "tenacity": "9.2.1", "pyyaml": "6.0"}
+    monkeypatch.setattr(dm, "latest_version", lambda eco, name: latest.get(name))
+    added = []
+
+    def fake_add(spec, name=None, follow=True, max_pages=40, dest=None):
+        added.append(spec)
+        if "tenacity" in spec:
+            raise RuntimeError("offline")
+        return {"name": spec.split(":")[1], "version": latest[spec.split(":")[1]], "pages": [], "bytes": 0}
+    monkeypatch.setattr(dm, "add", fake_add)
+    monkeypatch.setattr(dm, "source_repo", lambda eco, name: f"org/{name}")
+    monkeypatch.setattr(dm, "release_notes", lambda repo, frm, to: [("v2.30.0", "## What's Changed\n- Fixed a typo\n- Added built-in retry support for idempotent requests via `Retry`\n"),
+                                                                    ("v2.34.0", "* New `Session.json()` helper replaces manual decoding\n* @someone made a change\n")])
+    info = modernize.refresh_latest(ix)
+    assert sorted(added) == ["pypi:pyyaml", "pypi:requests", "pypi:tenacity"]                       # docs fetched for libraries with none on file
+    assert [d["name"] for d in info["docs_fetched"]] == ["requests", "pyyaml"] or {d["name"] for d in info["docs_fetched"]} == {"requests", "pyyaml"}
+    assert info["docs_failed"] == [{"name": "tenacity", "version": "", "error": "offline"}] and info["latest"]["tenacity"] == "9.2.1"
+    assert info["notes"]["requests"]["highlights"] == ["v2.34.0: New `Session.json()` helper replaces manual decoding",
+                                                       "v2.30.0: Added built-in retry support for idempotent requests via `Retry`"]   # newest first, noise dropped
+    assert "pyyaml" not in info["notes"]                                                            # not behind: no notes fetched
+
+    d = modernize.scan(ix, info)
+    by = {b["name"]: b for b in d["behind"]}
+    assert set(by) == {"requests", "tenacity"} and by["requests"]["latest"] == "2.34.2" and by["requests"]["behind"] == "minor"
+    assert by["requests"]["functions"] == 2 and by["requests"]["top"][0]["name"] == "get_json"       # the most called function that uses it comes first
+    assert by["requests"]["highlights"][0].startswith("v2.34.0") and by["requests"]["notes_url"] == "https://github.com/org/requests/releases"
+    retry = next(f for f in d["findings"] if f["name"] == "fetch_with_retry")
+    assert retry["needs"] == "tenacity >=8 is already a dependency; the latest release is 9.2.1" and retry["url"].startswith("https://tenacity.readthedocs.io")
+    assert next(f for f in d["findings"] if f["name"] == "tally")["url"] == "https://docs.python.org/3/library/collections.html#collections.Counter"
+    assert all(f["url"] for f in d["findings"])                                                     # every candidate links to current documentation
+    assert "Current documentation: https://tenacity.readthedocs.io" in prompts.build(ix, "modernize", retry)["prompt"]
+    again = modernize.scan(ix)                                                                      # a scan without the network keeps what the last one fetched
+    assert again["latest_info"]["latest"] == info["latest"] and {b["name"] for b in again["behind"]} == {"requests", "tenacity"}
+
+    monkeypatch.setattr(dm, "release_notes", lambda repo, frm, to: (_ for _ in ()).throw(RuntimeError("HTTP Error 403: Forbidden")))
+    assert "set GITHUB_TOKEN" in modernize.refresh_latest(ix)["notes_error"]                        # says why, and the scan still runs
+    monkeypatch.setattr(dm, "write_libs", lambda root, online=True: (_ for _ in ()).throw(OSError("no network")))
+    off = modernize.refresh_latest(ix)
+    assert "could not check the package registries" in off["error"] and modernize.scan(ix, off)["findings"]
+
+
+def test_import_names_map_to_package_names(tmp_path):
+    root = _repo(tmp_path)
+    (root / "app/cfg.py").write_text("import yaml\nfrom PIL import Image\n\n\ndef load(p):\n    return yaml.safe_load(p)\n")
+    (root / "web/api.ts").write_text("import { z } from 'zod';\nimport x from '@scope/pkg/sub';\nimport y from './local';\n\nexport function parse(v: unknown) {\n  return z.string().parse(v);\n}\n")
+    indexer.index_repo(root, "shop", accuracy="fast")
+    used = modernize._usage(Index.load(root), [{"name": "PyYAML"}, {"name": "pillow"}, {"name": "zod"}, {"name": "@scope/pkg"}, {"name": "local"}])
+    assert {k: [s["name"] for s in v] for k, v in used.items()} == {"pyyaml": ["load"], "pillow": ["load"], "zod": ["parse"], "@scope/pkg": ["parse"]}

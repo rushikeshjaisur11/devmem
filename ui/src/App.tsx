@@ -197,6 +197,7 @@ export default function App() {
       <header className="topbar">
         <button className="icon-btn menu-btn" onClick={() => setMenu((m) => !m)} aria-label={menu ? "Close menu" : "Open menu"} aria-expanded={menu}>{ic(menu ? '<path d="M6 6l12 12M18 6 6 18"/>' : '<path d="M4 7h16M4 12h16M4 17h16"/>')}</button>
         <span className="crumb"><b>{LABEL[page] || "Overview"}</b></span>
+        {!REPO_PAGES.has(page) && <span className="topbar-lead" />}
         {REPO_PAGES.has(page) && indexed.length > 0 && (
           <label className="repo-switch" title="The repo this page shows. It stays the same as you move between pages.">
             <Icon name="folder" />

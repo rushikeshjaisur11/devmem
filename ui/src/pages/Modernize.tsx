@@ -22,9 +22,14 @@ export default function Modernize(_: any) {
   const [busy, setBusy] = useState("");
   const [err, setErr] = useState("");
   const [msg, setMsg] = useState("");
+  const [latest, setLatest] = useState(true);
   useEffect(() => { setFresh(null); setSel(new Set()); setMsg(""); setErr(""); setShow("ready"); setText(""); }, [repo]);
 
-  const scan = async () => { setBusy("scan"); setErr(""); setMsg(""); try { const r = await api.post(`/api/repos/${repo}/modernize`); setFresh(r); setMsg(`Scanned ${r.scanned.toLocaleString()} functions and classes: ${r.findings.length} candidate${r.findings.length === 1 ? "" : "s"}.`); } catch (e: any) { setErr(e.message); } setBusy(""); };
+  const scan = async () => { setBusy("scan"); setErr(""); setMsg(""); try { const r = await api.post(`/api/repos/${repo}/modernize`, { latest }); setFresh(r);
+    const li = r.latest_info || {};
+    setMsg(`Scanned ${r.scanned.toLocaleString()} functions and classes: ${r.findings.length} candidate${r.findings.length === 1 ? "" : "s"}.`
+      + (li.docs_fetched?.length ? ` Fetched the latest docs for ${li.docs_fetched.map((x: any) => `${x.name} ${x.version}`.trim()).join(", ")}.` : "")
+      + (li.error ? ` ${li.error}.` : "") + (li.notes_error ? ` Note: ${li.notes_error}.` : "")); } catch (e: any) { setErr(e.message); } setBusy(""); };
   const verify = async () => {
     setBusy("ai"); setErr(""); setMsg("");
     try { const r = await api.post(`/api/repos/${repo}/modernize/ai`, { keys: [...sel].slice(0, 20) }); setMsg(`${r.checked} checked by the model.${r.error ? ` Some failed: ${r.error}` : ""}`); setSel(new Set()); setFresh(await api.get(`/api/repos/${repo}/modernize`)); } catch (e: any) { setErr(e.message); }
@@ -40,7 +45,8 @@ export default function Modernize(_: any) {
       <div className="row">
         <h1>Modernize</h1>
         <span className="grow" />
-        <button className={d?.available ? "" : "primary"} disabled={!repo || !!busy} onClick={scan}><span className={busy === "scan" ? "spin" : ""}><Icon name="refresh" /></span>{busy === "scan" ? "Scanning…" : d?.available ? "Scan again" : "Scan this repo"}</button>
+        <label className="row" title="Checks the package registries for the newest release of every library this repo uses, downloads the current docs for libraries that have none on file, and reads the release notes since the version in use. Needs internet on the machine that runs devmem."><input type="checkbox" checked={latest} disabled={!!busy} onChange={(e) => setLatest(e.target.checked)} />Compare with the latest releases and docs</label>
+        <button className={d?.available ? "" : "primary"} disabled={!repo || !!busy} onClick={scan}><span className={busy === "scan" ? "spin" : ""}><Icon name="refresh" /></span>{busy === "scan" ? (latest ? "Fetching latest and scanning…" : "Scanning…") : d?.available ? "Scan again" : "Scan this repo"}</button>
       </div>
       <p className="sub">Finds code written by hand that the language, a library you already use, or a well-known library now provides: a retry loop, a dict used as a cache, a JSON deep copy. Less code to own, and agents stop copying the old pattern. The scan reads the code and needs no AI; nothing is changed.</p>
       <Err msg={repos.error || d0.error || err} />
@@ -57,7 +63,7 @@ export default function Modernize(_: any) {
               <div className="kpi"><span className="k">Libraries behind</span><b>{d.behind.length}</b><span className="t">newer release available</span></div>
             </div>
             <p className="hint" style={{ margin: "14px 0 0" }}>
-              Declared versions: Python {rt.python || "not declared"}, Node.js {rt.node || "not declared"}. Scanned {d.scanned.toLocaleString()} functions and classes on {d.ts.slice(0, 16).replace("T", " ")}; the {d.docs_checked.toLocaleString()} most used were also compared with the <a href="#/docs">library docs on file</a>.
+              Declared versions: Python {rt.python || "not declared"}, Node.js {rt.node || "not declared"}. {d.libraries ?? 0} libraries declared, current docs on file for {d.docs_on_file ?? 0}. Scanned {d.scanned.toLocaleString()} functions and classes on {d.ts.slice(0, 16).replace("T", " ")}; the {d.docs_checked.toLocaleString()} most used were also compared with the <a href="#/docs">library docs on file</a>.
               These are candidates: a match means the code looks like the pattern, not that the replacement covers every case.
             </p>
           </div>
@@ -109,15 +115,26 @@ export default function Modernize(_: any) {
           {d.behind.length > 0 && (
             <div className="card">
               <h3>Libraries behind their latest release</h3>
-              <p className="hint" style={{ marginTop: -8 }}>A newer release may already include what the code around these libraries does by hand. Add the library's docs and fetch its upgrade notes on the <a href="#/docs">Library docs</a> page; the scan then compares your functions with them.</p>
-              <table>
-                <thead><tr><th>Library</th><th>This repo uses</th><th>Latest</th><th>Behind by</th><th>Docs on file</th></tr></thead>
-                <tbody>{d.behind.map((l: any) => (
-                  <tr key={l.eco + l.name}><td><b>{l.name}</b> <span className="muted">{l.eco}</span></td><td className="mono">{l.using || "-"}</td><td className="mono">{l.latest}</td>
-                    <td><Badge kind={l.behind === "major" ? "warn" : ""}>{l.behind === "major" ? "a major version" : "minor versions"}</Badge></td>
-                    <td>{l.docs ? <Badge kind="good">yes</Badge> : <a onClick={() => nav("docs")}>add them</a>}</td></tr>
-                ))}</tbody>
-              </table>
+              <p className="hint" style={{ marginTop: -8 }}>Code written around an older release often does by hand what a newer one includes. For each library: what changed since your version, and the functions here that use it. Read the highlights against those functions before upgrading.</p>
+              <div className="libs">
+                {d.behind.map((l: any) => (
+                  <div className="lib" key={l.eco + l.name}>
+                    <div className="lib-head">
+                      <b>{l.name}</b><span className="muted">{l.eco}</span>
+                      <span className="mono">{l.using || "any"}</span><span className="mz-arrow" aria-hidden="true">→</span><span className="mono">{l.latest}</span>
+                      <Badge kind={l.behind === "major" ? "warn" : ""}>{l.behind === "major" ? "a major version behind" : "minor versions behind"}</Badge>
+                      {l.docs ? <Badge kind="good">latest docs on file</Badge> : <a onClick={() => nav("docs")}>add its docs</a>}
+                      <span className="grow" />
+                      {l.notes_url && <a className="btn-link" href={l.notes_url} target="_blank" rel="noreferrer">Release notes</a>}
+                    </div>
+                    {l.highlights.length > 0 && <ul className="plain lib-news">{l.highlights.map((h: string, i: number) => <li key={i}><span className="mono">{h.split(": ")[0]}</span> {h.split(": ").slice(1).join(": ")}</li>)}</ul>}
+                    <div className="lib-use">
+                      {l.functions ? <><span className="muted">Used by {l.functions} function{l.functions === 1 ? "" : "s"} here{l.functions > l.top.length ? ", most called first" : ""}:</span>{l.top.map((x: any) => <span className="tag mono" key={x.id} title={`${x.file}:${x.line}`}>{x.name} <EditorLink href={editorHref(repos.data, repo, x.file, x.line)} /></span>)}</>
+                        : <span className="muted">No function in the indexed code imports it directly.</span>}
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </>

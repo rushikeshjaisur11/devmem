@@ -541,17 +541,22 @@ def create_app() -> FastAPI:
         from . import modernize as mz
         return {**mz.view(ix_of(name)), "llm": chat_mod.llm_status()}
 
+    class ModernizeScan(BaseModel):
+        latest: bool = True     # also fetch latest versions, docs and release notes for the repo's libraries (needs the network)
+
     @app.post("/api/repos/{name}/modernize")
-    def modernize_scan(name: str):
-        from . import docs as dm
+    def modernize_scan(name: str, body: ModernizeScan = ModernizeScan()):
         from . import modernize as mz
-        root = root_of(name)
-        try:
-            dm.write_libs(root, online=True)     # which dependencies are behind their latest release; needs the network
-        except Exception:
-            pass
-        mz.scan(ix_of(name))
-        return {**mz.view(ix_of(name)), "llm": chat_mod.llm_status()}
+        ix = ix_of(name)
+        info = mz.refresh_latest(ix) if body.latest else None
+        mz.scan(ix, info)
+        if info and info["docs_fetched"]:
+            try:   # the docs just fetched travel to agents with the next publish; copy them into the repo now so search finds them
+                from . import docs as dm
+                dm.copy_relevant(root_of(name))
+            except Exception:
+                pass
+        return {**mz.view(ix), "llm": chat_mod.llm_status()}
 
     @app.post("/api/repos/{name}/modernize/ai")
     def modernize_ai(name: str, body: ModernizeAi):

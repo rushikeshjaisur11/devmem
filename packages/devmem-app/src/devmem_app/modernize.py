@@ -23,6 +23,22 @@ from .definitions import TEST_FILE
 from .reuse import _entry, _internal_names
 
 PATH = ".devmem/modernize.json"
+FETCH_DOCS_CAP, NOTES_CAP = 20, 12     # libraries per scan whose latest docs / release notes are fetched
+# import name -> package name, where they differ
+IMPORT_ALIAS = {"yaml": "pyyaml", "pil": "pillow", "sklearn": "scikit-learn", "cv2": "opencv-python", "bs4": "beautifulsoup4", "dateutil": "python-dateutil",
+                "dotenv": "python-dotenv", "jwt": "pyjwt", "attr": "attrs", "google": "google-cloud", "serial": "pyserial", "magic": "python-magic"}
+PY, MDN = "https://docs.python.org/3/library/", "https://developer.mozilla.org/en-US/docs/Web/"
+DOC_URL = {"py-retry-loop": "https://tenacity.readthedocs.io/en/latest/", "py-dict-cache": PY + "functools.html#functools.lru_cache", "py-chunk": PY + "itertools.html#itertools.batched",
+           "py-pairwise": PY + "itertools.html#itertools.pairwise", "py-flatten": PY + "itertools.html#itertools.chain.from_iterable", "py-removeprefix": PY + "stdtypes.html#str.removeprefix",
+           "py-counter": PY + "collections.html#collections.Counter", "py-utcnow": PY + "datetime.html#datetime.datetime.now", "py-random-token": PY + "secrets.html",
+           "py-tempdir": PY + "tempfile.html#tempfile.TemporaryDirectory", "py-argv": PY + "argparse.html", "py-walk-glob": PY + "pathlib.html#pathlib.Path.rglob",
+           "py-email-regex": "https://github.com/JoshData/python-email-validator#readme", "py-slugify": "https://github.com/un33k/python-slugify#readme",
+           "py-env-config": "https://docs.pydantic.dev/latest/concepts/pydantic_settings/", "py-urllib-json": "https://www.python-httpx.org/quickstart/",
+           "py-manual-dataclass": PY + "dataclasses.html", "js-json-clone": MDN + "API/Window/structuredClone", "js-uuid": MDN + "API/Crypto/randomUUID",
+           "js-fetch-timeout": MDN + "API/AbortSignal/timeout_static", "js-query-string": MDN + "API/URLSearchParams", "js-sleep": "https://nodejs.org/api/timers.html#timers-promises-api",
+           "js-group-by": MDN + "JavaScript/Reference/Global_Objects/Object/groupBy", "js-flatten": MDN + "JavaScript/Reference/Global_Objects/Array/flat",
+           "js-debounce": "https://lodash.com/docs/#debounce", "js-date-format": MDN + "JavaScript/Reference/Global_Objects/Intl/DateTimeFormat"}
+NEWS = re.compile(r"\b(add(ed|s)?|new|support(s|ed)?|introduc\w+|deprecat\w+|remov\w+|breaking|now|built-?in|replac\w+)\b", re.I)
 DOCS_SCAN_CAP = 400      # docs matching costs a search per function: the most-called functions first
 
 
@@ -162,9 +178,97 @@ def _norm(n: str) -> str:
     return re.sub(r"[-_.]+", "-", n).lower()
 
 
-def scan(ix: Index) -> dict:
-    """Run the catalog over every non-test function and class, then the docs check over the most-called functions."""
+def refresh_latest(ix: Index) -> dict:
+    """Bring in what is current, from the network: the latest version of every dependency, the latest docs for dependencies
+    that have none on file, and the release notes between the version the repo uses and the latest. The scan then compares the
+    code with those. Every step is best effort: without network the scan still runs on what is already on file."""
+    from concurrent.futures import ThreadPoolExecutor
     root = Path(ix.root)
+    out = {"docs_fetched": [], "docs_failed": [], "notes": {}, "latest": {}, "error": "", "notes_error": ""}
+    try:
+        rows = docs_mod.write_libs(root, online=True)
+    except Exception as e:
+        out["error"] = f"could not check the package registries: {str(e)[:160]}"
+        return out
+    used = _usage(ix, rows)
+    out["latest"] = {_norm(r["name"]): r["latest"] for r in rows if r.get("latest")}
+    need = sorted((r for r in rows if not r.get("docs") and r.get("latest")), key=lambda r: (r.get("behind") not in ("major", "minor"), -len(used.get(_norm(r["name"]), []))))
+
+    def fetch(r):
+        try:
+            m = docs_mod.add(f"{r['eco']}:{r['name']}", follow=True, max_pages=15)
+            return r["name"], f"{m['version']}".strip(), None
+        except Exception as e:
+            return r["name"], "", str(e)[:120]
+    with ThreadPoolExecutor(6) as ex:
+        for name, ver, err in ex.map(fetch, need[:FETCH_DOCS_CAP]):
+            (out["docs_failed"] if err else out["docs_fetched"]).append({"name": name, "version": ver, **({"error": err} if err else {})})
+
+    def notes(r):
+        try:
+            repo = docs_mod.source_repo(r["eco"], r["name"])
+            if not repo:
+                return r["name"], None
+            using = re.search(r"\d+(?:\.\d+)*", r.get("locked") or r.get("spec") or "")
+            rel = docs_mod.release_notes(repo, using.group(0) if using else "0", r["latest"])
+            lines = []
+            for tag, body in reversed(rel):                      # newest first
+                for ln in body.splitlines():
+                    t = re.sub(r"^[\s*+\-#>]+|\s+$", "", ln)
+                    t = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", t)
+                    if 20 <= len(t) <= 220 and NEWS.search(t) and not re.search(r"^(full changelog|what's changed|new contributors|@)", t, re.I):
+                        lines.append(f"{tag}: {t[:180]}")
+                    if len(lines) >= 6:
+                        break
+                if len(lines) >= 6:
+                    break
+            return r["name"], {"repo": repo, "url": f"https://github.com/{repo}/releases", "highlights": lines, "releases": len(rel)}
+        except Exception as e:   # usually GitHub's rate limit for anonymous calls: say so once, the rest of the scan is unaffected
+            out["notes_error"] = f"release notes could not be read from GitHub ({str(e)[:80]}); set GITHUB_TOKEN on the machine that runs devmem"
+            return r["name"], None
+    behind = [r for r in rows if r.get("behind") in ("major", "minor")]
+    behind.sort(key=lambda r: (r["behind"] != "major", -len(used.get(_norm(r["name"]), []))))
+    with ThreadPoolExecutor(4) as ex:
+        for name, n in ex.map(notes, behind[:NOTES_CAP]):
+            if n:
+                out["notes"][_norm(name)] = n
+    return out
+
+
+def _usage(ix: Index, libs: list[dict]) -> dict[str, list[dict]]:
+    """package name -> the non-test functions in files that import it, most called first."""
+    names = {_norm(l["name"]) for l in libs}
+    by_lib: dict[str, list[dict]] = {}
+    for path, rec in ix.data["files"].items():
+        if TEST_FILE.search(path):
+            continue
+        tops = set()
+        for i in rec.get("imports", []):
+            mod = i.get("module") or ""
+            if rec.get("lang") in ("js", "ts"):
+                if mod.startswith("."):
+                    continue
+                top = "/".join(mod.split("/")[:2]) if mod.startswith("@") else mod.split("/")[0]
+            else:
+                top = mod.split(".")[0]
+                top = IMPORT_ALIAS.get(top.lower(), top)
+            if _norm(top) in names:
+                tops.add(_norm(top))
+        if tops:
+            syms = [x for x in ix.by_file.get(path, []) if x["kind"] in ("function", "method") and not x.get("is_test")]
+            for t in tops:
+                by_lib.setdefault(t, []).extend(syms)
+    for t in by_lib:
+        by_lib[t].sort(key=lambda x: (-len(ix.inc.get(x["id"], [])), x["id"]))
+    return by_lib
+
+
+def scan(ix: Index, latest: dict | None = None) -> dict:
+    """Run the catalog over every non-test function and class, then the docs check over the most-called functions.
+    `latest` is what refresh_latest brought in (None keeps what the previous scan stored)."""
+    root = Path(ix.root)
+    if latest is None:
+        latest = (load(root) or {}).get("latest_info") or {}
     rt = runtime_versions(root)
     deps = {_norm(d["name"]): d for d in docs_mod.scan_deps(root)}
     findings, seen = [], set()
@@ -225,8 +329,12 @@ def scan(ix: Index) -> dict:
                     line_off, evidence = n, ln.strip()[:160]
                     break
             callers = len({e["src"] for e in ix.inc.get(s["id"], []) if e["type"] == "calls"})
+            newest = (latest.get("latest") or {}).get(_norm(have["name"])) if have else None
+            if have and newest:
+                needs += f"; the latest release is {newest}"
             findings.append({"id": s["id"], "rule": r["id"], "name": s["qualname"], "file": s["file"], "line": s["line"] + line_off, "symbol_line": s["line"],
                              "what": r["what"], "use": r["use"], "source": source, "kind": r["kind"], "status": status, "needs": needs, "confidence": r["conf"],
+                             "url": DOC_URL.get(r["id"], ""),
                              "evidence": evidence, "callers": callers, "lines": s.get("end_line", s["line"]) - s["line"] + 1})
             seen.add(s["id"])
 
@@ -261,10 +369,20 @@ def scan(ix: Index) -> dict:
         libs = json.loads((root / ".devmem/libs.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         libs = []
-    behind = [{"name": l["name"], "eco": l["eco"], "using": l.get("locked") or l.get("spec") or "", "latest": l.get("latest") or "", "behind": l["behind"], "docs": l.get("docs", False)}
-              for l in libs if l.get("behind") in ("major", "minor")]
-    behind.sort(key=lambda l: (l["behind"] != "major", l["name"]))
-    data = {"ts": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), "runtime": rt, "findings": findings, "behind": behind,
+    used = _usage(ix, libs)
+    have_docs = {_norm(l["name"]) for l in docs_mod.list_libs()}
+    behind = []
+    for l in libs:
+        if l.get("behind") not in ("major", "minor"):
+            continue
+        fns = used.get(_norm(l["name"]), [])
+        n = (latest.get("notes") or {}).get(_norm(l["name"])) or {}
+        behind.append({"name": l["name"], "eco": l["eco"], "using": l.get("locked") or l.get("spec") or "", "latest": l.get("latest") or "", "behind": l["behind"],
+                       "docs": _norm(l["name"]) in have_docs, "functions": len(fns), "top": [{"id": x["id"], "name": x["qualname"], "file": x["file"], "line": x["line"]} for x in fns[:5]],
+                       "highlights": n.get("highlights", []), "notes_url": n.get("url", ""), "releases": n.get("releases", 0)})
+    behind.sort(key=lambda l: (l["behind"] != "major", -l["functions"], l["name"]))
+    data = {"ts": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), "runtime": rt, "findings": findings, "behind": behind, "latest_info": latest,
+            "libraries": len(libs), "docs_on_file": len(have_docs),
             "scanned": sum(1 for s in ix.symbols.values() if s["kind"] != "module" and not s.get("is_test")), "docs_checked": min(len(cands), DOCS_SCAN_CAP)}
     p = root / PATH
     p.parent.mkdir(parents=True, exist_ok=True)

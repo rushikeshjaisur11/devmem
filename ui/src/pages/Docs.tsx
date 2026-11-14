@@ -61,7 +61,7 @@ export default function Docs(_: any) {
               <button className="primary" disabled={!spec.trim() || busy === "add"} onClick={() => run("add", () => api.post("/api/docs", { spec, follow }), added)}><Icon name="download" />{busy === "add" ? "Fetching…" : "Fetch docs"}</button>
             </div>
             <label className="row" style={{ marginTop: 10 }} title="For an llms.txt index: also fetch the pages it links to (up to 40)"><input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} />Also fetch the pages an <code>llms.txt</code> links to</label>
-            <div className="examples">
+            <div className="doc-examples">
               {EXAMPLES.map(([label, ex, note]) => (
                 <button key={label} className="example" onClick={() => setSpec(ex)} title="Use this as a starting point">
                   <b>{label}</b><span className="mono">{ex}</span><span>{note}</span>
