@@ -1,0 +1,324 @@
+"""Answers must not be silently wrong: code that moved since indexing is found again or refused, state files are written
+atomically under a lock, unreadable or newer indexes are rejected with the fix, and survived failures are recorded."""
+import json
+import shutil
+import threading
+import time
+from pathlib import Path
+
+import pytest
+
+from devmem import cli, context
+from devmem.index import Index
+from devmem.schema import atomic_write
+from devmem_app import indexer, prompts
+from devmem_app.paths import diagnose, diagnostics, repo_lock
+
+FIX = Path(__file__).parent.parent / "fixtures"
+
+
+def _repo(tmp_path, name="py_app"):
+    root = tmp_path / name
+    shutil.copytree(FIX / name, root)
+    indexer.index_repo(root, name, accuracy="fast")
+    return root
+
+
+def _run(capsys, root, *argv):
+    capsys.readouterr()
+    code = cli.run(list(argv), root=root)
+    return code, capsys.readouterr().out
+
+
+def test_show_finds_python_code_again_after_the_file_was_edited(tmp_path, capsys):
+    root = _repo(tmp_path)
+    ix = Index.load(root)
+    s = ix.symbols["app/retry.py#retry"]
+    assert ix.file_state("app/retry.py") == "fresh" and ix.read(s)[3] == ""
+    f = root / "app/retry.py"
+    f.write_text("# a new header comment\nimport logging\n\nlog = logging.getLogger(__name__)\n\n" + f.read_text())      # everything moves down 5 lines
+    ix = Index.load(root)
+    text, start, end, note = ix.read(s)
+    assert ix.file_state("app/retry.py") == "changed" and start == s["line"] + 5 and end == s["end_line"] + 5
+    assert text.startswith("def retry(") and "changed since it was indexed" in note and "estimate" not in note     # exact: re-parsed
+    code, out = _run(capsys, root, "show", "retry")
+    assert code == 0 and out.splitlines()[0].startswith("NOTE: app/retry.py changed since it was indexed: `retry` is now at lines")
+    assert f"# app/retry.py:{start}-{end}" in out and "def retry(" in out and "log = logging" not in out          # not the stale line range
+    code, out = _run(capsys, root, "context", "retry helper")
+    assert "NOTE: app/retry.py changed since it was indexed" in out and "BODY\ndef retry(" in out
+    assert f"{start:>5}  def retry(" in "\n".join(prompts.symbol_block(ix, s))                                     # prompts number the real lines
+
+
+def test_renamed_or_deleted_code_is_refused_not_guessed(tmp_path, capsys):
+    root = _repo(tmp_path)
+    f = root / "app/retry.py"
+    f.write_text(f.read_text().replace("def retry(", "def retry_call("))
+    code, out = _run(capsys, root, "show", "retry")
+    assert code == 1 and "retry is no longer in app/retry.py" in out and "re-index" in out and "def retry_call" not in out
+    code, out = _run(capsys, root, "context", "retry helper")
+    assert "NOTE: retry is no longer in app/retry.py" in out and "BODY" not in out                                # callers still shown, no wrong body
+    f.unlink()
+    assert Index.load(root).file_state("app/retry.py") == "missing"
+    code, out = _run(capsys, root, "show", "retry")
+    assert code == 1 and "app/retry.py no longer exists" in out
+
+
+def test_impact_says_which_of_its_files_changed(tmp_path, capsys):
+    root = _repo(tmp_path)
+    _, out = _run(capsys, root, "impact", "retry")
+    assert "NOTE" not in out
+    (root / "app/client.py").write_text((root / "app/client.py").read_text() + "\n\ndef another_caller():\n    return retry(lambda: 1)\n")
+    _, out = _run(capsys, root, "impact", "retry")
+    assert "NOTE: changed since the index was built: app/client.py." in out and "not reflected above" in out
+
+
+def test_other_languages_are_found_by_definition_and_block(tmp_path):
+    root = _repo(tmp_path, "js_app")
+    ix = Index.load(root)
+    s = next(x for x in ix.symbols.values() if x["file"] == "src/retry.ts" and x["kind"] == "function")
+    f = root / "src/retry.ts"
+    before = ix.read(s)[0]
+    f.write_text("// header\n// another line\n" + f.read_text())
+    text, start, end, note = Index.load(root).read(s)
+    assert start == s["line"] + 2 and text.splitlines()[0] == before.splitlines()[0] and text.rstrip().endswith("}")
+    assert "found by its name; the end line is an estimate" in note
+
+
+def test_unreadable_and_newer_indexes_are_rejected_with_the_fix(tmp_path, capsys):
+    root = _repo(tmp_path)
+    p = root / ".devmem/index.json"
+    good = p.read_text()
+    p.write_text(good[: len(good) // 2])                                             # a truncated file, as a crash mid-write used to leave
+    assert cli.run(["find", "retry"], root=root) == 2 and "is not readable" in capsys.readouterr().err
+    p.write_text(json.dumps({**json.loads(good), "version": 99}))
+    assert cli.run(["find", "retry"], root=root) == 2
+    assert "written by a newer devmem (format 99" in capsys.readouterr().err
+    p.write_text("[]")
+    with pytest.raises(FileNotFoundError, match="not a devmem index"):
+        Index.load(root)
+
+
+def test_atomic_write_never_leaves_a_partial_file(tmp_path):
+    p = tmp_path / "state.json"
+    atomic_write(p, '{"a": 1}')
+    with pytest.raises(Exception):
+        atomic_write(p, 5)                                                              # fails while writing
+    assert p.read_text() == '{"a": 1}' and [x.name for x in tmp_path.iterdir()] == ["state.json"]     # old content intact, no temp file left
+    atomic_write(p, '{"a": 2}')
+    assert json.loads(p.read_text()) == {"a": 2}
+
+
+def test_only_one_process_indexes_a_repo_at_a_time(tmp_path):
+    root = _repo(tmp_path)
+    order = []
+
+    def hold():
+        with repo_lock(root):
+            order.append("first in"); time.sleep(0.5); order.append("first out")
+    t = threading.Thread(target=hold); t.start(); time.sleep(0.1)
+    with repo_lock(root):
+        order.append("second in")
+    t.join()
+    assert order == ["first in", "first out", "second in"] and not (root / ".devmem/.index.lock").exists()
+    (root / ".devmem/.index.lock").write_text("999999")                                # left behind by a killed process
+    import os
+    os.utime(root / ".devmem/.index.lock", (time.time() - 4000, time.time() - 4000))
+    idx = indexer.index_repo(root, "py_app", accuracy="fast")                           # stale lock is replaced, indexing proceeds
+    assert idx["symbols"] and not (root / ".devmem/.index.lock").exists()
+    (root / ".devmem/.index.lock").write_text("1")
+    with pytest.raises(TimeoutError, match="another devmem process"):
+        with repo_lock(root, wait=0.3):
+            pass
+
+
+def test_survived_failures_are_recorded_and_shown(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from devmem_app import watch
+    from devmem_app.server import create_app
+    monkeypatch.setenv("DEVMEM_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("DEVMEM_TOKEN", raising=False)
+    diagnose("docs", "requests could not be refreshed: failed: timed out")
+    diagnose("docs", "requests could not be refreshed: failed: timed out")
+    assert [d["area"] for d in diagnostics()] == ["docs", "docs"]
+    monkeypatch.setattr(watch, "stale", lambda root: "abcdef1234")
+    monkeypatch.setattr(watch, "index_repo", lambda root, name: (_ for _ in ()).throw(OSError("disk error")))
+    assert watch.tick({"r": str(tmp_path)}, False, {}, log=lambda m: None) == []       # the watcher survives any failure
+    assert diagnostics()[0] == {**diagnostics()[0], "area": "index", "repo": "r", "message": "re-index failed: OSError: disk error"}
+    api = TestClient(create_app())
+    texts = [a["text"] for a in api.get("/api/alerts").json()]
+    assert texts.count("docs: requests could not be refreshed: failed: timed out") == 1 and "index: re-index failed: OSError: disk error" in texts
+    assert len(api.get("/api/diagnostics").json()) == 3
+
+
+# ---------- what the call graph cannot see ----------
+SHAPES = '''from app.jobs import nightly
+
+
+class Shape:
+    def area(self):
+        return 0
+
+    def describe(self):
+        return f"area {self.area()}"
+
+
+class Square(Shape):
+    def __init__(self, side):
+        self.side = side
+
+    def area(self):
+        return self.side ** 2
+
+
+class BigSquare(Square):
+    def area(self):
+        return super().area() * 2
+
+
+def report(shape):
+    return shape.describe()
+'''
+JOBS = '''import threading
+from app.web import route
+
+__all__ = ["nightly"]
+
+
+def work(item):
+    return item * 2
+
+
+def unused_helper(x):
+    return x
+
+
+@route("/health")
+def health():
+    return "ok"
+
+
+def nightly(items):
+    t = threading.Thread(target=work)
+    HANDLERS = {"again": work}
+    return list(map(work, items)), t, HANDLERS
+
+
+def dispatch(name):
+    return globals()["unused_helper"]
+'''
+
+
+def _shapes(tmp_path):
+    root = tmp_path / "geo"
+    (root / "app").mkdir(parents=True)
+    (root / "app/__init__.py").write_text("")
+    (root / "app/shapes.py").write_text(SHAPES)
+    (root / "app/jobs.py").write_text(JOBS)
+    (root / "app/web.py").write_text("def route(path):\n    def deco(fn):\n        return fn\n    return deco\n")
+    indexer.index_repo(root, "geo", accuracy="fast")
+    return root
+
+
+def test_functions_passed_by_name_count_as_callers(tmp_path, capsys):
+    root = _shapes(tmp_path)
+    ix = Index.load(root)
+    r = ix.impact("work")
+    assert r["hop1"] == [{"id": "app/jobs.py#nightly", "conf": "by-name"}]              # Thread(target=work), map(work, ...), a handler table
+    _, out = _run(capsys, root, "impact", "work")
+    assert "hop 1 (must check): app/jobs.py: nightly [passed by name]" in out and "no callers found" not in out
+    edges = {(e["src"], e["dst"], e["type"]) for e in ix.data["edges"]}
+    assert ("app/jobs.py#nightly", "app/jobs.py#work", "refs") in edges
+
+
+def test_blind_spots_are_stated_when_no_caller_is_found(tmp_path, capsys):
+    root = _shapes(tmp_path)
+    _, out = _run(capsys, root, "impact", "health")
+    assert "BLIND SPOT: health is decorated with @route: a framework may call it" in out
+    assert "no callers found: but see the blind spots above before treating it as unused" in out
+    _, out = _run(capsys, root, "impact", "unused_helper")
+    assert 'BLIND SPOT: the name "unused_helper" appears as text in app/jobs.py: it may be looked up by name' in out
+    _, out = _run(capsys, root, "impact", "nightly")
+    assert "BLIND SPOT: nightly is exported in __all__: code outside this repo may use it" in out
+    ix = Index.load(root)
+    assert ix.blind_spots(ix.symbols["app/jobs.py#work"]) == []                          # nothing hidden: a plain helper
+    _, out = _run(capsys, root, "impact", "route")
+    assert "BLIND SPOT" not in out
+    _, out = _run(capsys, root, "context", "health")
+    assert "blind spot: health is decorated with @route" in out
+
+
+def test_impact_follows_inheritance_both_ways(tmp_path, capsys):
+    root = _shapes(tmp_path)
+    ix = Index.load(root)
+    base = ix.impact("app/shapes.py#Shape.area")
+    assert base["overridden_by"] == ["app/shapes.py#BigSquare.area", "app/shapes.py#Square.area"]        # two levels down
+    sub = ix.impact("app/shapes.py#Square.area")
+    assert sub["overrides"] == ["app/shapes.py#Shape.area"] and "app/shapes.py#Shape.describe" in sub["via_base"]
+    _, out = _run(capsys, root, "impact", "app/shapes.py#Shape.area")
+    assert "overridden by (keep their signatures in step): app/shapes.py: BigSquare.area, Square.area" in out
+    _, out = _run(capsys, root, "impact", "app/shapes.py#Square.area")
+    assert "overrides: app/shapes.py: Shape.area; callers of the base method reach this too: app/shapes.py: Shape.describe" in out
+    assert "no callers found" not in out
+    edges = {(e["src"], e["dst"], e["type"]) for e in ix.data["edges"]}
+    assert ("app/shapes.py#Square", "app/shapes.py#Shape", "inherits") in edges
+    assert not any(t == "overrides" and "__init__" in s for s, _, t in edges)            # constructors are not overrides
+
+
+# ---------- AI-written descriptions: labelled, weighted lower, dropped when their code changes ----------
+def test_ai_descriptions_are_labelled_weighted_lower_and_dropped_when_stale(tmp_path, capsys):
+    from devmem_app import definitions
+    root = tmp_path / "r"
+    (root / "pkg").mkdir(parents=True)
+    (root / "pkg/a.py").write_text("def run(x):\n    return x\n\n\ndef go(y):\n    return y\n\n\ndef other(z):\n    return z\n")
+    indexer.index_repo(root, "r", accuracy="fast")
+    ix = Index.load(root)
+    definitions.set_description(ix, "pkg/a.py#run", "Settles the nightly ledger batch.", "ai")
+    definitions.set_description(ix, "pkg/a.py#go", "Settles the nightly ledger batch.", "human")
+    ix = Index.load(root)
+    hits = [s["id"] for _, s in ix.find("settle nightly ledger")]
+    assert hits[:2] == ["pkg/a.py#go", "pkg/a.py#run"]                                       # same words: the reviewed one ranks first
+    assert ix.described(ix.symbols["pkg/a.py#run"]) == "(AI-written, unreviewed) Settles the nightly ledger batch."
+    assert ix.described(ix.symbols["pkg/a.py#go"]) == "Settles the nightly ledger batch."
+    _, out = _run(capsys, root, "find", "settle nightly ledger")
+    assert "function run — (AI-written, unreviewed) Settles" in out and "function go — Settles" in out
+    assert "What it does: (AI-written, unreviewed)" in "\n".join(prompts.symbol_block(ix, ix.symbols["pkg/a.py#run"]))
+
+    definitions.set_description(ix, "pkg/a.py#run", "Settles the nightly ledger batch.", "human")  # a person approved it
+    assert "AI-written" not in Index.load(root).described(Index.load(root).symbols["pkg/a.py#run"])
+
+    f = root / "pkg/a.py"
+    f.write_text(f.read_text().replace("def other(z):\n    return z", "def other(z):\n    return z * 2"))   # same file, other function
+    ix = Index.load(root)
+    assert "pkg/a.py#run" in ix.desc and not ix.desc_stale                                    # unchanged code keeps its description
+    f.write_text(f.read_text().replace("def run(x):\n    return x", "def run(x):\n    return -x"))
+    ix = Index.load(root)
+    assert "pkg/a.py#run" in ix.desc_stale and "pkg/a.py#run" not in ix.desc                  # its code changed: may now be wrong
+    assert [s["id"] for _, s in ix.find("settle nightly ledger")] == ["pkg/a.py#go"]
+    indexer.index_repo(root, "r", accuracy="fast")                                            # also after a re-index (the search cache)
+    assert [s["id"] for _, s in Index.load(root).find("settle nightly ledger")] == ["pkg/a.py#go"]
+
+
+def test_repo_files_named_like_standard_modules_do_not_break_the_tools(tmp_path):
+    """A repo with its own types.py (Starlette has one) crashed Graphify: Python imported the repo's file in place of the
+    standard module. Tools devmem runs on a repo now start with PYTHONSAFEPATH."""
+    from devmem_app import graphify
+    if not shutil.which("graphify"):
+        pytest.skip("graphify not installed")
+    root = tmp_path / "flat"
+    root.mkdir()
+    (root / "types.py").write_text("X = 1\n")
+    (root / "app.py").write_text("def f():\n    return g()\n\n\ndef g():\n    return 1\n")
+    graph, msg = graphify.run_graphify(root)
+    assert graph is not None and graph.exists(), msg
+    from devmem.runner import run_argv
+    import sys
+    r = run_argv([sys.executable, "-c", "import types; print(types.ModuleType.__name__)"], root, isolate=True)
+    assert r["code"] == 0 and r["out"].strip() == "module"
+
+
+def test_unknown_impact_target_is_reported_not_treated_as_an_empty_table(tmp_path, capsys):
+    root = _repo(tmp_path)
+    code, out = _run(capsys, root, "impact", "app/retry.py#retri")
+    assert code == 1 and out.startswith("not found: app/retry.py#retri is neither a function, class nor table") and "app/retry.py#retry" in out
+    r = Index.load(root).impact("table:orders")
+    assert r == {"not_found": "orders", "suggestions": []}

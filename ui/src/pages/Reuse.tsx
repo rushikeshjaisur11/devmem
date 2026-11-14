@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, q } from "../api";
-import { Badge, Copy, EditorLink, editorHref, Empty, Err, RepoSelect, useRepos } from "../components";
+import { Badge, Copy, EditorLink, editorHref, Empty, Err, useRepo, useRepos } from "../components";
 import { nav } from "../route";
 
 const EFFORT: Record<string, [string, string]> = { low: ["good", "Little work to reuse"], medium: ["warn", "Some work to reuse"], high: ["bad", "A lot of work to reuse"] };
@@ -41,7 +41,7 @@ function Hit({ h, into, repos }: { h: any; into: string; repos: any[] | null }) 
 
 export default function Reuse({ params }: { params: Record<string, string> }) {
   const repos = useRepos();
-  const [into, setInto] = useState(params.repo || "");
+  const { repo: into } = useRepo();
   const [need, setNeed] = useState(params.need || "");
   const [res, setRes] = useState<any>(null);
   const [err, setErr] = useState("");
@@ -66,7 +66,7 @@ export default function Reuse({ params }: { params: Record<string, string> }) {
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
           <input value={need} onChange={(e) => setNeed(e.target.value)} placeholder="What do you need? e.g. retry failed uploads with backoff" aria-label="What you need" />
         </div>
-        <label className="row" style={{ gap: 8 }}>Bring into {repos.data && <RepoSelect value={into} onChange={setInto} repos={repos.data} />}</label>
+        <span className="muted">into <b style={{ color: "var(--text)" }}>{into || "…"}</b> (change the repo in the top bar)</span>
         <button className="primary" type="submit" disabled={busy || !need.trim() || !into}>{busy ? "Searching…" : "Search other repos"}</button>
       </form>
       <Err msg={err || repos.error} />

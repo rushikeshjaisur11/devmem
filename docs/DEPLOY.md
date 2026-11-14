@@ -62,3 +62,13 @@ OpenAI-compatible servers `DEVMEM_AI_BASE_URL`. See `docs/AI.md`.
 The devmem server calls your SonarQube server itself, so it needs a network route to it. Set the connection on the
 **Integrations** page or with `DEVMEM_SONAR_URL` and `DEVMEM_SONAR_TOKEN`. The token is kept in `settings.json`
 under `DEVMEM_HOME`; synced findings are written to `.devmem/sonar.json` in each repo.
+
+## Long operations
+
+Onboarding (path, Git URL or upload), re-indexing, branch switches, publishing, code-health runs, SonarQube sync, Modernize
+scans and accuracy self-checks accept `?background=1`. The request then returns `202 {"job": "<id>"}` at once and the work
+continues on the server; `GET /api/jobs/<id>` reports `running`, `done` (with the result) or `failed` (with the status and
+message the endpoint would have returned). The web UI always uses this, so a reverse proxy's request timeout cannot cut off
+indexing of a large repo, and leaving the page does not stop it. Only one indexing or publishing job runs per repo at a time;
+a second one is refused with 409. Jobs live in the server process: a restart forgets them (the work in progress stops, and
+the index is left as it was, since it is only replaced when a run completes).

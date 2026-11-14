@@ -38,6 +38,12 @@ def tick(repos: dict[str, str], publish_too: bool, failed: dict[str, str], log: 
             failed[name], ERRORS[name] = head, f"not re-indexed at {head[:8]}: {e}"
             log(f"{name}: not re-indexed at {head[:8]}: {e}")
             continue
+        except Exception as e:   # anything else (a locked repo, a disk error) must not end the watcher: record it and move on
+            from .paths import diagnose
+            failed[name], ERRORS[name] = head, f"not re-indexed at {head[:8]}: {type(e).__name__}: {e}"
+            diagnose("index", f"re-index failed: {type(e).__name__}: {e}", name)
+            log(f"{name}: re-index failed: {e}")
+            continue
         failed.pop(name, None)
         ERRORS.pop(name, None)
         done.append(name)

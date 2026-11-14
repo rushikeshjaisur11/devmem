@@ -7,6 +7,7 @@ import subprocess
 from collections import Counter, defaultdict
 from pathlib import Path
 
+from devmem.index import Index
 from devmem.knowledge import (AGENTS_INDEX_BUDGET, KNOWLEDGE_DIR, check_knowledge, est_tokens,
                               replace_managed_block)
 from devmem.schema import knowledge_header
@@ -92,9 +93,9 @@ steps:
 """
 
 AGENT_BLOCK = """## devmem (code knowledge, saves tokens)
-1. `devmem recall "<task>"` once: lessons, rules, code other repos solved (`devmem reuse "<need>"`, `devmem docs "<need>"`).
-2. Locate with `devmem find "<concept>"`, `show <symbol>`, `outline <file>`; never read whole files to explore.
-3. `devmem impact <symbol|table.column>` before editing; change only what the task needs.
+1. `devmem context "<task>"` first, once: rules, matches, the likeliest code, its callers and tests in one answer.
+2. Need more: `devmem find "<concept>"`, `show <symbol>`, `outline <file>`; never read whole files to explore.
+3. `devmem impact <symbol|table.column>` before editing other symbols; change only what the task needs.
 4. `devmem check`, then `devmem diffcheck` before each commit.
 Follow `.devmem/rules.md`. More: `.devmem/knowledge/map.md` and topic files there, read only when relevant. Stale stamp: trust the code."""
 
@@ -136,8 +137,10 @@ def publish(root: str | Path, idx: dict, peers: dict | None = None) -> list[str]
         except (OSError, ValueError):
             return {}
     analysis, described = _read(".devmem/analysis.json"), _read(".devmem/descriptions.json")
-    mod_text = {m: v.get("text", "") for m, v in (analysis.get("modules") or {}).items() if isinstance(v, dict)}
-    said = lambda s: s["doc"] or (described.get(s["id"]) or {}).get("text", "")
+    ai_tag = lambda v: "(AI-written, unreviewed) " if v.get("by") == "ai" else ""
+    mod_text = {m: ai_tag(v) + v.get("text", "") for m, v in (analysis.get("modules") or {}).items() if isinstance(v, dict) and v.get("text")}
+    pub_ix = Index(idx, root)            # applies the same rules as agents' search: stale descriptions out, AI ones labelled
+    said = lambda s: pub_ix.described(s)
 
     # overview.md
     langs = Counter(f["lang"] for f in idx["files"].values() if f["lang"] != "other")
@@ -149,7 +152,7 @@ def publish(root: str | Path, idx: dict, peers: dict | None = None) -> list[str]
     if mains:
         ov.append("- Entry points: " + ", ".join(f"`{s['id']}`" for s in mains[:5]))
     if (analysis.get("overview") or {}).get("text"):
-        ov += ["", "## What this repo does", analysis["overview"]["text"]]
+        ov += ["", "## What this repo does", ai_tag(analysis["overview"]) + analysis["overview"]["text"]]
     ov += ["", "## Modules"]
     mods = defaultdict(list)
     for s in idx["symbols"]:

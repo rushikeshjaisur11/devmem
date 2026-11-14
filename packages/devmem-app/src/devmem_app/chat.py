@@ -42,8 +42,8 @@ def build_docs(repo: str, root: Path, ix: Index) -> list[dict]:
             continue
         name_toks = f"{s['name']} {s['qualname']} " * 3
         docs.append({"repo": repo, "kind": "test" if s.get("is_test") else "symbol", "ref": s["id"], "path": s["file"],
-                     "line": s["line"], "title": f"{s['qualname']}{s.get('sig') or ''}" if s["kind"] != "class" else f"class {s['qualname']}",
-                     "text": f"{name_toks} {s['file']} {s.get('sig') or ''} {s.get('doc') or ''} {ix.desc.get(s['id'], '')}"})
+                     "line": s["line"], "title": (s.get("sig") or s["qualname"]) if s["kind"] != "class" else f"class {s['qualname']}",
+                     "text": f"{name_toks} {s['file']} {s.get('sig') or ''} {s.get('doc') or ''} {ix.described(s) if not s.get('doc') else ''}"})
     for path, f in ix.data["files"].items():
         if f["lang"] == "other":
             continue
@@ -356,13 +356,14 @@ def build_prompt(question: str, hits: list[dict]) -> str:
 
 
 def extractive(hits: list[dict]) -> str:
+    """The answer when no model writes one: where to look first, in a sentence. The sources below it carry the detail."""
     if not hits:
         return "No matches in the indexed repos. Try other words, or index the repo that should contain this."
     kinds = Counter(h["kind"] for h in hits)
-    lines = [f"{len(hits)} relevant places ({', '.join(f'{v} {k}' for k, v in kinds.items())}), best first:"]
-    for h in hits[:5]:
-        lines.append(f"[{h['n']}] {h['title']}  — {h['pointer']}")
-    return "\n".join(lines)
+    best = hits[0]
+    where = best["pointer"] if best["kind"] != "doc" else best["repo"] + " docs"
+    return (f"{len(hits)} relevant places ({', '.join(f'{v} {k}' for k, v in kinds.items())}). Start with [1] {best['title']} in {where}"
+            + (f", then [2] {hits[1]['title']}." if len(hits) > 1 else "."))
 
 
 def _doc_hits(question: str, start: int) -> list[dict]:

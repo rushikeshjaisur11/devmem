@@ -79,10 +79,15 @@ def gaps(ix, limit: int = 20) -> list[dict]:
         for e in ix.out.get(cur, []):
             if e["type"] in ("calls", "tests") and e["dst"] not in seen:
                 seen.add(e["dst"]); covered.add(e["dst"]); frontier.append((e["dst"], d + 1))
+    measured = (ix.coverage or {}).get("functions") or {}
+    if measured:   # a real test run beats inference: covered means at least one body line ran
+        covered = {sid for sid, (hit, _total) in measured.items() if hit} | (covered if not ix.coverage.get("per_test") else set())
     out = []
     for sid, s in ix.symbols.items():
         if s["is_test"] or s["kind"] not in ("function", "method") or sid in covered:
             continue
+        if measured and sid not in measured and s["file"] in (ix.coverage.get("hashes") or {}):
+            continue   # the run covered this file but not this function's body lines (e.g. a one-line function): no evidence either way
         callers = {e["src"] for e in ix.inc.get(sid, []) if e["type"] == "calls"}
         if callers:
             out.append({"id": sid, "file": s["file"], "line": s["line"], "callers": len(callers),

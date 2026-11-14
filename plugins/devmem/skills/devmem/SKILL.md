@@ -9,11 +9,11 @@ devmem keeps token use low and diffs small. Follow this order; every step replac
 
 ## Token budget (every tool result is re-sent on every later turn, so small outputs compound)
 
-- One `recall` per task, not per step. Never re-run a query you already ran; reuse its answer.
-- Search narrow first: `find "<2-4 words>" -n 5`. Widen (`-n 20`, other words) only if the hit is missing.
-- `show <symbol>` (first 80 lines; `--full` only when you must edit past them) and `outline <file>` instead of reading files. When you must open a file, read only the line range `find`/`show` gave you.
-- `impact` lists are capped at 12 items; add `--all` only for a signature or contract change.
-- Read `map.md` once; open a topic file only when the task touches that topic.
+- Start with ONE call: `devmem context "<task in one sentence>"`. It returns the rules and lessons that apply, the best matches, the body of the likeliest symbol, its callers, tests and known issues, inside ~1,200 tokens. Do not also run `recall`, `find`, `show` and `impact` for the same thing.
+- Wrong focus? `devmem context "<task>" --symbol <path#name>` (ids are in its MATCHES list). Never re-run a query you already ran.
+- Need more: `find "<2-4 words>" -n 5`, `show <symbol>` (80 lines; `--full` only to edit past them), `outline <file>` (`--in <Class>` for one class). When you must open a file, read only the line range these gave you.
+- Lists are capped (12 callers, 60 outline lines, 2,500 tokens per answer); add `--all` only for a signature or contract change.
+- Open a `.devmem/knowledge/` topic file only when the task touches that topic.
 - Pipe nothing big into your context: `check` prints one line per passing step and only the failing lines. Do not run the full test suite or `cat` logs unless `check` says no tests are mapped.
 - Keep your own messages short: report what changed and what was verified, not a narrative.
 
@@ -27,17 +27,16 @@ If `.devmem/index.json` does not exist in the repo, devmem has no data here: wor
 
 ## 1. Orient (before opening files)
 
-1. `devmem recall "<the task in one sentence>"`: lessons already learned, standing rules, and code other repos already solved. Apply them. Rate what you used: `devmem feedback <id> useful` or `useless`.
-2. Read `.devmem/knowledge/map.md` (ranked repo map), then only the topic files that match the task (`commands.md`, `conventions.md`, `helpers.md`, `lineage.md`, `no-touch.md`, `hygiene.md`).
-3. Before writing anything non-trivial, look for code that already exists in the organisation's other repos: `devmem reuse "<what you need>"`. It shows source, tests and dependencies of matching code and rates the effort to adapt it here (`--prompt` prints porting instructions). Copy with a one-line origin comment and fit this repo's conventions instead of rewriting.
-   - If `.devmem/hub.txt` exists (or `DEVMEM_HUB` is set) there is a central knowledge hub with every onboarded repo. Run `devmem hub sync` once per session (needs git read access to it; if it fails, carry on: `devmem reuse` falls back to the catalog committed in this repo). `devmem hub repos` lists what the hub knows; `devmem hub show <repo>` prints another repo's overview.
-4. Older org code can predate what the libraries offer today. When you change existing code, `devmem show` and `recall` end with a `library docs for this code` list: the latest docs for the libraries that code imports. Read the named section (`devmem docs --for <file|symbol>` prints them) and write against that API version, not the pattern already in the file. If the pointer warns that the docs describe another major version than the repo uses, use only APIs that exist in the repo's version and say so in the PR. For any new requirement run `devmem docs "<need>"` (offline copy of the CURRENT library documentation, with version and fetch date; `devmem docs --list` shows what exists). When a `devmem reuse` card shows `MODERNIZE`, tell the user: "this repo/other repo already solves it, but <library> <version> now provides it built in; the existing code hand-rolls it", and prefer the built-in. If the docs on file do not cover the need, say so instead of guessing an API from memory.
+1. `devmem context "<the task in one sentence>"`. Apply its RULES and LESSONS; rate a lesson you used: `devmem feedback <id> useful` or `useless`. Its FOCUS block already has the callers and tests of the likeliest symbol.
+2. Only if the task needs it: `.devmem/knowledge/map.md` (ranked repo map) and the matching topic file (`commands.md`, `conventions.md`, `helpers.md`, `lineage.md`, `no-touch.md`, `hygiene.md`).
+3. Before writing anything non-trivial that might exist elsewhere: `devmem reuse "<what you need>"` (source, tests, dependencies and effort to adapt; `--prompt` prints porting steps). Copy with a one-line origin comment and fit this repo's conventions. With `.devmem/hub.txt` or `DEVMEM_HUB`, run `devmem hub sync` once per session; if it fails, carry on.
+4. Changing code that uses a library: `devmem docs --for <file|symbol>` gives the latest docs for what it imports; write against that API, not the older pattern in the file. If the pointer warns of another major version than the repo uses, stay within the repo's version and say so in the PR. New requirement: `devmem docs "<need>"`. A `MODERNIZE` note on a `reuse` card means the library now provides it built in: prefer that and tell the user. If the docs on file do not cover the need, say so instead of guessing an API.
 5. If the task is "execute this plan" (a plan file in `.devmem/plans/`), stop here and use the `devmem-plan` skill instead.
-6. Locate code: `devmem find "<concept>"`, `devmem show <symbol>`, `devmem outline <file>`. Prefer these to `grep`/`cat` on whole files. Reuse what `devmem helpers` lists before writing a new helper.
+6. Reuse what `devmem helpers` lists before writing a new helper.
 
 ## 2. Scope the change
 
-Before editing a function, class or table column run `devmem impact <symbol | table | table.column>` (see the `devmem-impact` skill). Hop-1 callers must still work, hop-2 only needs a contract check. Edit only what the task needs. Do not reformat, rename, add dependencies or change public signatures unless the task requires it. Files listed in `no-touch.md` or marked `no_touch` need explicit user approval.
+Before editing a function, class or table column that `context` did not already cover, run `devmem impact <symbol | table | table.column>` (see the `devmem-impact` skill). Hop-1 callers must still work, hop-2 only needs a contract check. Edit only what the task needs. Do not reformat, rename, add dependencies or change public signatures unless the task requires it. Files listed in `no-touch.md` or marked `no_touch` need explicit user approval.
 
 ## 3. Verify narrowly
 

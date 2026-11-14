@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "../api";
+import { api, job } from "../api";
 import { Badge, Empty, Err, Icon, useAsync } from "../components";
 
 function ProjectRow({ p, connected, onChange }: { p: any; connected: boolean; onChange: (msg: string, err?: boolean) => void }) {
@@ -15,7 +15,7 @@ function ProjectRow({ p, connected, onChange }: { p: any; connected: boolean; on
     try {
       if (dirty) await api.put(`/api/repos/${p.repo}/sonar`, { key, branch });
       if (thenSync) {
-        const r = await api.post(`/api/repos/${p.repo}/sonar/sync`);
+        const r = await job(`/api/repos/${p.repo}/sonar/sync`);
         onChange(`${p.repo}: ${r.issues.toLocaleString()} open issue${r.issues === 1 ? "" : "s"} and ${r.hotspots} security hotspot${r.hotspots === 1 ? "" : "s"} read from SonarQube${r.truncated ? ` (the ${r.issues.toLocaleString()} most severe of ${r.total.toLocaleString()})` : ""}.${r.notes.length ? " Note: " + r.notes.join("; ") : ""}`);
       } else onChange(`${p.repo}: saved.`);
     } catch (e: any) { onChange(`${p.repo}: ${e.message}`, true); }

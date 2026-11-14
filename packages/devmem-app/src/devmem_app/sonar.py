@@ -19,6 +19,7 @@ import urllib.request
 from pathlib import Path
 
 from .paths import devmem_home
+from devmem.schema import atomic_write
 
 PATH = ".devmem/sonar.json"
 MAX_ISSUES = 10_000          # Sonar never returns more than 10,000 results for one search
@@ -59,7 +60,7 @@ def _write(s: dict) -> None:
     data["sonar"] = s
     p = _settings_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(data, indent=1), encoding="utf-8")
+    atomic_write(p, json.dumps(data, indent=1))
     try:
         os.chmod(p, 0o600)
     except OSError:
@@ -335,7 +336,7 @@ def sync(repo: str, root: Path, files: set[str]) -> dict:
         data["notes"].append("none of the issue paths match files in this repo: is this the right project and branch?")
     p = Path(root) / PATH
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(data, indent=1), encoding="utf-8")
+    atomic_write(p, json.dumps(data, indent=1))
     return data
 
 
