@@ -112,8 +112,14 @@ def cmd_impact(ix: Index, a) -> int:
     print("targets: " + ", ".join(r["targets"]))
     cap = 0 if a.all else LIST_CAP
     # callers are grouped by file (the path once, not once per caller); only edges that need checking carry a tag
-    unsure = {i["id"]: ("passed by name" if i["conf"] == "by-name" else i["conf"]) for i in r["hop1"] if i["conf"] in ("ambiguous", "co-change", "by-name")}
-    print("hop 1 (must check): " + grouped([i["id"] for i in r["hop1"]], cap, unsure))
+    # name-only guesses (several same-named functions, none resolved) were wrong 19 times in 20 against a type checker: listed apart,
+    # so "must check" holds callers that really reach the target
+    sure = [i for i in r["hop1"] if i["conf"] != "ambiguous"]
+    guesses = [i["id"] for i in r["hop1"] if i["conf"] == "ambiguous"]
+    unsure = {i["id"]: ("passed by name" if i["conf"] == "by-name" else i["conf"]) for i in sure if i["conf"] in ("co-change", "by-name")}
+    print("hop 1 (must check): " + grouped([i["id"] for i in sure], cap, unsure))
+    if guesses:
+        print(f"possible callers (name match only, usually a different function of the same name: verify before relying on them): {grouped(guesses, cap or 6)}")
     print("hop 2 (contract check): " + grouped([i["id"] for i in r["hop2"]], cap))
     print("tests: " + grouped(r["tests"], cap) + (f"  ({len(r['tests_measured'])} found only by measured coverage)" if r.get("tests_measured") else ""))
     for sid, c in (r.get("coverage") or {}).items():

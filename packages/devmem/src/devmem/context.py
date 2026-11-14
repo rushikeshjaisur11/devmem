@@ -132,9 +132,13 @@ def build(ix: Index, task: str, files: list[str] | None = None, budget: int = DE
         add("OTHER MATCHES: " + "; ".join(f"{h['id']}:{h['line']}" for h in others))
 
     imp = ix.impact(s["id"])
-    tags = {i["id"]: ("passed by name" if i["conf"] == "by-name" else i["conf"]) for i in imp["hop1"] if i["conf"] in ("ambiguous", "co-change", "by-name")}
+    sure = [i for i in imp["hop1"] if i["conf"] != "ambiguous"]
+    tags = {i["id"]: ("passed by name" if i["conf"] == "by-name" else i["conf"]) for i in sure if i["conf"] in ("co-change", "by-name")}
     facts = [f"FOCUS {s['id']} (lines {s['line']}-{s.get('end_line', s['line'])})",
-             " callers (must still work): " + grouped([i["id"] for i in imp["hop1"]], 8, tags)]
+             " callers (must still work): " + grouped([i["id"] for i in sure], 8, tags)]
+    guesses = [i["id"] for i in imp["hop1"] if i["conf"] == "ambiguous"]
+    if guesses:
+        facts.append(f" possible callers (name match only, usually wrong: verify): {grouped(guesses, 4)}")
     if imp["hop2"]:
         facts.append(f" their callers: {len(imp['hop2'])} (`devmem impact {s['id']}`)")
     for c in imp["capped"]:

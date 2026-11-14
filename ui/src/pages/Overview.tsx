@@ -29,6 +29,32 @@ function Footprint({ t }: { t: any }) {
 }
 
 /** First-run guide: each step is ticked from real data, so it doubles as a health check. */
+/** How far to trust one repo's index, measured on that repo (devmem-app selfcheck). */
+function Trust({ repo }: { repo: string }) {
+  const d = useAsync<any>(() => api.get(`/api/repos/${repo}/selfcheck`), [repo]);
+  const [busy, setBusy] = useState(false);
+  const run = async () => { setBusy(true); try { await api.post(`/api/repos/${repo}/selfcheck`); d.reload(); } catch { /* shown on next load */ } setBusy(false); };
+  const r = d.data;
+  const pct = (x: number | null | undefined) => (x === null || x === undefined ? "-" : `${Math.round(x * 100)}%`);
+  if (!r) return null;
+  if (!r.available) return <div className="trust"><span className="muted">How far to trust this index has not been measured.</span><button className="ghost sm" disabled={busy} onClick={run}>{busy ? "Measuring…" : "Measure it"}</button></div>;
+  const e = r.edges, st = r.sites, se = r.search;
+  const weak = Object.entries(e.languages || {}).filter(([, l]: any) => l.name_resolved).map(([k]) => k);
+  return (
+    <div className="trust">
+      <span title="Call edges confirmed by a type checker (SCIP) or a second parser (Graphify)"><b className={e.independent >= 0.5 ? "good" : ""}>{pct(e.independent)}</b> of calls confirmed by a second tool</span>
+      <span title="Calls matched only by name among several same-named functions: shown apart in impact, usually wrong"><b className={e.ambiguous_share > 0.25 ? "warn" : ""}>{pct(e.ambiguous_share)}</b> name-only guesses</span>
+      <span title="A sample of call edges re-checked against the code as it is now"><b className={st.rate !== null && st.rate < 0.95 ? "bad" : ""}>{pct(st.rate)}</b> call sites still in the code</span>
+      {se?.queries ? <span title="Can find / context locate a function from a description of it? Docstring-based queries plus yours in .devmem/search-eval.txt"><b>{pct(se.top5)}</b> found from a description (top 5)</span> : null}
+      {r.accuracy_mode === "fast" && <Badge kind="warn">indexed with --fast</Badge>}
+      {weak.length > 0 && <Badge kind="warn" >{weak.join(", ")}: names only</Badge>}
+      <span className="grow" />
+      <span className="muted">{String(r.ts).slice(0, 10)}</span>
+      <button className="ghost sm" disabled={busy} onClick={run}>{busy ? "Measuring…" : "Measure again"}</button>
+    </div>
+  );
+}
+
 function GettingStarted({ repos, mem, docs }: { repos: any[]; mem: any; docs: any[] }) {
   const indexed = repos.filter((r) => r.indexed);
   const ruleOrLesson = mem && Object.values(mem.repos).some((x: any) => x.lessons.length || x.rules.some((r: any) => !String(r.id).startsWith("rules.md#"))) || (mem?.hub_rules || []).length > 0;
@@ -112,6 +138,7 @@ export default function Overview(_: any) {
             <button onClick={() => nav("impact", { repo: r.name })}>Check impact</button>
             <button className="primary" disabled={!!busy} onClick={() => publish(r.name)}>{busy === r.name ? "Publishing…" : "Publish"}</button>
           </div>
+          <Trust repo={r.name} />
           <div className="ov-grid">
             <div className="facts">
               <div><b>{n(r.symbols)}</b><span>symbols in {n(r.files)} files</span></div>

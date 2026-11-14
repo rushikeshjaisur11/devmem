@@ -68,6 +68,8 @@ def _main(argv=None) -> int:
     s.add_argument("action", choices=["show", "ingest-devin"]); s.add_argument("arg", help="repo name (show) or JSON file (ingest-devin)")
     s = sub.add_parser("coverage", help="import a coverage report (coverage.py JSON, Cobertura or JaCoCo XML, lcov) so test selection uses measured coverage")
     s.add_argument("repo"); s.add_argument("file", nargs="?", help="report file (default: look in the usual places in the repo)")
+    s = sub.add_parser("selfcheck", help="how far to trust a repo's index: confirmed edges, call sites re-checked, search hit rate")
+    s.add_argument("repo")
     s = sub.add_parser("ui", help="start the local web app")
     s.add_argument("--port", type=int, default=int(os.environ.get("PORT") or os.environ.get("DEVMEM_PORT") or 8765))
     s.add_argument("--no-open", action="store_true")
@@ -226,6 +228,20 @@ def _main(argv=None) -> int:
         print(f"{d['format']} report {rep.name}: {st['covered']} of {st['functions']} functions ran in tests"
               + (f"; per-test data for {st['with_tests']}" if d["per_test"] else "; no per-test data (record contexts to get it)")
               + (f"; {st['unmatched_files']} files not in this repo" if st["unmatched_files"] else ""))
+    elif a.cmd == "selfcheck":
+        from . import selfcheck
+        r = selfcheck.run(Index.load(Path(a.repo).resolve()))
+        e, st, se = r["edges"], r["sites"], r["search"]
+        pct = lambda x: "-" if x is None else f"{x * 100:.0f}%"
+        print(f"edges: {e['edges']:,}; confirmed by a second tool {pct(e['independent'])}; name-only guesses {pct(e['ambiguous_share'])}"
+              + ("" if r.get("accuracy_mode") != "fast" else " (indexed with --fast: no Graphify or SCIP confirmation)"))
+        for lang, l in e["languages"].items():
+            print(f"  {lang}: {l['edges']:,} edges, {pct(l['independent'])} confirmed" + (" (names only: install its SCIP indexer for type-resolved edges)" if l["name_resolved"] else ""))
+        print(f"call sites re-checked: {st['present']}/{st['checked']} still in the code" + (f"; e.g. {st['examples'][0]}" if st["examples"] else ""))
+        if se.get("queries"):
+            print(f"search ({se['queries']} queries{', ' + str(se['yours']) + ' of yours' if se.get('yours') else ''}): top-1 {pct(se['top1'])}, top-5 {pct(se['top5'])}, context focus {pct(se['context_focus'])}")
+        else:
+            print("search: no documented functions to test with; add `query => path#qualname` lines to .devmem/search-eval.txt")
     elif a.cmd == "ui":
         import threading
         import webbrowser

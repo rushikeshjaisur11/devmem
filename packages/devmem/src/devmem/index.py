@@ -119,17 +119,26 @@ class Index:
         return list(self.by_qual.get(ref) or self.by_name.get(ref) or [])
 
     def find(self, query: str, limit: int = 10) -> list[tuple[float, dict]]:
-        q = _tokens(query)
+        q = query_tokens(query)
         if not q:
             return []
         cands = [s for s in map(self.symbols.get, self._candidates(q, query, limit)) if s]
-        # a query word most candidates share (parse, get, handle) says less than a rare one (interval): weight 1..2 by rarity
-        names = [_tokens(s["qualname"]) for s in cands]
-        n = len(cands) or 1
-        w = {t: 2.0 - sum(1 for nm in names if t in nm) / n for t in q}
-        scored = [(sc, s) for s, nm in zip(cands, names) if (sc := _score(q, query, s, self.desc.get(s["id"], ""), w, nm)) > 0]
+        w = self.idf(q)
+        scored = [(sc, s) for s in cands if (sc := _score(q, query, s, self.desc.get(s["id"], ""), w)) > 0]
         scored.sort(key=lambda x: (-x[0], x[1]["file"], x[1]["line"]))
         return scored[:limit]
+
+    def idf(self, q: set[str]) -> dict[str, float]:
+        """How much each query word says: log(N / symbols containing it), from the search tables' own vocabulary, so a word
+        on every other symbol (get, data, value) counts for little and a rare one (interval, refund) for a lot."""
+        import math
+        with self._fts_lock:
+            if self._fts is None:
+                self._fts = _open_fts(self)
+            ph = ",".join("?" * len(q))
+            df = dict(self._fts.execute(f"SELECT term, doc FROM symv WHERE term IN ({ph})", sorted(q)).fetchall()) if q else {}
+        n = max(len(self.symbols), 1)
+        return {t: math.log(1 + n / (1 + df.get(t, 0))) for t in q}
 
     def _candidates(self, q: set[str], query: str, limit: int) -> list[str]:
         """Ids of symbols sharing a token with the query (best bm25 first) or containing it in the qualname.
@@ -423,27 +432,49 @@ def _tokens(text: str) -> set[str]:
     return {_stem(t.lower()) for t in re.split(r"[^A-Za-z0-9]+", text) if len(t) > 1}
 
 
+STOP = {"the", "and", "for", "with", "how", "to", "in", "of", "on", "is", "it", "we", "do", "an", "this", "that", "when", "from", "into", "not",
+        "are", "be", "by", "or", "as", "at", "if", "its", "their", "which", "will", "can", "should", "where", "what", "who", "all", "any", "each",
+        "one", "only", "been", "has", "have", "was", "were", "there", "these", "those", "than", "then", "so", "such", "also", "but", "no", "yes"}
+
+
+def query_tokens(query: str) -> set[str]:
+    """The words of a query that carry meaning: stop words dropped unless nothing else is left."""
+    q = _tokens(query)
+    return (q - STOP) or q
+
+
 def _score(q: set[str], query: str, s: dict, desc: str = "", w: dict[str, float] | None = None, name: set[str] | None = None) -> float:
+    """Each query word counts once, in the best place it appears (name 3, docstring or description 1, path 0.5), weighted by
+    how rare it is in the repo."""
     name = _tokens(s["qualname"]) if name is None else name
-    hit = q & name
-    score = (3.0 * sum((w or {}).get(t, 1.0) for t in hit) + 1.0 * len(q & _tokens(f"{s['doc']} {desc}")) + 0.5 * len(q & _tokens(s["file"])))
-    if hit and len(name) > len(hit) + 2:
-        score -= 0.25 * min(len(name) - len(hit) - 2, 4)    # a long name that merely contains the words is a weaker match than a short one
-    if query.lower() in s["qualname"].lower():
-        score += 2
+    said = _tokens(f"{s['doc']} {desc}")
+    path = _tokens(s["file"])
+    w = w or {}
+    score, hit = 0.0, 0
+    for t in q:
+        f = 3.0 if t in name else 1.0 if t in said else 0.5 if t in path else 0.0
+        if f:
+            score += f * w.get(t, 1.0)
+            hit += t in name
+    if hit and len(name) > hit + 2:
+        score *= 1 - 0.04 * min(len(name) - hit - 2, 5)     # a long name that merely contains the words is a weaker match than a short one
+    if len(query) > 2 and query.lower() in s["qualname"].lower():
+        score += sum(w.get(t, 1.0) for t in q)                # the query is literally part of the name
     return score * 0.5 if s["is_test"] else score
 
 
 CANDIDATE_CAP = 300
-FTS_FORMAT = 2   # bump when indexed tokens change (2: stemmed), so older index.db files are rebuilt
+FTS_FORMAT = 3   # bump when the search tables change (2: stemmed, 3: vocabulary table for word rarity), so older index.db files are rebuilt
 
 
 def _rebuild_fts(db: sqlite3.Connection, ix: "Index") -> None:
     """`sym` = FTS5 over camel/snake-split tokens; `qual` = plain table (an FTS column is too slow to substring-scan)."""
+    db.execute("DROP TABLE IF EXISTS symv")
     db.execute("DROP TABLE IF EXISTS sym")
     db.execute("DROP TABLE IF EXISTS qual")
     db.execute("CREATE VIRTUAL TABLE sym USING fts5(id UNINDEXED, name, doc, path)")
     db.execute("CREATE TABLE qual(id TEXT, q TEXT)")
+    db.execute("CREATE VIRTUAL TABLE symv USING fts5vocab(sym, 'row')")   # per word: how many symbols contain it
     for s in ix.symbols.values():
         if s["kind"] != "module":
             db.execute("INSERT INTO sym VALUES (?,?,?,?)",

@@ -150,6 +150,11 @@ definition searched for) and the answer notes it; renamed or deleted code is ref
 follows inheritance (overrides, callers through a base class) and functions passed by name, and prints a `BLIND SPOT` line when a
 decorator, an `__all__` export or the name used as text means a caller may be invisible.
 
+**How far to trust each index.** `devmem-app selfcheck <repo>` (or *Measure it* on the Overview) reports the share of call
+edges a second tool confirmed, the share of name-only guesses, whether sampled call sites are still in the code, and how often
+search finds a function from a description. Add your own `query => path#qualname` pairs to `.devmem/search-eval.txt`. Measured
+numbers and method: `docs/ACCURACY.md`.
+
 **6. Keep it fresh.** While `devmem-app ui` runs it re-indexes any repo whose HEAD moved (pull, merge, commit, branch switch); add
 `--publish` to republish too, or `--no-watch` to turn it off. Without the UI: `devmem-app watch` (or `watch --once` from cron or a git
 hook). Overview flags an index behind HEAD and any knowledge file over its token budget.

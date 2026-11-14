@@ -612,6 +612,17 @@ def create_app() -> FastAPI:
             return {"available": False}
         return {"available": True, **{k: d.get(k) for k in ("format", "per_test", "stats", "ts", "source")}}
 
+    @app.get("/api/repos/{name}/selfcheck")
+    def selfcheck_view(name: str):
+        from . import selfcheck
+        d = selfcheck.load(root_of(name))
+        return {"available": bool(d), **(d or {})}
+
+    @app.post("/api/repos/{name}/selfcheck")
+    def selfcheck_run(name: str):
+        from . import selfcheck
+        return {"available": True, **selfcheck.run(ix_of(name))}
+
     class PromptReq(BaseModel):
         kind: str
         data: dict = {}

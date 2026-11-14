@@ -30,7 +30,7 @@ MAX_FILE_BYTES = 1_000_000
 MAX_SQL_STMTS, MAX_SQL_LEN = 60, 20_000
 COLUMN_FUNCS = {"select", "withColumn", "col", "groupBy", "groupby", "orderBy", "sort", "drop", "withColumnRenamed",
                 "sum", "avg", "max", "min", "count", "countDistinct", "first", "collect_list", "agg", "join"}
-PARSER_VERSION = 8  # bump when per-file records gain fields or parsing changes (forces re-parse of cached files)
+PARSER_VERSION = 10  # bump when per-file records gain fields or parsing changes (forces re-parse of cached files)
 
 
 class AccuracyError(RuntimeError):
@@ -215,7 +215,7 @@ def _features(tree) -> dict:
 def parse_python(path: str, src: str) -> tuple[dict, list[dict]]:
     """Return (file_record, symbols)."""
     rec = {"lang": "python", "imports": [], "tables": [], "calls": [], "lines": len(src.splitlines()), "sql": [],
-           "df_columns": [], "refs": [], "strs": [], "exports": []}
+           "df_columns": [], "refs": [], "strs": [], "exports": [], "assigns": []}
     syms: list[dict] = []
     try:
         tree = ast.parse(src)
@@ -262,7 +262,39 @@ def parse_python(path: str, src: str) -> tuple[dict, list[dict]]:
             bases = [b for b in (_dotted(x) for x in node.bases) if b and b != "object"]
             if bases:
                 sym["bases"] = bases[:6]
+        else:
+            # what the edge builder needs to know a receiver's class: annotated parameters, and what the function returns
+            params = {a.arg: _dotted(a.annotation) for a in node.args.args + node.args.kwonlyargs
+                      if a.annotation is not None and _dotted(a.annotation)}
+            if params:
+                sym["params"] = params
+            ret = _dotted(node.returns) if node.returns is not None else ""
+            if not ret:
+                made = {(_call_parts(r.value)[1] + "." if _call_parts(r.value)[1] else "") + (_call_parts(r.value)[0] or "")
+                        for r in ast.walk(node) if isinstance(r, ast.Return) and isinstance(r.value, ast.Call) and _call_parts(r.value)[0]}
+                ret = next(iter(made)) if len(made) == 1 else ""
+            if ret:
+                sym["returns"] = ret
         syms.append(sym)
+
+    def assigns(body_nodes, caller: str):
+        """`x = Foo(...)`, `x = make_foo()`, `x: Foo = ...`: so `x.method()` can be resolved to the right class later."""
+        for top in body_nodes:
+            for n in ast.walk(top):
+                if isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.value, ast.Call):
+                    t = n.targets[0]
+                    var = t.id if isinstance(t, ast.Name) else f"self.{t.attr}" if isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name) and t.value.id == "self" else None
+                    name, recv = _call_parts(n.value)
+                    if var and name and len(rec["assigns"]) < 600:
+                        rec["assigns"].append({"caller": caller, "var": var, "call": (recv + "." if recv else "") + name, "line": n.lineno})
+                elif isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name) and _dotted(n.annotation) and len(rec["assigns"]) < 600:
+                    rec["assigns"].append({"caller": caller, "var": n.target.id, "type": _dotted(n.annotation), "line": n.lineno})
+                elif isinstance(n, (ast.With, ast.AsyncWith)):
+                    for it in n.items:
+                        if isinstance(it.optional_vars, ast.Name) and isinstance(it.context_expr, ast.Call):
+                            name, recv = _call_parts(it.context_expr)
+                            if name and len(rec["assigns"]) < 600:
+                                rec["assigns"].append({"caller": caller, "var": it.optional_vars.id, "call": (recv + "." if recv else "") + name, "line": n.lineno})
 
     def refs(body_nodes, caller: str):
         """Functions handed over by name instead of being called: `Thread(target=work)`, `map(parse, rows)`, `handlers = [on_save]`."""
@@ -335,6 +367,7 @@ def parse_python(path: str, src: str) -> tuple[dict, list[dict]]:
             add_symbol(node, node.name, "function", test_file and node.name.startswith("test"))
             scan(node.body, node.name)
             refs(node.body, node.name)
+            assigns(node.body, node.name)
             df_cols(node.body, node.name)
         elif isinstance(node, ast.ClassDef):
             cls_test = test_file and node.name.startswith("Test")
@@ -345,6 +378,7 @@ def parse_python(path: str, src: str) -> tuple[dict, list[dict]]:
                     add_symbol(m, q, "method", cls_test and m.name.startswith("test"))
                     scan(m.body, q)
                     refs(m.body, q)
+                    assigns(m.body, q)
                     df_cols(m.body, q)
         else:
             module_body.append(node)
@@ -357,6 +391,7 @@ def parse_python(path: str, src: str) -> tuple[dict, list[dict]]:
     if module_body:
         scan(module_body, "<module>")
         refs(module_body, "<module>")
+        assigns(module_body, "<module>")
         df_cols(module_body, "<module>")
         syms.append({"id": f"{path}#<module>", "name": "<module>", "qualname": "<module>", "kind": "module",
                      "file": path, "line": 1, "end_line": 1, "sig": f"module {path}", "doc": "",
