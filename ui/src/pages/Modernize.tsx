@@ -25,6 +25,9 @@ export default function Modernize(_: any) {
   const [latest, setLatest] = useState(true);
   const [prog, setProg] = useState<any>(null);
   useEffect(() => { setFresh(null); setSel(new Set()); setMsg(""); setErr(""); setShow("ready"); setText(""); }, [repo]);
+  // open on the first group that has candidates, so a repo whose only finding is a new dependency does not look empty
+  const counts = d?.counts;
+  useEffect(() => { if (counts && !counts[show] && show !== "all") { const k = (["ready", "upgrade", "new-dependency"] as const).find((x) => counts[x]); if (k) setShow(k); } }, [counts]); // eslint-disable-line
 
   const scan = async () => { setBusy("scan"); setErr(""); setMsg(""); try { const r = await job(`/api/repos/${repo}/modernize`, { latest }, setProg); setFresh(r);
     const li = r.latest_info || {};
