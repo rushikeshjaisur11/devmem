@@ -554,7 +554,10 @@ def view(ix: Index) -> dict:
     d = load(ix.root)
     if not d:
         return {"available": False, "runtime": runtime_versions(Path(ix.root))}
+    from . import explain
     fs = d["findings"]
+    for f in fs:                     # added when shown, so scans saved before descriptions existed have them too
+        f["why"] = explain.modernize(f.get("rule", ""))
     return {"available": True, **d, "counts": {k: sum(1 for f in fs if f["status"] == k) for k in ("ready", "upgrade", "new-dependency")},
             "lines": sum(f["lines"] for f in fs if f["status"] == "ready")}
 

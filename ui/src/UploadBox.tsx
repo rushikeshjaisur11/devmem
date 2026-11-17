@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { upload } from "./api";
-import { fmtBytes, Icon } from "./components";
+import { fmtBytes, Icon, JobProgress } from "./components";
 import { Picked, pickable, readDropped, zipFiles } from "./zip";
 
 interface Chosen { label: string; detail: string; name: string; archive?: File; files?: Picked[] }
@@ -16,6 +16,7 @@ export function UploadBox({ maxMb, endpoint, onDone, onError, text = REPO_TEXT }
   const [over, setOver] = useState(false);
   const [stage, setStage] = useState<"" | "pack" | "send" | "index">("");
   const [frac, setFrac] = useState(0);
+  const [serverJob, setServerJob] = useState<any>(null);
   const folderRef = useRef<HTMLInputElement>(null);
   const zipRef = useRef<HTMLInputElement>(null);
   useEffect(() => { folderRef.current?.setAttribute("webkitdirectory", ""); }, []);
@@ -49,7 +50,8 @@ export function UploadBox({ maxMb, endpoint, onDone, onError, text = REPO_TEXT }
       if (chosen.files) { setStage("pack"); setFrac(0); body = await zipFiles(chosen.files, setFrac); filename = `${chosen.name}.zip`; }
       if (body.size > maxMb * 1024 * 1024) throw new Error(`This is ${fmtBytes(body.size)}; the server accepts up to ${maxMb} MB. Upload only the source code, or use a Git URL.`);
       setStage("send"); setFrac(0);
-      const r = await upload(endpoint(name.trim(), filename), body, (f) => { setFrac(f); if (f >= 1) setStage("index"); });
+      setServerJob(null);
+      const r = await upload(endpoint(name.trim(), filename), body, (f) => { setFrac(f); if (f >= 1) setStage("index"); }, setServerJob);
       setChosen(null); setName(""); onDone(r);
     } catch (e: any) { onError(e.message); }
     setStage("");
@@ -84,7 +86,8 @@ export function UploadBox({ maxMb, endpoint, onDone, onError, text = REPO_TEXT }
           <button className="primary" disabled={busy || !name.trim()} onClick={send}><Icon name="upload" />{stage === "pack" ? "Packing…" : stage === "send" ? "Uploading…" : stage === "index" ? "Working…" : text.action}</button>
         </div>
       )}
-      {busy && (
+      {busy && stage === "index" && serverJob && <JobProgress job={serverJob} label="Indexing" />}
+      {busy && !(stage === "index" && serverJob) && (
         <div className="progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(frac * 100)} aria-label="Upload progress">
           <div className={stage === "index" ? "bar busy" : "bar"} style={{ width: stage === "index" ? "100%" : `${Math.round(frac * 100)}%` }} />
           <span>{stage === "pack" ? `Packing the folder, ${Math.round(frac * 100)}%` : stage === "send" ? `Uploading, ${Math.round(frac * 100)}%` : text.working}</span>

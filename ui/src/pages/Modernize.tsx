@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, job } from "../api";
 import { nav } from "../route";
-import { Badge, CopyPrompt, EditorLink, Empty, Err, Icon, editorHref, useAsync, useRepo, useRepos } from "../components";
+import { Badge, CopyPrompt, EditorLink, Empty, Err, Icon, JobProgress, editorHref, useAsync, useRepo, useRepos } from "../components";
 
 const STATUS: Record<string, [string, string, string]> = {
   ready: ["Ready now", "good", "The replacement is already available to this repo."],
@@ -23,13 +23,14 @@ export default function Modernize(_: any) {
   const [err, setErr] = useState("");
   const [msg, setMsg] = useState("");
   const [latest, setLatest] = useState(true);
+  const [prog, setProg] = useState<any>(null);
   useEffect(() => { setFresh(null); setSel(new Set()); setMsg(""); setErr(""); setShow("ready"); setText(""); }, [repo]);
 
-  const scan = async () => { setBusy("scan"); setErr(""); setMsg(""); try { const r = await job(`/api/repos/${repo}/modernize`, { latest }); setFresh(r);
+  const scan = async () => { setBusy("scan"); setErr(""); setMsg(""); try { const r = await job(`/api/repos/${repo}/modernize`, { latest }, setProg); setFresh(r);
     const li = r.latest_info || {};
     setMsg(`Scanned ${r.scanned.toLocaleString()} functions and classes: ${r.findings.length} candidate${r.findings.length === 1 ? "" : "s"}.`
       + (li.docs_fetched?.length ? ` Fetched the latest docs for ${li.docs_fetched.map((x: any) => `${x.name} ${x.version}`.trim()).join(", ")}.` : "")
-      + (li.error ? ` ${li.error}.` : "") + (li.notes_error ? ` Note: ${li.notes_error}.` : "")); } catch (e: any) { setErr(e.message); } setBusy(""); };
+      + (li.error ? ` ${li.error}.` : "") + (li.notes_error ? ` Note: ${li.notes_error}.` : "")); } catch (e: any) { setErr(e.message); } setBusy(""); setProg(null); };
   const verify = async () => {
     setBusy("ai"); setErr(""); setMsg("");
     try { const r = await api.post(`/api/repos/${repo}/modernize/ai`, { keys: [...sel].slice(0, 20) }); setMsg(`${r.checked} checked by the model.${r.error ? ` Some failed: ${r.error}` : ""}`); setSel(new Set()); setFresh(await api.get(`/api/repos/${repo}/modernize`)); } catch (e: any) { setErr(e.message); }
@@ -56,6 +57,7 @@ export default function Modernize(_: any) {
       <p className="sub">Finds code written by hand that the language, a library you already use, or a well-known library now provides: a retry loop, a dict used as a cache, a JSON deep copy. Less code to own, and agents stop copying the old pattern. The scan reads the code and needs no AI; nothing is changed.</p>
       <Err msg={repos.error || d0.error || err} />
       {msg && <div className="ok">{msg}</div>}
+      {prog && <div className="card"><JobProgress job={prog} label={latest ? "Fetching the latest releases and scanning" : "Scanning"} /></div>}
       {d && !d.available && <div className="card"><Empty>Not scanned yet. The scan takes a few seconds and only reads the code.</Empty></div>}
 
       {d?.available && (
@@ -96,6 +98,7 @@ export default function Modernize(_: any) {
                     <div className="find-main">
                       <div className="find-where"><span className="mono sym">{f.name}</span><span className="mono muted">{f.file}:{f.line}</span><EditorLink href={editorHref(repos.data, repo, f.file, f.line)} /></div>
                       <div className="mz-swap"><span><span className="muted">Hand-written:</span> {f.what}</span><span className="mz-arrow" aria-hidden="true">→</span><span><span className="muted">Use:</span> <Md text={f.use} /></span></div>
+                      {f.why && <div className="find-about"><p><b>Why replace it:</b> <Md text={f.why} /></p></div>}
                       {f.evidence && <pre className="code mz-ev">{f.evidence}</pre>}
                       <div className="tags">
                         <Badge kind={STATUS[f.status][1]}>{STATUS[f.status][0]}</Badge>

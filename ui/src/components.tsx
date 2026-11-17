@@ -253,6 +253,22 @@ export function Menu({ items, label = "More actions", disabled }: { items: MenuI
   );
 }
 
+const elapsedText = (s: number) => s < 60 ? `${Math.round(s)}s` : `${Math.floor(s / 60)}m ${String(Math.round(s % 60)).padStart(2, "0")}s`;
+/** Progress of a background job: a bar that fills while the server reports counts ("reading files 120 / 400") and moves
+ *  without a length while it does not, with the current step and the time taken so far. */
+export function JobProgress({ job, label }: { job: Json; label: string }) {
+  const pct = job.total > 0 ? Math.min(100, Math.round((job.done / job.total) * 100)) : null;
+  return (
+    <div className="rr-live job-progress" role="status">
+      <div className="rr-bar" role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct ?? undefined}>
+        <i className={job.queued ? "" : pct === null ? "busy" : ""} style={job.queued ? { width: 0 } : pct === null ? undefined : { width: `${pct}%` }} />
+      </div>
+      <span>{job.queued ? "Queued" : label}{job.stage && !job.queued ? ` · ${job.stage}` : ""}{pct !== null ? ` ${Number(job.done).toLocaleString()} / ${Number(job.total).toLocaleString()}` : ""}</span>
+      <span className="muted">{job.queued ? "waiting for a free slot" : elapsedText(job.seconds || 0)}</span>
+    </div>
+  );
+}
+
 /** What this server allows: deployed servers require sign-in and onboard repos by upload or Git URL. */
 export function useConfig() {
   return useAsync<Json>(() => api.get("/api/config"), []);

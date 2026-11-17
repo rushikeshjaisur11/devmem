@@ -758,3 +758,44 @@ pre.prompt.open { max-height: none; }
 .activity td { height: 42px; font-size: 13.5px; }
 .activity .nowrap { white-space: nowrap; }
 .activity .fail-text { color: var(--pill-bad-ink); overflow-wrap: anywhere; }
+
+/* what a finding means, under its one-line message */
+.find-about { display: grid; gap: 2px; max-width: 86ch; font-size: 13.5px; line-height: 20px; color: var(--text-2); }
+.find-about p { margin: 0; }
+.find-about b { font-weight: 600; color: var(--text); }
+.find-about code { font-size: 12.5px; }
+
+/* ---------- repo switcher in the top bar: a button with the repo and its branch, opening a searchable list ---------- */
+.rsw { position: relative; flex: none; }
+.rsw-btn { height: 34px; max-width: 340px; padding: 0 8px 0 4px; gap: 8px; border-color: var(--line); background: var(--surface); box-shadow: 0 1px 0 rgba(0,0,0,.03); font-weight: 400; }
+.rsw-btn:hover, .rsw-btn.open { border-color: var(--line-2); background: var(--surface); }
+.rsw-btn.open { box-shadow: 0 0 0 3px var(--accent-soft); border-color: var(--accent); }
+.rsw-ico { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 6px; background: var(--accent-soft); color: var(--accent); flex: none; }
+.rsw-ico .ico { width: 14px; height: 14px; }
+.rsw-name { font-weight: 600; font-size: 14px; color: var(--text); overflow: hidden; text-overflow: ellipsis; }
+.rsw-branch { display: inline-flex; align-items: center; gap: 4px; max-width: 130px; padding: 1px 7px 1px 5px; border-radius: 999px; background: var(--surface-2); color: var(--text-2); font: 400 12px/18px var(--mono); overflow: hidden; text-overflow: ellipsis; }
+.rsw-branch .ico { width: 12px; height: 12px; flex: none; }
+.rsw-chev { width: 14px; height: 14px; color: var(--text-3); flex: none; }
+.rsw-pop { position: absolute; left: 0; top: calc(100% + 6px); z-index: 60; width: 340px; max-width: calc(100vw - 24px); background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; }
+.rsw-find { position: relative; padding: 8px; border-bottom: 1px solid var(--line); }
+.rsw-find input { width: 100%; padding-left: 32px; }
+.rsw-find .ico { position: absolute; left: 18px; top: 50%; transform: translateY(-50%); width: 15px; height: 15px; color: var(--text-3); pointer-events: none; }
+.rsw-pop ul { list-style: none; margin: 0; padding: 6px; max-height: min(360px, 60vh); overflow-y: auto; outline: none; }
+.rsw-pop li { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 8px; cursor: pointer; }
+.rsw-pop li.on { background: var(--surface-2); }
+.rsw-pop li.none { color: var(--text-3); cursor: default; }
+.rsw-pop li > .ico { width: 16px; height: 16px; color: var(--accent); flex: none; }
+.rsw-row { display: grid; min-width: 0; flex: 1; }
+.rsw-row b { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rsw-pop li.cur .rsw-row b { font-weight: 600; }
+.rsw-row small { color: var(--text-3); font-size: 12px; line-height: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rsw-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--text-3); }
+.rsw-dot.good { background: var(--good); } .rsw-dot.warn { background: var(--warn); }
+.rsw-foot { display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--line); font-size: 13px; color: var(--text-2); }
+.rsw-foot:hover { background: var(--surface-2); text-decoration: none; color: var(--text); }
+.rsw-foot .ico { width: 14px; height: 14px; }
+@media (max-width: 900px) { .rsw-branch { display: none; } .rsw-btn { max-width: 190px; } }
+.job-progress { padding-left: 0; margin-top: 12px; }
+.card > .job-progress:only-child { margin-top: 0; }
+.repo-row .job-progress { padding-left: 46px; margin-top: 0; }
+@media (max-width: 640px) { .repo-row .job-progress { padding-left: 0; } }

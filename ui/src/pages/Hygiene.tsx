@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, job, upload } from "../api";
 import { nav } from "../route";
-import { Badge, CopyPrompt, EditorLink, Empty, Err, Icon, LineChart, useRepo, Term, editorHref, useAsync, useRepos } from "../components";
+import { Badge, CopyPrompt, EditorLink, Empty, Err, Icon, JobProgress, LineChart, useRepo, Term, editorHref, useAsync, useRepos } from "../components";
 
 const SEV: Record<string, [string, string]> = { high: ["High", "bad"], medium: ["Medium", "warn"], low: ["Low", ""] };
 const TOOL: Record<string, string> = { sonar: "SonarQube", ruff: "ruff", vulture: "vulture", radon: "radon", bandit: "bandit", deptry: "deptry", sqlfluff: "sqlfluff", eslint: "eslint", knip: "knip" };
@@ -28,6 +28,13 @@ function SeverityBar({ s, on, pick }: { s: any; on: string; pick: (k: string) =>
   );
 }
 
+/** `code` spans in a short string. */
+const Md = ({ text }: { text: string }) => <>{text.split("`").map((t, i) => i % 2 ? <code key={i}>{t}</code> : <span key={i}>{t}</span>)}</>;
+/** What the rule behind a finding means and how it is usually fixed, in plain words. */
+const About = ({ a }: { a: { what: string; fix: string } }) => (
+  <div className="find-about"><p><Md text={a.what} /></p>{a.fix && <p><b>Fix:</b> <Md text={a.fix} /></p>}</div>
+);
+
 const Tile = ({ label, value, sub, kind = "" }: { label: string; value: any; sub?: any; kind?: string }) => (
   <div className="kpi"><span className="k">{label}</span><b className={kind}>{value}</b>{sub && <span className="t">{sub}</span>}</div>
 );
@@ -44,6 +51,7 @@ export default function Hygiene({ params }: { params: Record<string, string> }) 
   const [busy, setBusy] = useState("");
   const [err, setErr] = useState("");
   const [msg, setMsg] = useState("");
+  const [prog, setProg] = useState<any>(null);
   const h = useAsync<any>(() => (repo ? api.get(`/api/repos/${repo}/health`) : Promise.resolve(null)), [repo]);
   const cov = useAsync<any>(() => (repo ? api.get(`/api/repos/${repo}/coverage`) : Promise.resolve(null)), [repo]);
   const sendCoverage = async (f: File) => {
@@ -63,11 +71,11 @@ export default function Hygiene({ params }: { params: Record<string, string> }) 
   const run = async (what: "local" | "sonar") => {
     setBusy(what); setErr(""); setMsg("");
     try {
-      if (what === "local") { await job(`/api/repos/${repo}/hygiene`); setMsg("Checks finished."); }
-      else { const r = await job(`/api/repos/${repo}/sonar/sync`); setMsg(`Read ${r.issues.toLocaleString()} open issue${r.issues === 1 ? "" : "s"} and ${r.hotspots} hotspot${r.hotspots === 1 ? "" : "s"} from SonarQube.${r.notes.length ? " Note: " + r.notes.join("; ") : ""}`); }
+      if (what === "local") { await job(`/api/repos/${repo}/hygiene`, {}, setProg); setMsg("Checks finished."); }
+      else { const r = await job(`/api/repos/${repo}/sonar/sync`, {}, setProg); setMsg(`Read ${r.issues.toLocaleString()} open issue${r.issues === 1 ? "" : "s"} and ${r.hotspots} hotspot${r.hotspots === 1 ? "" : "s"} from SonarQube.${r.notes.length ? " Note: " + r.notes.join("; ") : ""}`); }
       h.reload();
     } catch (e: any) { setErr(e.message); }
-    setBusy("");
+    setBusy(""); setProg(null);
   };
 
   const all: any[] = d?.findings || [];
@@ -93,6 +101,7 @@ export default function Hygiene({ params }: { params: Record<string, string> }) 
       <p className="sub">Every finding from devmem's checks and from SonarQube in one list, ordered by what to fix first: how severe it is, how many places call the code it is in, and whether a test covers that code. Agents see a file's findings with <code>devmem hygiene &lt;file&gt;</code> before they touch it.</p>
       <Err msg={repos.error || h.error || err} />
       {msg && <div className="ok">{msg}</div>}
+      {prog && <div className="card"><JobProgress job={prog} label={busy === "sonar" ? "Reading SonarQube" : "Running the checks"} /></div>}
     </>
   );
   if (!d) return header;
@@ -145,6 +154,7 @@ export default function Hygiene({ params }: { params: Record<string, string> }) 
                   <span className={`badge sev ${SEV[f.severity][1]}`}><i className={`dot seg-${f.severity}`} />{SEV[f.severity][0]}</span>
                   <div className="find-main">
                     <div className="find-msg">{f.msg}</div>
+                    {d.explain?.[`${f.source}:${f.code}`] && <About a={d.explain[`${f.source}:${f.code}`]} />}
                     <div className="find-where">
                       {f.symbol && <span className="mono sym">{f.symbol}</span>}
                       <span className="mono muted">{f.path}:{f.line}</span>

@@ -142,8 +142,15 @@ def build(ix: Index, name: str) -> dict:
             if line.strip():
                 t = json.loads(line)
                 trend.append({"ts": t["ts"], "total": sum(v for k, v in t["counts"].items() if k != "clones")})
+    from . import explain
+    about = {}
+    for f in findings[:1500]:        # one description per rule, not per finding: thousands of findings share a few dozen rules
+        key = f"{f['source']}:{f['code']}"
+        if key not in about:
+            about[key] = explain.finding(f["source"], f["code"], f["category"])
     return {
         "available": True,
+        "explain": {k: v for k, v in about.items() if v},
         "summary": {"total": len(findings), **{k: sev.get(k, 0) for k in SEV_ORDER},
                     "risky": sum(1 for f in findings if f["severity"] != "low" and f["callers"] >= 2 and f.get("untested"))},
         "categories": [{"id": k, "label": v, "count": cats.get(k, 0)} for k, v in CATEGORIES.items() if cats.get(k)],

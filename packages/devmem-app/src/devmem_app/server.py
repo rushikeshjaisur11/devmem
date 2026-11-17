@@ -136,6 +136,12 @@ def create_app() -> FastAPI:
         except AccuracyError as e:     # surfaced as an error in the UI instead of quietly indexing with less accuracy
             raise HTTPException(422, f"accuracy requirement not met: {e}")
 
+    def stage(text: str) -> None:
+        """Say what the background job on this thread is doing now (shown under the progress bar)."""
+        job = getattr(job_local, "job", None)
+        if job is not None:
+            job.update(stage=text, done=0, total=0)
+
     # ---------- state ----------
     def ws() -> dict:
         w = devmem_home() / "workspace.json"
@@ -403,6 +409,7 @@ def create_app() -> FastAPI:
     def add_repo(body: AddRepo, background: bool = False):
         def _work():
             if body.url:
+                stage("cloning the repository")
                 name, root = clone_url(body.url, body.name, body.branch)
                 if body.branch and git_branch(root) != body.branch:
                     if body.branch in git_branches(root):
@@ -462,6 +469,7 @@ def create_app() -> FastAPI:
 
         def unpack_and_index():
             try:
+                stage("unpacking the upload")
                 root = uploads.install(Path(tmp), rname)
                 try:
                     index_repo(root, rname)

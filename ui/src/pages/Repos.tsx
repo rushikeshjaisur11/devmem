@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, job } from "../api";
-import { Badge, Empty, Err, Icon, Menu, Term, useConfig, useRepos } from "../components";
+import { Badge, Empty, Err, Icon, JobProgress, Menu, Term, useConfig, useRepos } from "../components";
 import { UploadBox } from "../UploadBox";
 
 const KIND: Record<string, string> = { add: "Indexing", index: "Syncing", branch: "Switching branch", publish: "Publishing", hygiene: "Running code health", sonar: "Reading SonarQube", modernize: "Scanning", selfcheck: "Measuring accuracy" };
@@ -123,6 +123,7 @@ export default function Repos(_: any) {
   const [name, setName] = useState("");
   const [commit, setCommit] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [addJob, setAddJob] = useState<any>(null);
   const [find, setFind] = useState("");
   const [only, setOnly] = useState(false);
   const [syncing, setSyncing] = useState<string[] | null>(null);
@@ -236,10 +237,11 @@ export default function Repos(_: any) {
                 <input className="grow" placeholder="https://github.com/org/repo.git  or  git@github.com:org/repo.git" value={url} onChange={(e) => setUrl(e.target.value)} aria-label="Git URL" />
                 <input placeholder="Branch (default)" value={branch} onChange={(e) => setBranch(e.target.value)} aria-label="Branch" style={{ width: 150 }} />
                 <input placeholder="Name (optional)" value={name} onChange={(e) => setName(e.target.value)} aria-label="Repo name" style={{ width: 160 }} />
-                <button className="primary" disabled={!url || busy.has("add")} onClick={() => act("add", () => job("/api/repos", { url, branch: branch || undefined, name: name || undefined }), (r) => { setUrl(""); setBranch(""); setName(""); return `Onboarded ${r.name}: ${r.symbols} symbols`; })}>
+                <button className="primary" disabled={!url || busy.has("add")} onClick={() => act("add", () => job("/api/repos", { url, branch: branch || undefined, name: name || undefined }, setAddJob).finally(() => setAddJob(null)), (r) => { setUrl(""); setBranch(""); setName(""); return `Onboarded ${r.name}: ${r.symbols} symbols`; })}>
                   <Icon name="git" />{busy.has("add") ? "Cloning and indexing…" : "Clone and index"}
                 </button>
               </div>
+              {addJob && <JobProgress job={addJob} label="Adding the repo" />}
               <p className="hint" style={{ margin: "10px 0 0" }}>Cloned into <code>~/.devmem/clones/&lt;name&gt;</code> on {cfg?.deployed ? "the server, with the server's" : "this machine, with its"} git credentials (SSH keys or a credential helper); nothing is prompted. Pick another branch later from the list.</p>
             </>
           )}
@@ -248,10 +250,11 @@ export default function Repos(_: any) {
               <div className="row">
                 <input className="grow" placeholder={cfg?.deployed ? "Path on the server, e.g. /srv/repos/orders-etl" : "Path to a local clone, e.g. C:\\work\\orders-etl"} value={path} onChange={(e) => setPath(e.target.value)} aria-label="Repo path" />
                 <input placeholder="Name (optional)" value={name} onChange={(e) => setName(e.target.value)} aria-label="Repo name" style={{ width: 160 }} />
-                <button className="primary" disabled={!path || busy.has("add")} onClick={() => act("add", () => job("/api/repos", { path, name: name || undefined }), (r) => { setPath(""); setName(""); return `Onboarded ${r.name}: ${r.symbols} symbols`; })}>
+                <button className="primary" disabled={!path || busy.has("add")} onClick={() => act("add", () => job("/api/repos", { path, name: name || undefined }, setAddJob).finally(() => setAddJob(null)), (r) => { setPath(""); setName(""); return `Onboarded ${r.name}: ${r.symbols} symbols`; })}>
                   <Icon name="plus" />{busy.has("add") ? "Indexing…" : "Add and index"}
                 </button>
               </div>
+              {addJob && <JobProgress job={addJob} label="Adding the repo" />}
               <p className="hint" style={{ margin: "10px 0 0" }}>Indexed in place, so it follows your commits and branch switches. The folder must be on the machine that runs devmem.</p>
             </>
           )}
@@ -279,7 +282,6 @@ export default function Repos(_: any) {
                 const mine = [...busy].some((k) => k.slice(1) === r.name);
                 const locked = !!live || mine;
                 const langs = r.langs ? Object.entries(r.langs as Record<string, number>).sort((a, b) => b[1] - a[1]) : [];
-                const pct = live && live.total > 0 ? Math.min(100, Math.round((live.done / live.total) * 100)) : null;
                 return (
                   <li key={r.name} className={`repo-row${live && !live.queued ? " working" : ""}`}>
                     <div className="rr-main">
@@ -320,13 +322,7 @@ export default function Repos(_: any) {
                       </div>
                     )}
                     {live ? (
-                      <div className="rr-live" role="status">
-                        <div className="rr-bar" role="progressbar" aria-label={`${KIND[live.kind] || "Working"} ${r.name}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct ?? undefined}>
-                          <i className={live.queued ? "" : pct === null ? "busy" : ""} style={live.queued ? { width: 0 } : pct === null ? undefined : { width: `${pct}%` }} />
-                        </div>
-                        <span>{live.queued ? "Queued" : KIND[live.kind] || "Working"}{live.stage && !live.queued ? ` · ${live.stage}` : ""}{pct !== null ? ` ${live.done.toLocaleString()} / ${live.total.toLocaleString()}` : ""}</span>
-                        <span className="muted">{live.queued ? "waiting for a free slot" : elapsed(live.seconds || 0)}</span>
-                      </div>
+                      <JobProgress job={live} label={KIND[live.kind] || "Working"} />
                     ) : r.last_error ? (
                       <div className="rr-fail" role="alert"><b>{KIND[r.last_error.kind] || "The last run"} failed.</b> {r.last_error.error}</div>
                     ) : r.error ? <div className="rr-fail" role="alert">{r.error}</div>
