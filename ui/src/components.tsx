@@ -1,16 +1,28 @@
-import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { api, Json } from "./api";
 
+/** Loads `fn()` when `deps` change. `loading` is true only until the first answer for those deps; `reload()` fetches again
+ *  while the data already shown stays on screen (`refreshing`), so a page that polls or reloads after an action never
+ *  blanks. A reload that fails keeps the last data and reports the error. Answers that arrive out of order are dropped. */
 export function useAsync<T = Json>(fn: () => Promise<T>, deps: any[]) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string>("");
   const [loading, setLoading] = useState(true);
-  const run = useCallback(() => {
-    setLoading(true); setError("");
-    fn().then(setData).catch((e) => { setError(String(e.message || e)); setData(null); }).finally(() => setLoading(false));
-  }, deps); // eslint-disable-line
-  useEffect(run, [run]);
-  return { data, error, loading, reload: run };
+  const [refreshing, setRefreshing] = useState(false);
+  const seq = useRef(0);
+  const fnRef = useRef(fn);
+  fnRef.current = fn;
+  const run = useCallback((keep: boolean) => {
+    const n = ++seq.current;
+    if (keep) setRefreshing(true); else { setLoading(true); setError(""); }
+    return fnRef.current()
+      .then((d) => { if (n === seq.current) { setData(d); setError(""); } })
+      .catch((e) => { if (n === seq.current) { setError(String(e.message || e)); if (!keep) setData(null); } })
+      .finally(() => { if (n === seq.current) { setLoading(false); setRefreshing(false); } });
+  }, []);
+  useEffect(() => { run(false); return () => { seq.current++; }; }, deps); // eslint-disable-line
+  const reload = useCallback(() => run(true), [run]);
+  return { data, error, loading, refreshing, reload };
 }
 
 export function useRepos() {
@@ -209,6 +221,7 @@ const PATHS: Record<string, string> = {
   book: '<path d="M4 5a2 2 0 0 1 2-2h13v15H6a2 2 0 0 0-2 2z"/><path d="M4 20a2 2 0 0 0 2 2h13v-4"/>',
   globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 3 2.5 15 0 18M12 3c-2.5 3-2.5 15 0 18"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   out: '<path d="M10 4H5a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h5M15 8l4 4-4 4M19 12H9"/>',
 };
 export const Icon = ({ name }: { name: string }) => (

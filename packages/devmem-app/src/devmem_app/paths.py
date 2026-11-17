@@ -36,27 +36,69 @@ def diagnostics(limit: int = 30) -> list[dict]:
     return rows[-limit:][::-1]
 
 
+def _pid_alive(pid: int) -> bool:
+    import os
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        h = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)     # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return False
+        code = ctypes.c_ulong()
+        ok = ctypes.windll.kernel32.GetExitCodeProcess(h, ctypes.byref(code))
+        ctypes.windll.kernel32.CloseHandle(h)
+        return bool(ok) and code.value == 259                          # STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
 class repo_lock:
     """One writer per repo at a time (the watcher, the UI and the CLI can all index the same repo). A lock file in `.devmem/`,
-    created exclusively; a lock older than `stale` seconds is taken to be left behind by a killed process and is replaced."""
+    created exclusively, holding `<pid> <host>` of its owner.
+
+    A lock left behind by a process that was killed is replaced at once when that process is gone (same machine), instead of
+    making the next run wait. A lock whose owner is still running is never taken over, however long the work takes; one
+    whose owner cannot be checked (another machine on a shared disk, an unreadable file) is replaced after `stale` seconds."""
     def __init__(self, root, name: str = "index", wait: float = 120.0, stale: float = 1800.0):
         from pathlib import Path
         self.path, self.wait, self.stale = Path(root) / ".devmem" / f".{name}.lock", wait, stale
 
+    def _abandoned(self) -> bool:
+        import socket
+        import time
+        age = time.time() - self.path.stat().st_mtime
+        try:
+            pid, _, host = self.path.read_text(encoding="utf-8").strip().partition(" ")
+            pid = int(pid)
+        except (OSError, ValueError):
+            return age > 5.0        # empty or unreadable: its owner died between creating the file and writing to it
+        if host in ("", socket.gethostname()):
+            return not _pid_alive(pid)
+        return age > self.stale
+
     def __enter__(self):
         import os
+        import socket
         import time
         self.path.parent.mkdir(parents=True, exist_ok=True)
         deadline = time.time() + self.wait
         while True:
             try:
                 fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                os.write(fd, str(os.getpid()).encode())
+                os.write(fd, f"{os.getpid()} {socket.gethostname()}".encode())
                 os.close(fd)
                 return self
             except FileExistsError:
                 try:
-                    if time.time() - self.path.stat().st_mtime > self.stale:
+                    if self._abandoned():
                         self.path.unlink()
                         continue
                 except OSError:

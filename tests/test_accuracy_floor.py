@@ -91,3 +91,20 @@ def test_selfcheck_reports_confirmation_call_sites_and_search(acc, tmp_path):
     (root / "app/store.py").write_text((root / "app/store.py").read_text().replace("return self._load(key)", "return key"))
     s2 = selfcheck.site_check(Index.load(root))                                               # the edge get -> _load is now false
     assert s2["missing"] >= 1 and "app/store.py#Store.get -> app/store.py#Store._load" in s2["examples"] and s2["rate"] < 1.0
+
+
+def test_receiver_classes_come_from_how_code_declares_them(tmp_path):
+    """`fixtures/typed_py`: the receiver's class is only visible through an annotation (Optional[X], "X", X | None, list[X],
+    dict[str, X]), an attribute set from a parameter, an alias, a loop, a declared return type or a subclass. Every call is
+    found as a certain edge to the right class; where the class depends on a branch, both targets stay guesses."""
+    root = tmp_path / "typed"
+    shutil.copytree(FIX / "typed_py", root)
+    idx = indexer.index_repo(root, "typed", accuracy="fast")
+    truth = json.loads((FIX / "typed_py/truth.json").read_text())
+    want = {(a, b) for a, b, _ in truth["calls"]}
+    why = {(a, b): w for a, b, w in truth["calls"]}
+    edges = {(e["src"], _norm(e["dst"])): e["conf"] for e in idx["edges"] if e["type"] in ("calls", "tests", "refs")}
+    certain = {k for k, c in edges.items() if c != "ambiguous"}
+    assert not certain - want, f"wrong certain edges: {sorted(certain - want)}"
+    assert not want - certain, "missed: " + "; ".join(f"{a} -> {b} ({why[(a, b)]})" for a, b in sorted(want - certain))
+    assert {k for k, c in edges.items() if c == "ambiguous"} == {(a, b) for a, b, _ in truth["guesses"]}

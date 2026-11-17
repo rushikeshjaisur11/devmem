@@ -29,7 +29,7 @@ files, and builds prompts for the agent that will do the work.
 | ![Modernize](docs/screenshots/modernize.png) | ![Library docs](docs/screenshots/library-docs.png) |
 | **Modernize**: hand-written code that the language or a library now provides, and whether the replacement is usable at the repo's declared versions. | **Library docs**: current docs from PyPI, npm or the web, or your own guides uploaded as a folder or zip; online docs refresh on their own. |
 | ![Repos](docs/screenshots/repos.png) | ![Code map](docs/screenshots/code-map.png) |
-| **Repos**: add a repo by upload, Git URL or path; publish writes the knowledge agents read. | **Code map** (dark theme): every file or function of every repo and how they connect. |
+| **Repos**: add a repo by upload, Git URL or path; **Sync all** re-indexes every repo (two at a time, `DEVMEM_JOBS` changes that) with live progress per repo; publish writes the knowledge agents read; Recent activity lists what ran and how it ended. | **Code map** (dark theme): every file or function of every repo and how they connect. |
 
 ![How far to trust an index](docs/screenshots/overview-repo.png)
 

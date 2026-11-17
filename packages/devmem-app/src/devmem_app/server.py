@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -73,6 +74,7 @@ def _is_plan(text: str) -> bool:
 
 def create_app() -> FastAPI:
     app = FastAPI(title="devmem", docs_url=None, redoc_url=None)
+    job_local = threading.local()     # the background job the current thread is working for (progress is reported to it)
 
     @app.middleware("http")
     async def guard(request: Request, call_next):
@@ -124,8 +126,13 @@ def create_app() -> FastAPI:
         return r
 
     def index_repo(root, name):
+        job = getattr(job_local, "job", None)
+
+        def progress(stage: str, done: int = 0, total: int = 0):
+            if job is not None:
+                job.update(stage=stage, done=done, total=total)
         try:
-            return _index_repo(root, name)
+            return _index_repo(root, name, progress=progress)
         except AccuracyError as e:     # surfaced as an error in the UI instead of quietly indexing with less accuracy
             raise HTTPException(422, f"accuracy requirement not met: {e}")
 
@@ -138,6 +145,21 @@ def create_app() -> FastAPI:
         w = devmem_home() / "workspace.json"
         w.parent.mkdir(parents=True, exist_ok=True)
         atomic_write(w, json.dumps(d, indent=1))
+
+    ws_lock = threading.Lock()
+
+    def set_repo(name: str, path: str | None) -> str | None:
+        """Register (or with None, forget) one repo. Jobs for different repos finish on different threads: reading the file,
+        changing it and writing it back happens under one lock, so two repos added at the same time are both kept."""
+        with ws_lock:
+            w = ws()
+            old = w["repos"].get(name)
+            if path is None:
+                w["repos"].pop(name, None)
+            else:
+                w["repos"][name] = path
+            save_ws(w)
+            return old
 
     def root_of(name: str) -> Path:
         repos = ws()["repos"]
@@ -160,13 +182,31 @@ def create_app() -> FastAPI:
         return cache[name][1]
 
     def repo_summary(name: str, path: str) -> dict:
-        root = Path(path)
-        d = {"name": name, "path": path, "indexed": False}
+        """One row of the repo list. A repo whose files cannot be read (folder moved, a damaged file under .devmem/) still
+        gets a row, with `error` saying what is wrong, so one broken repo never empties the list of the others."""
+        d = {"name": name, "path": path, "indexed": False, "uploaded": False}
+        mine = sorted((j for j in list(jobs.values()) if j["repo"] == name), key=lambda j: j["started"])
+        running = [j for j in mine if j["state"] == "running"]
+        if running:
+            j = next((x for x in running if not x.get("queued")), running[0])
+            d["working"] = {"kind": j["kind"], "job": j["id"], "seconds": round(time.time() - j["started"]), "queued": bool(j.get("queued")),
+                            "stage": j.get("stage") or "", "done": j.get("done") or 0, "total": j.get("total") or 0}
+        elif mine and mine[-1]["state"] == "failed":      # the newest job on this repo failed: say so until one succeeds
+            d["last_error"] = {"kind": mine[-1]["kind"], "error": mine[-1]["error"], "job": mine[-1]["id"],
+                               "ago": round(time.time() - (mine[-1]["finished"] or time.time()))}
+        try:
+            _summarise(d, Path(path))
+        except Exception as e:
+            d["error"] = f"{type(e).__name__}: {e}"[:300]
+        return d
+
+    def _summarise(d: dict, root: Path) -> None:
+        name = d["name"]
         ip = root / ".devmem/index.json"
         d["uploaded"] = uploads.uploads_dir().resolve() in root.resolve().parents
-        running = [j for j in jobs.values() if j["repo"] == name and j["state"] == "running"]
-        if running:
-            d["working"] = {"kind": running[0]["kind"], "job": running[0]["id"], "seconds": round(time.time() - running[0]["started"])}
+        if not root.is_dir():
+            d["missing"] = True
+            return
         if ip.exists():
             st = ip.stat()
             hit = summary_cache.get(str(ip))
@@ -188,7 +228,6 @@ def create_app() -> FastAPI:
             d["usage"] = agent_usage.summary(root)
             from devmem import connect as cn
             d["connected"] = [k for k, v in cn.status(root).items() if v]
-        return d
 
     def agent_tokens(root: Path) -> dict:
         """What an agent pays to read the published knowledge: the AGENTS.md block every session, then each topic file on demand."""
@@ -202,25 +241,41 @@ def create_app() -> FastAPI:
 
 
     # ---------- background jobs: long work outlives the request, so a proxy timeout cannot cut it off ----------
-    import threading
     import uuid
     jobs: dict[str, dict] = {}
     jobs_lock = threading.Lock()
     REPO_WORK = {"add", "index", "branch", "publish", "hygiene"}     # write the repo's index: one at a time per repo
+    # indexing is CPU-bound: "sync all" on twenty repos queues them instead of starting twenty indexers at once
+    try:
+        slots = threading.BoundedSemaphore(max(1, int(os.environ.get("DEVMEM_JOBS") or 2)))
+    except ValueError:
+        slots = threading.BoundedSemaphore(2)
 
-    def start_job(kind: str, repo: str, fn) -> JSONResponse:
+    def busy_repo(repo: str) -> bool:
+        return any(j["repo"] == repo and j["state"] == "running" and j["kind"] in REPO_WORK for j in jobs.values())
+
+    def start_job(kind: str, repo: str, fn, queued: bool = False) -> JSONResponse:
+        """`queued`: wait for one of the DEVMEM_JOBS slots (default 2) before working; the job reads as running with
+        `queued: true` until then."""
         with jobs_lock:
-            if repo and kind in REPO_WORK and any(j["repo"] == repo and j["state"] == "running" and j["kind"] in REPO_WORK for j in jobs.values()):
+            if repo and kind in REPO_WORK and busy_repo(repo):
                 raise HTTPException(409, f"{repo} is already being worked on; wait for that to finish")
             jid = uuid.uuid4().hex[:12]
             job = {"id": jid, "kind": kind, "repo": repo, "state": "running", "started": time.time(), "finished": None,
-                   "result": None, "error": None, "status": 200}
+                   "result": None, "error": None, "status": 200, "queued": queued, "stage": "waiting for a free slot" if queued else "",
+                   "done": 0, "total": 0}
             jobs[jid] = job
             for old in sorted((j for j in jobs.values() if j["state"] != "running"), key=lambda j: j["started"])[:-50]:
                 jobs.pop(old["id"], None)                    # keep the last 50 finished jobs
 
         def work():
+            held = False
             try:
+                if queued:
+                    slots.acquire()
+                    held = True
+                    job.update(queued=False, stage="", started=time.time())
+                job_local.job = job
                 job["result"] = fn()
                 job["state"] = "done"
             except HTTPException as e:
@@ -230,17 +285,71 @@ def create_app() -> FastAPI:
                 from .paths import diagnose
                 diagnose(kind, f"{type(e).__name__}: {e}", repo)
             finally:
+                job_local.job = None
+                if held:
+                    slots.release()
                 job["finished"] = time.time()
                 cache.pop(repo, None)
+                remember(job)
         threading.Thread(target=work, daemon=True, name=f"devmem-{kind}-{repo}").start()
         return JSONResponse({"job": jid, "kind": kind, "repo": repo, "state": "running"}, status_code=202)
+
+    history_lock = threading.Lock()
+
+    def outcome(j: dict) -> str:
+        """One line on what a finished job did, for the activity list."""
+        r = j["result"] if isinstance(j["result"], dict) else {}
+        st = r.get("stats") or {}
+        bits = []
+        if "parsed" in st:
+            bits.append(f"read {st['parsed']} changed file{'' if st['parsed'] == 1 else 's'}, {st.get('reused', 0)} unchanged")
+        if r.get("written"):
+            bits.append(f"wrote {len(r['written'])} knowledge files")
+        if isinstance(r.get("counts"), dict):
+            bits.append(", ".join(f"{k} {v}" for k, v in r["counts"].items()) or "no findings")
+        if r.get("symbols") is not None and j["kind"] in ("add", "branch"):
+            bits.append(f"{r['symbols']} symbols")
+        return "; ".join(bits)
+
+    def remember(j: dict) -> None:
+        """Append a finished job to activity.jsonl (the newest 300), so what ran, when and how it ended is still there after
+        the page is closed or the server restarts."""
+        row = {"id": j["id"], "kind": j["kind"], "repo": j["repo"], "state": j["state"], "error": j["error"],
+               "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(j["finished"])), "seconds": round(j["finished"] - j["started"], 1),
+               "summary": outcome(j) if j["state"] == "done" else ""}
+        p = devmem_home() / "activity.jsonl"
+        try:
+            with history_lock:
+                rows = p.read_text(encoding="utf-8").splitlines()[-299:] if p.exists() else []
+                atomic_write(p, "\n".join(rows + [json.dumps(row)]) + "\n")
+        except OSError:
+            pass
+
+    @app.get("/api/jobs/history")
+    def job_history(limit: int = 30, repo: str = ""):
+        """Finished jobs, newest first: kind, repo, how it ended, when, how long, and one line on what it did."""
+        p = devmem_home() / "activity.jsonl"
+        out = []
+        try:
+            for line in reversed(p.read_text(encoding="utf-8").splitlines()):
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if not repo or row.get("repo") == repo:
+                    out.append(row)
+                if len(out) >= max(1, min(limit, 300)):
+                    break
+        except OSError:
+            pass
+        return out
 
     def maybe_job(background: bool, kind: str, repo: str, fn):
         return start_job(kind, repo, fn) if background else fn()
 
     def job_view(j: dict) -> dict:
         end = j["finished"] or time.time()
-        return {k: j[k] for k in ("id", "kind", "repo", "state", "result", "error", "status")} | {"seconds": round(end - j["started"], 1)}
+        return {k: j[k] for k in ("id", "kind", "repo", "state", "result", "error", "status", "queued", "stage", "done", "total")} | {"seconds": round(end - j["started"], 1)}
 
     @app.get("/api/jobs/{jid}")
     def job_status(jid: str):
@@ -251,7 +360,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/jobs")
     def job_list(active: bool = True):
-        return [job_view(j) for j in sorted(jobs.values(), key=lambda j: -j["started"]) if not active or j["state"] == "running"]
+        return [job_view(j) for j in sorted(list(jobs.values()), key=lambda j: -j["started"]) if not active or j["state"] == "running"]
 
     # ---------- repos ----------
     class AddRepo(BaseModel):
@@ -312,7 +421,7 @@ def create_app() -> FastAPI:
             else:
                 raise HTTPException(400, "give a local path or a git URL")
             index_repo(root, name)                      # register only after a full-accuracy index succeeded
-            w = ws(); w["repos"][name] = str(root); save_ws(w)
+            set_repo(name, str(root))
             return repo_summary(name, str(root))
         return maybe_job(background, "add", body.name or (Path(body.path).name if body.path else ""), _work)
 
@@ -367,7 +476,7 @@ def create_app() -> FastAPI:
                     os.unlink(tmp)
                 except OSError:
                     pass
-            w = ws(); w["repos"][rname] = str(root); save_ws(w)
+            set_repo(rname, str(root))
             cache.pop(rname, None)
             return repo_summary(rname, str(root))
         if background:
@@ -386,7 +495,10 @@ def create_app() -> FastAPI:
 
     @app.delete("/api/repos/{name}")
     def remove_repo(name: str):
-        w = ws(); path = w["repos"].pop(name, None); save_ws(w)
+        with jobs_lock:
+            if busy_repo(name):     # removing an upload deletes its folder: not while an indexer is reading and writing it
+                raise HTTPException(409, f"{name} is being worked on; wait for that to finish, then remove it")
+            path = set_repo(name, None)
         cache.pop(name, None)
         if path and uploads.uploads_dir().resolve() in Path(path).resolve().parents:
             shutil.rmtree(path, ignore_errors=True)   # an upload is devmem's own copy; a path or clone is left alone
@@ -479,6 +591,49 @@ def create_app() -> FastAPI:
         if prov is None:
             raise HTTPException(409, "no AI model is set up: open AI setup, or write the descriptions by hand")
         return defs.describe_with_ai(ix_of(name), body.ids, prov)
+
+    class SyncAll(BaseModel):
+        only_stale: bool = False      # skip repos whose index already matches HEAD
+        republish: bool = False       # also rewrite the knowledge of repos that are already published
+
+    @app.post("/api/repos/sync")
+    def sync_all(body: SyncAll):
+        """Bring every repo up to date: one queued job per repo (DEVMEM_JOBS at a time), each re-indexing the files that
+        changed. Repos that are busy, or whose folder is gone, are skipped and listed with the reason."""
+        started, skipped = [], []
+        for name, path in sorted(ws()["repos"].items()):
+            root = Path(path)
+            if not root.is_dir():
+                skipped.append({"repo": name, "why": "folder not found"})
+                continue
+            ip = root / ".devmem/index.json"
+            published = (root / ".devmem/knowledge").exists()
+            if body.only_stale and ip.exists():
+                try:
+                    commit = json.loads(ip.read_text(encoding="utf-8")).get("commit")
+                except Exception:
+                    commit = None
+                head = git_head(root)
+                if commit is not None and commit == head and not (body.republish and published and check_knowledge(root, head)):
+                    skipped.append({"repo": name, "why": "already up to date"})
+                    continue
+
+            def _work(name=name, root=root, republish=body.republish and published):
+                idx = index_repo(root, name)
+                written = []
+                if republish:
+                    getattr(job_local, "job", {}).update(stage="writing knowledge", done=0, total=0)
+                    try:
+                        written = publish(root, idx, ws()["repos"])
+                    except RuntimeError as e:
+                        raise HTTPException(422, str(e))
+                return {**repo_summary(name, str(root)), "stats": idx["stats"], "written": written}
+            try:
+                r = start_job("index", name, _work, queued=True)
+                started.append({"repo": name, "job": json.loads(r.body)["job"]})
+            except HTTPException as e:
+                skipped.append({"repo": name, "why": "already being worked on" if e.status_code == 409 else str(e.detail)})
+        return {"started": started, "skipped": skipped}
 
     @app.post("/api/repos/{name}/index")
     def reindex(name: str, background: bool = False):

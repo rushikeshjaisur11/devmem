@@ -1,0 +1,152 @@
+{
+ "note": "Ground truth written by reading the code, not from devmem's output. `calls` must all be found as certain (structural) edges and nothing else may be certain; `guesses` may only appear as ambiguous.",
+ "calls": [
+  [
+   "app/models.py#Store.backend",
+   "app/models.py#Backend",
+   "constructor"
+  ],
+  [
+   "app/models.py#Store.clone",
+   "app/models.py#Store",
+   "constructor"
+  ],
+  [
+   "app/use.py#Service.read",
+   "app/models.py#Cache.get",
+   "self.cache = cache, where the parameter is Optional[Cache]"
+  ],
+  [
+   "app/use.py#Service.read",
+   "app/models.py#Store.get",
+   "self.store = store, where the parameter is annotated Store"
+  ],
+  [
+   "app/use.py#Service.write",
+   "app/models.py#Store.save",
+   "self.store = store"
+  ],
+  [
+   "app/use.py#Service.write",
+   "app/models.py#Backend.flush",
+   "loop over self.backends, a List[Backend] parameter"
+  ],
+  [
+   "app/use.py#Service.lazy",
+   "app/models.py#Backend.flush",
+   "self._b: Backend | None = None"
+  ],
+  [
+   "app/use.py#opt",
+   "app/models.py#Store.save",
+   "Optional[Store] parameter"
+  ],
+  [
+   "app/use.py#opt",
+   "app/models.py#Cache.save",
+   "quoted forward reference \"Cache\""
+  ],
+  [
+   "app/use.py#opt",
+   "app/models.py#Store.get",
+   "Store | None parameter"
+  ],
+  [
+   "app/use.py#factory",
+   "app/models.py#Store.default",
+   "classmethod called on the class"
+  ],
+  [
+   "app/use.py#factory",
+   "app/models.py#Store.save",
+   "s = Store.default(), an alternative constructor"
+  ],
+  [
+   "app/use.py#factory",
+   "app/models.py#Backend.flush",
+   "only one flush in the repo"
+  ],
+  [
+   "app/use.py#factory",
+   "app/models.py#Store",
+   "constructor in a with statement"
+  ],
+  [
+   "app/use.py#factory",
+   "app/models.py#Store.get",
+   "with Store() as st"
+  ],
+  [
+   "app/use.py#loop",
+   "app/models.py#Store.get",
+   "loop variable over list[Store]"
+  ],
+  [
+   "app/use.py#loop",
+   "app/models.py#Cache.save",
+   "loop over the values of dict[str, Cache]"
+  ],
+  [
+   "app/use.py#loop",
+   "app/models.py#Store.save",
+   "first = stores[0]"
+  ],
+  [
+   "app/use.py#walrus",
+   "app/models.py#Store",
+   "constructor"
+  ],
+  [
+   "app/use.py#walrus",
+   "app/models.py#Store.get",
+   "(s := Store())"
+  ],
+  [
+   "app/use.py#nested",
+   "app/models.py#Store.get",
+   "annotated parameter used in a nested function"
+  ],
+  [
+   "app/use.py#chain",
+   "app/models.py#Store.clone",
+   "s = store, an alias of an annotated parameter"
+  ],
+  [
+   "app/use.py#chain",
+   "app/models.py#Store.save",
+   "s = s.clone(), whose return type is declared"
+  ],
+  [
+   "app/use.py#render",
+   "app/models.py#Store.get",
+   "plain function with a parameter named self"
+  ],
+  [
+   "app/use.py#narrowed",
+   "app/models.py#Child.special",
+   "elements declared as Base, method defined by its subclass"
+  ],
+  [
+   "app/use.py#branchy",
+   "app/models.py#Store",
+   "constructor"
+  ],
+  [
+   "app/use.py#branchy",
+   "app/models.py#Cache",
+   "constructor"
+  ]
+ ],
+ "guesses": [
+  [
+   "app/use.py#branchy",
+   "app/models.py#Store.save",
+   "x is a Store or a Cache depending on the branch"
+  ],
+  [
+   "app/use.py#branchy",
+   "app/models.py#Cache.save",
+   "same"
+  ]
+ ]
+}

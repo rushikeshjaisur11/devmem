@@ -145,6 +145,7 @@ export default function App() {
   useEffect(() => { if (!edMenu) return; const f = () => setEdMenu(false); window.addEventListener("click", f); return () => window.removeEventListener("click", f); }, [edMenu]);
   useEffect(() => { if (cfg.data) setLocked(!cfg.data.signed_in); }, [cfg.data]);
   useEffect(() => { const f = () => setLocked(true); window.addEventListener("devmem-signin", f); return () => window.removeEventListener("devmem-signin", f); }, []);
+  useEffect(() => { const f = () => repos.reload(); window.addEventListener("devmem-repos", f); return () => window.removeEventListener("devmem-repos", f); }, [repos.reload]);   // the Repos page added or removed one
   useEffect(() => setMenu(false), [page, params.repo]);
   const [editor, setEditor] = useState(getEditor);
   const pickEditor = (v: string) => { try { localStorage.setItem("devmem-editor", v); } catch { /* private mode */ } setEditor(v); };

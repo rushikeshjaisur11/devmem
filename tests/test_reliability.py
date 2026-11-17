@@ -129,6 +129,23 @@ def test_only_one_process_indexes_a_repo_at_a_time(tmp_path):
     with pytest.raises(TimeoutError, match="another devmem process"):
         with repo_lock(root, wait=0.3):
             pass
+    import socket
+    os.utime(root / ".devmem/.index.lock", (time.time() - 4000, time.time() - 4000))
+    with pytest.raises(TimeoutError):                                                   # its owner is alive: never taken over, however old
+        with repo_lock(root, wait=0.3):
+            pass
+    (root / ".devmem/.index.lock").write_text(f"999999 {socket.gethostname()}")        # killed a moment ago: no 30-minute wait
+    t0 = time.time()
+    with repo_lock(root, wait=5):
+        assert (root / ".devmem/.index.lock").read_text() == f"{os.getpid()} {socket.gethostname()}"
+    assert time.time() - t0 < 1
+    (root / ".devmem/.index.lock").write_text("999999 some-other-machine")             # cannot check that owner: wait, then age decides
+    with pytest.raises(TimeoutError):
+        with repo_lock(root, wait=0.3):
+            pass
+    os.utime(root / ".devmem/.index.lock", (time.time() - 4000, time.time() - 4000))
+    with repo_lock(root, wait=1):
+        pass
 
 
 def test_survived_failures_are_recorded_and_shown(tmp_path, monkeypatch):

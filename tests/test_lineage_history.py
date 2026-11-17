@@ -150,3 +150,18 @@ def test_diffcheck_no_touch_and_cochange_scope(hist_repo):
     for n in ("a", "b"):
         (hist_repo / f"app/{n}.py").write_text(f"def {n}():\n    return 100\n")
     assert not [x for x in dc.run_checks(hist_repo, dc.collect_diff(hist_repo, None, False), cfg) if x.check == "out_of_scope"]
+
+
+def test_tables_a_statement_changes_are_writes_and_prose_is_not_sql():
+    """UPDATE / DELETE / DROP / ALTER / TRUNCATE change their table, so the job writes it (it was listed as a reader);
+    a docstring that begins "Delete ..." or "Create ..." is not a query and names no tables."""
+    from devmem_app.indexer import parse_python, sql_tables
+    assert sql_tables("delete from orders where id = 1") == [("orders", "writes")]
+    assert sql_tables("update orders set x = 1 from staging s where s.id = orders.id") == [("orders", "writes"), ("staging", "reads")]
+    assert sql_tables("drop table if exists tmp_x") == [("tmp_x", "writes")]
+    assert sql_tables("truncate table audit") == [("audit", "writes")]
+    assert sql_tables("alter table users add column age int") == [("users", "writes")]
+    assert sql_tables("with c as (select * from src) insert into dst select * from c") == [("dst", "writes"), ("src", "reads")]
+    src = 'def rm(c):\n    """Delete stale entries from cache"""\n    c.execute("delete from orders where id = 1")\n'
+    rec, _ = parse_python("a.py", src)
+    assert [(t["name"], t["mode"]) for t in rec["tables"]] == [("orders", "writes")] and [q["sql"] for q in rec["sql"]] == ["delete from orders where id = 1"]
