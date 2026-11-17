@@ -81,7 +81,7 @@ Budgets in `knowledge.py`: `AGENTS.md` index 300 tokens, `map.md` 1,500, any oth
 - Parsing beyond Python and JS/TS: `devmem_app/treeparse.py` (Go, Java, C#, Kotlin, Rust); edges for them in `graph._typed_edges`
 - Descriptions for weakly described code: `devmem_app/definitions.py` (rating, AI drafts) -> `.devmem/descriptions.json`, read by `devmem/index.py`
 - Optional AI pass: `devmem_app/analysis.py` (descriptions in bulk, module summaries, overview; background job with progress) -> `.devmem/analysis.json`, read by `publisher.py` and `chat.py`
-- Code health: `devmem_app/hygiene.py` (built-in tools), `sonar.py` (SonarQube Web API, read-only -> `.devmem/sonar.json`), `health.py` (merges both, maps findings to symbols, ranks by severity x callers x tested)
+- Code health: `devmem_app/hygiene.py` (built-in tools), `sonar.py` (SonarQube Web API, read-only -> `.devmem/sonar.json`), `checkmarx.py` (Checkmarx One API, read-only -> `.devmem/checkmarx.json`), `sarif.py` (any SARIF 2.1.0 report -> `.devmem/sarif.json`), `explain.py` (what each rule means), `health.py` (merges them all, maps findings to symbols, ranks by severity x callers x tested)
 - Prompts for agents: `devmem_app/prompts.py` (fix / file / test / duplicate prompts in one fixed shape, with code, callers and the test command), `implement.py` (task and plan prompts)
 - Modernize: `devmem_app/modernize.py` (pattern catalog `RULES`, docs match, declared runtime versions and dependencies -> `.devmem/modernize.json`); add a rule there to teach it a new pattern
 - Freshness of answers: `Index.read` / `file_state` (devmem/index.py) re-locate symbols in files changed since indexing; `schema.atomic_write`, `paths.repo_lock`, `paths.diagnose`

@@ -214,6 +214,8 @@ TOOLS = {
     "deptry": _d("The imports in the code and the dependencies the project declares do not match.", "Declare what is imported and remove what is not."),
     "sqlfluff": _d("The SQL differs from the project's style rules or could not be parsed.", "Run `sqlfluff fix`, or fix the syntax."),
     "eslint": _d("A JavaScript / TypeScript lint rule.", "Read the message; the rule's page on eslint.org shows correct and incorrect examples."),
+    "checkmarx": _d("A security finding from Checkmarx: data from outside (a request, a file, the environment) can reach a place where it changes what the code does, or a dependency or configuration is known to be vulnerable.",
+                    "Follow the data from where it enters to the line shown, and validate, encode or parameterise it before it is used there; for a dependency, upgrade it."),
     "knip": _d("A file, export or dependency that nothing uses.", "Remove it, or declare it as an entry point if it is used from outside."),
 }
 

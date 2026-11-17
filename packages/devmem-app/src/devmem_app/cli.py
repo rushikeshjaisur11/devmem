@@ -68,6 +68,11 @@ def _main(argv=None) -> int:
     s.add_argument("action", choices=["show", "ingest-devin"]); s.add_argument("arg", help="repo name (show) or JSON file (ingest-devin)")
     s = sub.add_parser("coverage", help="import a coverage report (coverage.py JSON, Cobertura or JaCoCo XML, lcov) so test selection uses measured coverage")
     s.add_argument("repo"); s.add_argument("file", nargs="?", help="report file (default: look in the usual places in the repo)")
+    s = sub.add_parser("sarif", help="import a SARIF report (Checkmarx, CodeQL, Semgrep ...) into Code health and `devmem hygiene`")
+    s.add_argument("repo", help="path of the repo the report was produced from"); s.add_argument("file", help="the .sarif file")
+    s = sub.add_parser("checkmarx", help="read the latest completed Checkmarx One scan of a repo (DEVMEM_CX_URL + DEVMEM_CX_API_KEY, or CX_BASE_URI + CX_APIKEY)")
+    s.add_argument("repo", help="path of the repo"); s.add_argument("--project", help="Checkmarx One project name or ID (default: the one set in the UI, else the repo name)")
+    s.add_argument("--branch", default="", help="read the latest scan of this branch")
     s = sub.add_parser("selfcheck", help="how far to trust a repo's index: confirmed edges, call sites re-checked, search hit rate")
     s.add_argument("repo")
     s = sub.add_parser("ui", help="start the local web app")
@@ -213,6 +218,27 @@ def _main(argv=None) -> int:
             print("  runs:", {k: v for k, v in r["runs"].items() if k != "recent"})
             if r["devin"]:
                 print("  devin:", r["devin"])
+    elif a.cmd == "sarif":
+        from . import sarif
+        root = Path(a.repo).resolve()
+        try:
+            r = sarif.import_file(root, Path(a.file).read_bytes(), set(Index.load(root).data["files"]), Path(a.file).name)
+        except (OSError, sarif.SarifError) as e:
+            sys.exit(f"devmem-app: {a.file}: {e}")
+        print(f"{', '.join(r['names'])}: {r['issues']} findings imported, {r['matched']} in files of this repo" + "".join(f". Note: {n}" for n in r["notes"]))
+    elif a.cmd == "checkmarx":
+        from . import checkmarx as cx
+        root = Path(a.repo).resolve()
+        name = next((n for n, p in _ws()["repos"].items() if Path(p).resolve() == root), root.name)
+        try:
+            if a.project:
+                cx.set_project(name, a.project, a.branch)
+            d = cx.sync(name, root, set(Index.load(root).data["files"]))
+        except cx.CheckmarxError as e:
+            sys.exit(f"devmem-app: checkmarx: {e}")
+        print(f"Checkmarx One {d['project']['name']}, scan {d['scan']['id']} ({d['scan']['branch'] or 'default branch'}): {len(d['issues'])} open findings "
+              f"({', '.join(f'{k} {v}' for k, v in sorted(d['by_scanner'].items())) or 'none'}), {d['skipped']} triaged as not exploitable"
+              + "".join(f". Note: {n}" for n in d["notes"]))
     elif a.cmd == "coverage":
         from . import coverage_import as ci
         root = Path(a.repo).resolve()

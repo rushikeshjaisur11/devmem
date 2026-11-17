@@ -3,8 +3,8 @@ import { api, job } from "../api";
 import { Badge, Empty, Err, Icon, JobProgress, Menu, Term, useConfig, useRepos } from "../components";
 import { UploadBox } from "../UploadBox";
 
-const KIND: Record<string, string> = { add: "Indexing", index: "Syncing", branch: "Switching branch", publish: "Publishing", hygiene: "Running code health", sonar: "Reading SonarQube", modernize: "Scanning", selfcheck: "Measuring accuracy" };
-const DID: Record<string, string> = { add: "Added", index: "Sync", branch: "Branch switch", publish: "Publish", hygiene: "Code health", sonar: "SonarQube", modernize: "Modernize scan", selfcheck: "Accuracy check" };
+const KIND: Record<string, string> = { add: "Indexing", index: "Syncing", branch: "Switching branch", publish: "Publishing", hygiene: "Running code health", sonar: "Reading SonarQube", checkmarx: "Reading Checkmarx One", modernize: "Scanning", selfcheck: "Measuring accuracy" };
+const DID: Record<string, string> = { add: "Added", index: "Sync", branch: "Branch switch", publish: "Publish", hygiene: "Code health", sonar: "SonarQube", checkmarx: "Checkmarx sync", modernize: "Modernize scan", selfcheck: "Accuracy check" };
 const elapsed = (s: number) => s < 60 ? `${Math.round(s)}s` : `${Math.floor(s / 60)}m ${String(Math.round(s % 60)).padStart(2, "0")}s`;
 
 /** Running jobs by repo, from the cheap /api/jobs list. The repo list itself is only fetched again when a job ends

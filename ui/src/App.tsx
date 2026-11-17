@@ -260,7 +260,7 @@ export default function App() {
         <span className="spacer" />
       </header>
       <div className="sheet">
-        <main><RepoContext.Provider value={{ repo, setRepo, repos: repos.data }}><ErrorBoundary key={page + JSON.stringify(params) + editor + repo}><Suspense fallback={<p className="muted">Loading…</p>}><Page params={params} /></Suspense></ErrorBoundary></RepoContext.Provider></main>
+        <main><RepoContext.Provider value={{ repo, setRepo, repos: repos.data }}><ErrorBoundary key={page + JSON.stringify(params) + editor + (REPO_PAGES.has(page) ? repo : "")}><Suspense fallback={<p className="muted">Loading…</p>}><Page params={params} /></Suspense></ErrorBoundary></RepoContext.Provider></main>
       </div>
       {palette && <Palette onClose={() => setPalette(false)} />}
     </div>

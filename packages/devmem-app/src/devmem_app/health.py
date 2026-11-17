@@ -16,7 +16,9 @@ from pathlib import Path
 from devmem.index import Index
 from devmem.review import gaps as review_gaps
 
+from . import checkmarx
 from . import hygiene as hyg
+from . import sarif
 from . import sonar
 
 SEV_ORDER = ("high", "medium", "low")
@@ -93,8 +95,10 @@ def build(ix: Index, name: str) -> dict:
     except (OSError, ValueError):
         local = None
     sq = sonar.load(root)
-    if not local and not sq:
-        return {"available": False, "sonar": None, "local": None}
+    cx = checkmarx.load(root)
+    sf = sarif.load(root)
+    if not local and not sq and not cx and not (sf or {}).get("issues"):
+        return {"available": False, "sonar": None, "local": None, "checkmarx": None, "sarif": []}
 
     loc, tested = _Locator(ix), _tested(ix)
     findings = []
@@ -106,6 +110,26 @@ def build(ix: Index, name: str) -> dict:
         findings.append({"source": "sonar", "code": i["code"], "msg": i["msg"] + (" (security hotspot: review needed)" if i.get("hotspot") else ""),
                          "path": i["path"], "line": i["line"], "severity": i["severity"], "category": i["category"],
                          "url": sonar.issue_url(sq, i), "effort": i.get("effort", ""), "sonar_severity": i.get("sonar_severity", "")})
+
+    rule_about: dict[str, dict] = {}
+    for tid, t in ((sf or {}).get("tools") or {}).items():
+        for rid, a in (t.get("rules") or {}).items():
+            rule_about[f"{tid}:{rid}"] = a
+    seen = {(f["source"], f["code"], f["path"], f["line"]) for f in findings}
+    for i in (cx or {}).get("issues", []) + (sf or {}).get("issues", []):
+        k = (i["tool"], i["code"], i["path"], i["line"])
+        if k in seen:              # the same Checkmarx result from the API and from a SARIF export: once
+            continue
+        seen.add(k)
+        f = {"source": i["tool"], "code": i["code"], "msg": i["msg"], "path": i["path"], "line": i["line"], "severity": i["severity"], "category": i["category"]}
+        for extra in ("url", "cwe", "scanner", "package", "checkmarx_severity", "state"):
+            if i.get(extra):
+                f[extra] = i[extra]
+        if i.get("about"):
+            f["about"] = i["about"]
+        elif f"{i['tool']}:{i['code']}" in rule_about:
+            f["about"] = rule_about[f"{i['tool']}:{i['code']}"]
+        findings.append(f)
 
     cov = (sq or {}).get("file_coverage") or {}
     per_file: dict[str, dict] = defaultdict(lambda: {"high": 0, "medium": 0, "low": 0, "score": 0.0})
@@ -146,8 +170,10 @@ def build(ix: Index, name: str) -> dict:
     about = {}
     for f in findings[:1500]:        # one description per rule, not per finding: thousands of findings share a few dozen rules
         key = f"{f['source']}:{f['code']}"
-        if key not in about:
-            about[key] = explain.finding(f["source"], f["code"], f["category"])
+        if key not in about:       # the tool's own description of its rule when it gave one, else devmem's catalog
+            about[key] = f.pop("about", None) or explain.finding(f["source"], f["code"], f["category"])
+        else:
+            f.pop("about", None)
     return {
         "available": True,
         "explain": {k: v for k, v in about.items() if v},
@@ -163,6 +189,10 @@ def build(ix: Index, name: str) -> dict:
                                       "total_issues": sq.get("total_issues", 0), "matched": sq.get("matched"), "notes": sq.get("notes", []),
                                       "issues": len(sq.get("issues", [])), "hotspots": len(sq.get("hotspots", [])),
                                       "dashboard": f"{sq['url']}/dashboard?id={sq['project']}"},
+        "checkmarx": None if not cx else {"ts": cx["ts"], "url": cx["url"], "project": cx["project"], "scan": cx["scan"], "total": cx.get("total", 0),
+                                          "issues": len(cx["issues"]), "skipped": cx.get("skipped", 0), "by_scanner": cx.get("by_scanner", {}),
+                                          "matched": cx.get("matched"), "truncated": cx.get("truncated", False), "notes": cx.get("notes", [])},
+        "sarif": sarif.summary(sf),
         "clones": (local or {}).get("clones", []),
         "gaps": review_gaps(ix, 10),
         "trend": trend,

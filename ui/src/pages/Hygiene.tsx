@@ -4,7 +4,7 @@ import { nav } from "../route";
 import { Badge, CopyPrompt, EditorLink, Empty, Err, Icon, JobProgress, LineChart, useRepo, Term, editorHref, useAsync, useRepos } from "../components";
 
 const SEV: Record<string, [string, string]> = { high: ["High", "bad"], medium: ["Medium", "warn"], low: ["Low", ""] };
-const TOOL: Record<string, string> = { sonar: "SonarQube", ruff: "ruff", vulture: "vulture", radon: "radon", bandit: "bandit", deptry: "deptry", sqlfluff: "sqlfluff", eslint: "eslint", knip: "knip" };
+const TOOL: Record<string, string> = { sonar: "SonarQube", checkmarx: "Checkmarx", codeql: "CodeQL", semgrep: "Semgrep", snyk: "Snyk", ruff: "ruff", vulture: "vulture", radon: "radon", bandit: "bandit", deptry: "deptry", sqlfluff: "sqlfluff", eslint: "eslint", knip: "knip" };
 const TOOL_JOB: [string, string][] = [["ruff", "Lint"], ["vulture", "Dead code"], ["radon", "Complexity"], ["bandit", "Security"], ["deptry", "Dependencies"], ["sqlfluff", "SQL style"], ["eslint", "JS/TS lint"], ["knip", "Unused JS/TS"]];
 const RATING = ["", "A", "B", "C", "D", "E"];
 const PAGE = 60;
@@ -65,13 +65,20 @@ export default function Hygiene({ params }: { params: Record<string, string> }) 
     setBusy("");
   };
   const d = h.data;
+  const importSarif = async (f: File) => {
+    setBusy("sarif"); setErr(""); setMsg("");
+    try { const r = await upload(`/api/repos/${repo}/sarif?filename=${encodeURIComponent(f.name)}`, f, () => {}); setMsg(`${r.names.join(", ")}: ${r.issues.toLocaleString()} finding${r.issues === 1 ? "" : "s"} imported, ${r.matched.toLocaleString()} in files of this repo.${r.notes.length ? " Note: " + r.notes.join("; ") : ""}`); h.reload(); }
+    catch (e: any) { setErr(e.message); }
+    setBusy("");
+  };
   useEffect(() => { setSev(""); setCat(""); setSrc(""); setText(""); setMsg(""); setErr(""); setView("first"); }, [repo]);
   useEffect(() => setShown(PAGE), [sev, cat, src, text, view, repo]);
 
-  const run = async (what: "local" | "sonar") => {
+  const run = async (what: "local" | "sonar" | "checkmarx") => {
     setBusy(what); setErr(""); setMsg("");
     try {
       if (what === "local") { await job(`/api/repos/${repo}/hygiene`, {}, setProg); setMsg("Checks finished."); }
+      else if (what === "checkmarx") { const r = await job(`/api/repos/${repo}/checkmarx/sync`, {}, setProg); setMsg(`Read ${r.issues.toLocaleString()} open finding${r.issues === 1 ? "" : "s"} from the latest Checkmarx One scan of ${r.project.name}.${r.skipped ? ` ${r.skipped} triaged as not exploitable or fixed were left out.` : ""}${r.notes.length ? " Note: " + r.notes.join("; ") : ""}`); }
       else { const r = await job(`/api/repos/${repo}/sonar/sync`, {}, setProg); setMsg(`Read ${r.issues.toLocaleString()} open issue${r.issues === 1 ? "" : "s"} and ${r.hotspots} hotspot${r.hotspots === 1 ? "" : "s"} from SonarQube.${r.notes.length ? " Note: " + r.notes.join("; ") : ""}`); }
       h.reload();
     } catch (e: any) { setErr(e.message); }
@@ -97,15 +104,17 @@ export default function Hygiene({ params }: { params: Record<string, string> }) 
         {canSync
           ? <button disabled={!repo || !!busy} onClick={() => run("sonar")}><Icon name="refresh" />{busy === "sonar" ? "Reading SonarQube…" : sq ? "Sync SonarQube" : "Read from SonarQube"}</button>
           : <button onClick={() => nav("integrations")}><Icon name="plug" />Connect SonarQube</button>}
+        {d?.checkmarx_setup?.configured && <button disabled={!repo || !!busy} onClick={() => run("checkmarx")}><Icon name="refresh" />{busy === "checkmarx" ? "Reading Checkmarx…" : d?.checkmarx ? "Sync Checkmarx" : "Read from Checkmarx"}</button>}
+        <label className="btn-file" title="A SARIF report from Checkmarx (cx CLI or CxSAST), CodeQL, Semgrep …"><input type="file" hidden accept=".sarif,.json" disabled={!repo || !!busy} onChange={(e) => { const f = e.target.files?.[0]; if (f) importSarif(f); e.target.value = ""; }} /><span className="btnlike"><Icon name="upload" />{busy === "sarif" ? "Importing…" : "Import SARIF"}</span></label>
       </div>
-      <p className="sub">Every finding from devmem's checks and from SonarQube in one list, ordered by what to fix first: how severe it is, how many places call the code it is in, and whether a test covers that code. Agents see a file's findings with <code>devmem hygiene &lt;file&gt;</code> before they touch it.</p>
+      <p className="sub">Every finding from devmem's checks, SonarQube, Checkmarx and imported SARIF reports in one list, ordered by what to fix first: how severe it is, how many places call the code it is in, and whether a test covers that code. Agents see a file's findings with <code>devmem hygiene &lt;file&gt;</code> before they touch it.</p>
       <Err msg={repos.error || h.error || err} />
       {msg && <div className="ok">{msg}</div>}
-      {prog && <div className="card"><JobProgress job={prog} label={busy === "sonar" ? "Reading SonarQube" : "Running the checks"} /></div>}
+      {prog && <div className="card"><JobProgress job={prog} label={busy === "sonar" ? "Reading SonarQube" : busy === "checkmarx" ? "Reading Checkmarx One" : "Running the checks"} /></div>}
     </>
   );
   if (!d) return header;
-  if (!d.available) return <>{header}<div className="card"><Empty>Nothing has checked {repo} yet. Run the built-in checks, or connect SonarQube to bring in what it already found.</Empty></div></>;
+  if (!d.available) return <>{header}<div className="card"><Empty>Nothing has checked {repo} yet. Run the built-in checks, connect SonarQube or Checkmarx One, or import a SARIF report to bring in what they already found.</Empty></div></>;
 
   const s = d.summary;
   return (
@@ -167,11 +176,13 @@ export default function Hygiene({ params }: { params: Record<string, string> }) 
                       {f.callers > 0 && <span className="tag" title="Places that call the function this finding is in">used by <b>{f.callers}</b></span>}
                       {f.untested && f.callers > 0 && <span className="tag warn" title="No test calls this function, directly or through one caller">no test</span>}
                       {f.effort && <span className="tag" title="SonarQube's estimate of the time to fix">{f.effort}</span>}
+                      {f.scanner && <span className="tag" title="The Checkmarx engine that found it">{({ sast: "SAST", sca: "SCA: dependency", kics: "KICS: infrastructure" } as Record<string, string>)[f.scanner] || f.scanner}</span>}
+                      {f.cwe && <a className="tag link" href={`https://cwe.mitre.org/data/definitions/${f.cwe.replace(/\D/g, "")}.html`} target="_blank" rel="noreferrer" title="The weakness this belongs to">{f.cwe}</a>}
                     </div>
                   </div>
                   <div className="find-act">
                     <CopyPrompt repo={repo} kind="finding" data={f} />
-                    {f.url && <a className="btn-link" href={f.url} target="_blank" rel="noreferrer">Open in SonarQube</a>}
+                    {f.url && /^https?:/.test(f.url) && <a className="btn-link" href={f.url} target="_blank" rel="noreferrer">{f.source === "sonar" ? "Open in SonarQube" : "Rule details"}</a>}
                   </div>
                 </div>
               ))}
@@ -240,6 +251,33 @@ export default function Hygiene({ params }: { params: Record<string, string> }) 
             ? <p className="hint" style={{ margin: 0 }}>{cov.data.format} report <code>{cov.data.source}</code> from {String(cov.data.ts).slice(0, 16).replace("T", " ")}: {cov.data.stats.covered} of {cov.data.stats.functions} functions ran in tests.
                 {cov.data.per_test ? " Test selection (`devmem tests-for`) and “untested” use it, including tests that reach code through fixtures." : " Without per-test data, “untested” uses it but test selection still uses the call graph."}</p>
             : <p className="hint" style={{ margin: 0 }}>Test selection is inferred from calls, so tests that reach code through fixtures or helpers can be missed. Import what your test run already produces: coverage.py JSON (<code>pytest --cov --cov-context=test</code> then <code>coverage json --show-contexts</code>), lcov, Cobertura or JaCoCo XML. A report left in the repo (<code>coverage.json</code>, <code>lcov.info</code>, <code>jacoco.xml</code>) is picked up on every re-index.</p>}
+        </div>
+      )}
+      {view === "sources" && (d.checkmarx || d.sarif?.length > 0) && (
+        <div className="hy-split">
+          <div className="card">
+            <div className="row" style={{ marginBottom: 12 }}><h3 style={{ margin: 0 }}>Checkmarx One</h3>{d.checkmarx && <span className="muted">synced {d.checkmarx.ts.slice(0, 16).replace("T", " ")}</span>}</div>
+            {!d.checkmarx ? <Empty>{d.checkmarx_setup?.configured ? "Connected, not synced yet. Use Read from Checkmarx above." : <>Not connected. <a href="#/integrations">Connect Checkmarx One</a>, or import its SARIF report.</>}</Empty> : (
+              <>
+                <div className="kv"><span>Project</span><span>{d.checkmarx.project.name} <span className="muted mono">{d.checkmarx.project.id}</span></span>
+                  <span>Scan</span><span className="mono">{d.checkmarx.scan.id}{d.checkmarx.scan.branch ? ` (${d.checkmarx.scan.branch})` : ""}{d.checkmarx.scan.created ? `, ${String(d.checkmarx.scan.created).slice(0, 16).replace("T", " ")}` : ""}</span>
+                  <span>Read</span><span>{d.checkmarx.issues.toLocaleString()} open of {d.checkmarx.total.toLocaleString()} results{d.checkmarx.skipped ? `; ${d.checkmarx.skipped} triaged as not exploitable or fixed left out` : ""}</span>
+                  <span>By engine</span><span>{Object.entries(d.checkmarx.by_scanner).map(([k, n]) => `${k.toUpperCase()} ${n}`).join(", ") || "-"}</span>
+                  {d.checkmarx.matched !== null && d.checkmarx.matched !== undefined && <><span>Matched</span><span>{d.checkmarx.matched.toLocaleString()} are in files devmem indexed</span></>}
+                </div>
+                {d.checkmarx.notes.map((n: string) => <p className="hint" key={n}>Note: {n}</p>)}
+                <div className="row" style={{ marginTop: 14 }}><a className="btn-link" href={d.checkmarx.url} target="_blank" rel="noreferrer">Open Checkmarx One</a><a className="btn-link" href="#/integrations">Change the connection</a></div>
+              </>
+            )}
+          </div>
+          <div className="card">
+            <div className="row" style={{ marginBottom: 12 }}><h3 style={{ margin: 0 }}>SARIF reports</h3></div>
+            {!d.sarif?.length ? <Empty>None imported. Use Import SARIF above.</Empty> : (
+              <table><thead><tr><th>Tool</th><th>File</th><th className="num">Findings</th><th>Imported</th></tr></thead><tbody>
+                {d.sarif.map((t: any) => <tr key={t.tool}><td>{t.name}{t.version ? <span className="muted"> {t.version}</span> : null}</td><td className="mono">{t.file}</td><td className="num">{t.issues.toLocaleString()}</td><td className="muted">{t.ts.slice(0, 16).replace("T", " ")}</td></tr>)}
+              </tbody></table>
+            )}
+          </div>
         </div>
       )}
       {view === "sources" && (

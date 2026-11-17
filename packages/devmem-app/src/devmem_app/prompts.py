@@ -111,7 +111,7 @@ def finding(ix: Index, f: dict) -> str:
     """Fix one code-health or SonarQube finding."""
     path, line = f.get("path", ""), int(f.get("line") or 1)
     s = ix.symbols.get(f.get("symbol_id") or "") or _symbol_at(ix, path, line)
-    src = "SonarQube" if f.get("source") == "sonar" else f.get("source", "a code check")
+    src = {"sonar": "SonarQube", "checkmarx": "Checkmarx"}.get(f.get("source", ""), f.get("source", "a code check"))
     task = f"Fix one finding from {src} in `{path}` at line {line}: {f.get('msg', '').strip()} (rule `{f.get('code', '')}`, {f.get('severity', 'medium')} severity)."
     where = symbol_block(ix, s, mark=line) if s else [f"- `{path}` line {line}. Read 20 lines above and below it, nothing more."]
     if f.get("url"):

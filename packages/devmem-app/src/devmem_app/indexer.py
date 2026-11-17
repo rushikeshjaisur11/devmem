@@ -659,4 +659,10 @@ def _index_repo(root: str | Path, name: str | None = None, write: bool = True, s
         except Exception as e:
             from .paths import diagnose
             diagnose("coverage", f"coverage report could not be imported: {e}", name or root.name)
+        try:   # a SARIF report a scan left at the repo root (cx_result.sarif, codeql.sarif ...): import it into Code health
+            from . import sarif
+            sarif.auto_import(root, set(idx["files"]))
+        except Exception as e:
+            from .paths import diagnose
+            diagnose("sarif", f"SARIF report could not be imported: {e}", name or root.name)
     return idx
