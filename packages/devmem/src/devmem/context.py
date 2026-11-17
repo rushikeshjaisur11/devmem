@@ -66,10 +66,11 @@ def hit_line(ix: Index, s: dict, twins: list[dict], doc_chars: int = 100) -> str
 
 
 def known_issues(ix: Index, s: dict, cap: int = 3) -> list[str]:
-    """Findings recorded for this symbol's lines by the code health checks or SonarQube, most severe first."""
+    """Findings recorded for this symbol's lines by the code health checks, SonarQube, Checkmarx or SARIF, most severe first."""
     rank = {"high": 0, "medium": 1, "low": 2}
     found = []
-    for rel, keys in ((".devmem/sonar.json", ("issues", "hotspots")), (".devmem/hygiene.json", ("issues",))):
+    from .schema import EXTERNAL_FINDINGS
+    for rel, keys in (*EXTERNAL_FINDINGS, (".devmem/hygiene.json", ("issues",))):
         try:
             d = json.loads((ix.root / rel).read_text(encoding="utf-8"))
         except (OSError, ValueError):

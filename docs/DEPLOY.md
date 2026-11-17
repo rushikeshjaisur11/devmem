@@ -63,6 +63,14 @@ The devmem server calls your SonarQube server itself, so it needs a network rout
 **Integrations** page or with `DEVMEM_SONAR_URL` and `DEVMEM_SONAR_TOKEN`. The token is kept in `settings.json`
 under `DEVMEM_HOME`; synced findings are written to `.devmem/sonar.json` in each repo.
 
+## Checkmarx One on a server
+
+Same pattern: the devmem server calls Checkmarx One (the address you give, and its login host `iam.…` beside `ast.…`, or the
+realm the API key names). Set it on **Integrations** or with `DEVMEM_CX_URL` and `DEVMEM_CX_API_KEY` (the `cx` CLI's
+`CX_BASE_URI`, `CX_APIKEY`, `CX_TENANT` and `CX_BASE_AUTH_URI` also work). The key is kept in `settings.json` under
+`DEVMEM_HOME`; findings go to `.devmem/checkmarx.json`. Where the server cannot reach Checkmarx, export SARIF in the
+pipeline and import it instead (`devmem-app sarif`, or upload it on Integrations); imports go to `.devmem/sarif.json`.
+
 ## Long operations
 
 Onboarding (path, Git URL or upload), re-indexing, branch switches, publishing, code-health runs, SonarQube sync, Modernize

@@ -721,8 +721,12 @@ def create_app() -> FastAPI:
 
     @app.get("/api/repos/{name}/health")
     def health(name: str):
-        return {**health_mod.build(ix_of(name), name), "sonar_setup": {k: v for k, v in sonar_mod.public({name: str(root_of(name))}).items() if k != "projects"} |
-                {"project": sonar_mod.public({name: str(root_of(name))})["projects"][0]}}
+        from . import checkmarx as cxm
+        one = {name: str(root_of(name))}
+        cx_pub = cxm.public(one)
+        return {**health_mod.build(ix_of(name), name), "sonar_setup": {k: v for k, v in sonar_mod.public(one).items() if k != "projects"} |
+                {"project": sonar_mod.public(one)["projects"][0]},
+                "checkmarx_setup": {"configured": cx_pub["configured"], "project": cx_pub["projects"][0]}}
 
     @app.get("/api/integrations/sonar")
     def sonar_status():
@@ -770,6 +774,90 @@ def create_app() -> FastAPI:
             return {"issues": len(d["issues"]), "hotspots": len(d["hotspots"]), "total": d["total_issues"], "matched": d["matched"],
                     "truncated": d["truncated"], "notes": d["notes"], "gate": d.get("gate")}
         return maybe_job(background, "sonar", name, _work)
+
+    # ---------- Checkmarx One (API) and SARIF reports (any scanner, including on-premises CxSAST) ----------
+    from . import checkmarx as cx_mod
+    from . import sarif as sarif_mod
+
+    class CxConn(BaseModel):
+        url: str | None = None
+        api_key: str | None = None      # "" or missing keeps the saved key
+        tenant: str | None = None
+        iam_url: str | None = None
+        clear_key: bool = False
+
+    class CxProject(BaseModel):
+        project: str
+        branch: str = ""
+
+    @app.get("/api/integrations/checkmarx")
+    def cx_status():
+        return cx_mod.public(ws()["repos"])
+
+    @app.put("/api/integrations/checkmarx")
+    def cx_save(body: CxConn):
+        try:
+            cx_mod.save_connection(body.url, body.api_key, body.tenant, body.iam_url, body.clear_key)
+        except cx_mod.CheckmarxError as e:
+            raise HTTPException(400, str(e))
+        return cx_mod.public(ws()["repos"])
+
+    @app.post("/api/integrations/checkmarx/test")
+    def cx_test():
+        try:
+            return cx_mod.test()
+        except cx_mod.CheckmarxError as e:
+            return {"ok": False, "error": str(e)}
+
+    @app.get("/api/integrations/checkmarx/projects")
+    def cx_projects(q: str = ""):
+        try:
+            return cx_mod.search_projects(q)
+        except cx_mod.CheckmarxError as e:
+            raise HTTPException(422, str(e))
+
+    @app.put("/api/repos/{name}/checkmarx")
+    def cx_map(name: str, body: CxProject):
+        root_of(name)
+        if len(body.project.strip()) > 300 or body.branch and not re.fullmatch(r"[\w./-]{1,250}", body.branch.strip()):
+            raise HTTPException(400, "that does not look like a Checkmarx One project name or branch")
+        cx_mod.set_project(name, body.project, body.branch)
+        return {"ok": True}
+
+    @app.post("/api/repos/{name}/checkmarx/sync")
+    def cx_sync(name: str, background: bool = False):
+        def _work():
+            ix = ix_of(name)
+            stage("reading the latest scan from Checkmarx One")
+            try:
+                d = cx_mod.sync(name, root_of(name), set(ix.data["files"]))
+            except cx_mod.CheckmarxError as e:
+                raise HTTPException(422, str(e))
+            return {"issues": len(d["issues"]), "total": d["total"], "skipped": d["skipped"], "by_scanner": d["by_scanner"], "matched": d["matched"],
+                    "truncated": d["truncated"], "notes": d["notes"], "scan": d["scan"], "project": d["project"]}
+        return maybe_job(background, "checkmarx", name, _work)
+
+    @app.post("/api/repos/{name}/sarif")
+    async def sarif_upload(name: str, request: Request, filename: str = "report.sarif"):
+        """Import a SARIF report uploaded as the request body (Checkmarx, CodeQL, Semgrep, ...)."""
+        raw = await request.body()
+        if not raw:
+            raise HTTPException(400, "empty upload")
+        if len(raw) > uploads.max_upload_bytes():
+            raise HTTPException(413, "report too large")
+        ix = ix_of(name)
+        try:
+            return await run_in_threadpool(sarif_mod.import_file, root_of(name), raw, set(ix.data["files"]), re.sub(r"[^\w. -]", "_", filename)[:120] or "report.sarif")
+        except sarif_mod.SarifError as e:
+            raise HTTPException(400, str(e))
+
+    @app.get("/api/repos/{name}/sarif")
+    def sarif_status(name: str):
+        return sarif_mod.summary(sarif_mod.load(root_of(name)))
+
+    @app.delete("/api/repos/{name}/sarif/{tool}")
+    def sarif_remove(name: str, tool: str):
+        return sarif_mod.summary(sarif_mod.remove(root_of(name), tool))
 
     # ---------- modernize: hand-written code that the language or a library now provides ----------
     class ModernizeAi(BaseModel):

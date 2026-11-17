@@ -109,7 +109,7 @@ def test_project_key_is_detected_from_the_repo(tmp_path):
 def test_health_ranks_by_severity_callers_and_tests(env):
     root, fake = env
     ix = Index.load(root)
-    assert health.build(ix, "py_app") == {"available": False, "sonar": None, "local": None}
+    assert health.build(ix, "py_app") == {"available": False, "sonar": None, "local": None, "checkmarx": None, "sarif": []}
     sonar.save_connection("http://sq/", "good")
     sonar.set_project("py_app", P)
     d = sonar.sync("py_app", root, set(ix.data["files"]))

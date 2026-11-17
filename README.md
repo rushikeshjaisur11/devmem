@@ -147,6 +147,16 @@ every row has a ready fix prompt and a link back to SonarQube. Connect the serve
 project key per repo; a `sonar-project.properties` in the repo is picked up), then *Sync*. Agents get the same findings from
 `devmem hygiene <file>`. CLI and CI: `DEVMEM_SONAR_URL` / `DEVMEM_SONAR_TOKEN` (or Sonar's `SONAR_HOST_URL` / `SONAR_TOKEN`).
 
+**Checkmarx and SARIF.** **Checkmarx One** results (SAST, SCA dependency vulnerabilities, KICS infrastructure checks) join the
+same list: connect on **Integrations** with the address (`https://ast.checkmarx.net`, `https://eu.ast.checkmarx.net` …) and an API
+key, pick the project for each repo, then *Sync*. It reads the latest completed scan and leaves out results triaged as not
+exploitable; each SAST finding points at the line where the data is used and says where it came from. From CI:
+`devmem-app checkmarx <repo> [--project NAME] [--branch B]` with `DEVMEM_CX_URL` / `DEVMEM_CX_API_KEY` (or the `cx` CLI's
+`CX_BASE_URI` / `CX_APIKEY`; `CX_TENANT` for keys that do not name their tenant). On-premises **CxSAST**, the `cx` CLI
+(`--report-format sarif`), CodeQL, Semgrep and any other scanner that writes **SARIF 2.1.0** are imported with *Import SARIF*,
+`devmem-app sarif <repo> <file>`, or by leaving the `.sarif` file at the repo root, where every re-index picks it up. Rule
+descriptions from the report are shown with each finding.
+
 **Stop maintaining what a library already does.** **Modernize** scans every function for code written by hand that the language, a
 library you already use, or a well-known library provides: a retry loop with sleep (`tenacity`), a dict used as a cache
 (`functools.lru_cache`), `zip(x, x[1:])` (`itertools.pairwise`), `JSON.parse(JSON.stringify(x))` (`structuredClone`) and about 25 more

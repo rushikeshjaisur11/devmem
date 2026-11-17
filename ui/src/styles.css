@@ -799,3 +799,7 @@ pre.prompt.open { max-height: none; }
 .card > .job-progress:only-child { margin-top: 0; }
 .repo-row .job-progress { padding-left: 46px; margin-top: 0; }
 @media (max-width: 640px) { .repo-row .job-progress { padding-left: 0; } }
+.tag-x { height: 16px; width: 16px; padding: 0; margin-left: 4px; border: 0; border-radius: 50%; background: transparent; color: var(--text-3); font-size: 14px; line-height: 1; box-shadow: none; }
+.tag-x:hover { background: var(--pill-bad-bg); color: var(--bad); }
+.btnlike { white-space: nowrap; }
+.btnlike .ico { width: 16px; height: 16px; flex: none; }

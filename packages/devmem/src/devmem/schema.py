@@ -19,6 +19,8 @@ INDEX_PATH = ".devmem/index.json"
 DESC_PATH = ".devmem/descriptions.json"   # {symbol id: {text, by: ai|human, code: hash of the source it describes}}
 DB_PATH = ".devmem/index.db"  # derived FTS5 cache of index.json; rebuilt when index.json changes
 IGNORE_FILE = ".devmemignore"
+# findings imported from other tools, read by `devmem hygiene` and `context`: (file, keys that hold lists of findings)
+EXTERNAL_FINDINGS = ((".devmem/sonar.json", ("issues", "hotspots")), (".devmem/checkmarx.json", ("issues",)), (".devmem/sarif.json", ("issues",)))
 
 CONF_PRECISE = "precise"        # type-resolved (SCIP, later)
 CONF_STRUCTURAL = "structural"  # name/import resolved
