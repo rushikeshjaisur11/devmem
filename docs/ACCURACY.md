@@ -50,6 +50,34 @@ Name-only guesses (`ambiguous`) were right one time in twenty here, so `impact` 
 the callers that must keep working; they appear on a separate "possible callers" line. With Graphify (the default, full
 accuracy mode) unconfirmed guesses from files Graphify covered are dropped altogether.
 
+## Third measurement: receiver classes from declarations (2026-11-17)
+
+Same method (scip-python 0.6.8 as the oracle, `--fast` structural index, files SCIP covered, non-module callers) on four
+libraries as installed from PyPI: starlette, fastapi, pydantic, sqlglot. "Before" is the previous section's code. "After"
+also reads a receiver's class from `Optional[X]`, `X | None`, a quoted `"X"`, `Annotated[X, ...]`; from the elements of
+`list[X]` / `Iterable[X]` and the values of `dict[K, X]` (loop variables, `xs[0]`); from `self.x = param` and
+`self.x: X | None = None`; from `y = x`, `(x := X())` and `x = y.method()` when the method declares what it returns; from
+alternative constructors (`X.create()` returning `cls(...)` or `Self`); and from subclasses when the declared class does not
+define the method. A variable's class is the one assigned above the call, and an assignment inside an `if` / loop / `try`
+that disagrees with the one before it makes the class unknown instead of picking one.
+
+| Edges (4 libraries together) | Before: edges / right / precision | After: edges / right / precision |
+| --- | --- | --- |
+| all | 12,642 / 9,375 / 0.742 | 12,592 / 9,392 / 0.746 |
+| `structural` | 9,412 / 8,383 / 0.891 | 9,447 / 8,437 / 0.893 |
+| `ambiguous` (name-only guesses) | 3,230 / 992 / 0.307 | 3,145 / 955 / 0.304 |
+
+So on library code the gain is small: 54 more certain edges that are right, 85 fewer guesses, one right edge lost (a loop
+variable declared as a class from another library and then narrowed with `isinstance`). Starlette's `structural` precision
+went from 0.978 to 0.992. Libraries rarely pass their own objects around through annotated parameters; application code
+does. `fixtures/typed_py` is written that way (a service holding `self.store = store`, `Optional[Cache]`, `List[Backend]`):
+before, 17 of its 29 call edges were guesses and 9 of those were wrong; now all 27 calls are certain and right, and the one
+call whose class depends on a branch stays a two-way guess. `tests/test_accuracy_floor.py` requires exactly that.
+
+Lineage, same date: `UPDATE`, `DELETE`, `DROP`, `ALTER` and `TRUNCATE` now count as writes to their table (they were listed
+as reads), and a docstring that opens with "Create ..." / "Delete ..." is no longer parsed as a query (it could add tables
+that do not exist, such as `stale` and `cache` from "Delete stale entries from cache").
+
 ## Checks that run on every change
 
 - `fixtures/accuracy_py` is built around the traps above (the same method name on three classes, `dict.items()` beside a

@@ -30,7 +30,7 @@ MAX_FILE_BYTES = 1_000_000
 MAX_SQL_STMTS, MAX_SQL_LEN = 60, 20_000
 COLUMN_FUNCS = {"select", "withColumn", "col", "groupBy", "groupby", "orderBy", "sort", "drop", "withColumnRenamed",
                 "sum", "avg", "max", "min", "count", "countDistinct", "first", "collect_list", "agg", "join"}
-PARSER_VERSION = 10  # bump when per-file records gain fields or parsing changes (forces re-parse of cached files)
+PARSER_VERSION = 11  # bump when per-file records gain fields or parsing changes (forces re-parse of cached files)
 
 
 class AccuracyError(RuntimeError):
@@ -107,9 +107,14 @@ def list_files(root: Path) -> list[str]:
 
 # ---------- SQL ----------
 def sql_tables(sql: str) -> list[tuple[str, str]]:
-    """Return [(table, 'reads'|'writes')] for a SQL string (Spark dialect first, generic fallback)."""
+    """Return [(table, 'reads'|'writes')] for a SQL string (Spark dialect first, generic fallback). The table a statement
+    changes (INSERT, CREATE, MERGE, UPDATE, DELETE, DROP, ALTER, TRUNCATE) is a write; every other table in it is a read."""
+    import logging
+
     import sqlglot
     from sqlglot import exp
+    logging.getLogger("sqlglot").setLevel(logging.ERROR)     # text that only looks like SQL is expected here: no warnings on stderr
+    changing = tuple(getattr(exp, n) for n in ("Insert", "Create", "Merge", "Update", "Delete", "Drop", "Alter", "AlterTable", "TruncateTable") if hasattr(exp, n))
 
     for dialect in ("spark", None):
         try:
@@ -123,12 +128,13 @@ def sql_tables(sql: str) -> list[tuple[str, str]]:
     for tree in trees:
         ctes = {c.alias_or_name for c in tree.find_all(exp.CTE)}
         targets = set()
-        if isinstance(tree, (exp.Insert, exp.Create, exp.Merge)):
-            tgt = tree.this
-            tgt = tgt.find(exp.Table) if tgt is not None and not isinstance(tgt, exp.Table) else tgt
-            if isinstance(tgt, exp.Table):
-                targets.add(id(tgt))
-                found[(_tname(tgt), "writes")] = None
+        if isinstance(tree, changing):
+            # where the changed table sits differs by statement and by sqlglot version: `this`, `tables` (DROP) or `expressions` (TRUNCATE)
+            for tgt in ([tree.this] if tree.this is not None else list(tree.args.get("tables") or tree.expressions or [])):
+                tgt = tgt.find(exp.Table) if isinstance(tgt, exp.Expression) and not isinstance(tgt, exp.Table) else tgt
+                if isinstance(tgt, exp.Table) and _tname(tgt) and _tname(tgt) not in ctes:
+                    targets.add(id(tgt))
+                    found[(_tname(tgt), "writes")] = None
         for t in tree.find_all(exp.Table):
             name = _tname(t)
             if not name or name in ctes or id(t) in targets:
@@ -173,6 +179,63 @@ def _call_parts(call: ast.Call):
             recv = None
         return f.attr, recv
     return None, None
+
+
+def _dotted(n) -> str:
+    """`a.b.C` (or the callee of a call) as text; "" for anything that is not a plain dotted name."""
+    if isinstance(n, ast.Call):
+        n = n.func
+    parts = []
+    while isinstance(n, ast.Attribute):
+        parts.append(n.attr); n = n.value
+    if isinstance(n, ast.Name):
+        parts.append(n.id)
+    else:
+        return ""
+    return ".".join(reversed(parts))
+
+
+_WRAPPERS = {"Optional", "Annotated", "Final", "ClassVar", "Required", "NotRequired", "Type", "type", "ReadOnly"}
+_SEQUENCES = {"list", "List", "set", "Set", "frozenset", "FrozenSet", "tuple", "Tuple", "Sequence", "MutableSequence", "Iterable", "Iterator",
+              "Collection", "AbstractSet", "MutableSet", "deque", "Deque", "Generator", "AsyncIterator", "AsyncIterable"}
+_MAPPINGS = {"dict", "Dict", "Mapping", "MutableMapping", "defaultdict", "DefaultDict", "OrderedDict"}
+
+
+def _is_none(n) -> bool:
+    return isinstance(n, ast.Constant) and n.value is None
+
+
+def _ann(node, depth: int = 0) -> tuple[str, str, str]:
+    """A type annotation -> (class it names, class of its elements, class of its mapping values), each "" when unknown.
+    Sees through what wraps the class in real code: `Optional[X]`, `X | None`, `Union[X, None]`, a quoted "X" (forward
+    reference), `Annotated[X, ...]`, `Final[X]`; `list[X]` / `Iterable[X]` give the element class, `dict[K, V]` the value class."""
+    if node is None or depth > 4:
+        return "", "", ""
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, str):
+            try:
+                return _ann(ast.parse(node.value.strip(), mode="eval").body, depth + 1)
+            except SyntaxError:
+                pass
+        return "", "", ""
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        real = [x for x in (node.left, node.right) if not _is_none(x)]
+        return _ann(real[0], depth + 1) if len(real) == 1 else ("", "", "")
+    if isinstance(node, ast.Subscript):
+        head = _dotted(node.value)
+        short = head.split(".")[-1]
+        args = list(node.slice.elts) if isinstance(node.slice, ast.Tuple) else [node.slice]
+        if short in _WRAPPERS and args:
+            return _ann(args[0], depth + 1)
+        if short == "Union":
+            real = [x for x in args if not _is_none(x)]
+            return _ann(real[0], depth + 1) if len(real) == 1 else ("", "", "")
+        if short in _SEQUENCES and args:
+            return head, _ann(args[0], depth + 1)[0], ""
+        if short in _MAPPINGS:
+            return head, "", (_ann(args[1], depth + 1)[0] if len(args) > 1 else "")
+        return head, "", ""          # Box[int]: an object of class Box
+    return _dotted(node), "", ""
 
 
 SPARK_READ = {"table"}
@@ -222,6 +285,10 @@ def parse_python(path: str, src: str) -> tuple[dict, list[dict]]:
     except SyntaxError:
         return rec, syms
     rec["features"] = _features(tree)
+    # a docstring that opens with "Create ...", "Select ...", "Delete ..." is prose, not a query: never read it as SQL
+    docstrings = {id(n.body[0].value) for n in ast.walk(tree)
+                  if isinstance(n, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and n.body
+                  and isinstance(n.body[0], ast.Expr) and isinstance(n.body[0].value, ast.Constant) and isinstance(n.body[0].value.value, str)}
     test_file = _is_test_file(path)
     pkg_parts = path.replace("\\", "/").split("/")[:-1]
 
@@ -236,16 +303,6 @@ def parse_python(path: str, src: str) -> tuple[dict, list[dict]]:
                 mod = ".".join(base + ([mod] if mod else []))
             for a in n.names:
                 rec["imports"].append({"module": mod, "name": a.name, "alias": a.asname or a.name})
-
-    def _dotted(n) -> str:
-        if isinstance(n, ast.Call):
-            n = n.func
-        parts = []
-        while isinstance(n, ast.Attribute):
-            parts.append(n.attr); n = n.value
-        if isinstance(n, ast.Name):
-            parts.append(n.id)
-        return ".".join(reversed(parts))
 
     def add_symbol(node, qual, kind, is_test):
         sym = {
@@ -264,11 +321,12 @@ def parse_python(path: str, src: str) -> tuple[dict, list[dict]]:
                 sym["bases"] = bases[:6]
         else:
             # what the edge builder needs to know a receiver's class: annotated parameters, and what the function returns
-            params = {a.arg: _dotted(a.annotation) for a in node.args.args + node.args.kwonlyargs
-                      if a.annotation is not None and _dotted(a.annotation)}
-            if params:
-                sym["params"] = params
-            ret = _dotted(node.returns) if node.returns is not None else ""
+            anns = {a.arg: _ann(a.annotation) for a in node.args.posonlyargs + node.args.args + node.args.kwonlyargs if a.annotation is not None}
+            for key, n in (("params", 0), ("elems", 1), ("vals", 2)):     # the class of each parameter, of its elements, of its mapping values
+                got = {k: v[n] for k, v in anns.items() if v[n]}
+                if got:
+                    sym[key] = got
+            ret = _ann(node.returns)[0] if node.returns is not None else ""
             if not ret:
                 made = {(_call_parts(r.value)[1] + "." if _call_parts(r.value)[1] else "") + (_call_parts(r.value)[0] or "")
                         for r in ast.walk(node) if isinstance(r, ast.Return) and isinstance(r.value, ast.Call) and _call_parts(r.value)[0]}
@@ -278,23 +336,73 @@ def parse_python(path: str, src: str) -> tuple[dict, list[dict]]:
         syms.append(sym)
 
     def assigns(body_nodes, caller: str):
-        """`x = Foo(...)`, `x = make_foo()`, `x: Foo = ...`: so `x.method()` can be resolved to the right class later."""
+        """What each variable holds, so `x.method()` can be resolved to the right class later: `x = Foo(...)`, `x = make_foo()`,
+        `x: Foo = ...`, `self.x = param`, `x = other`, `for x in items`, `x = items[0]`, `with Foo() as x`, `(x := Foo())`."""
+        branch: set[int] = set()        # nodes inside an if / loop / try: an assignment there may not have happened
         for top in body_nodes:
             for n in ast.walk(top):
-                if isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.value, ast.Call):
-                    t = n.targets[0]
-                    var = t.id if isinstance(t, ast.Name) else f"self.{t.attr}" if isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name) and t.value.id == "self" else None
-                    name, recv = _call_parts(n.value)
-                    if var and name and len(rec["assigns"]) < 600:
-                        rec["assigns"].append({"caller": caller, "var": var, "call": (recv + "." if recv else "") + name, "line": n.lineno})
-                elif isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name) and _dotted(n.annotation) and len(rec["assigns"]) < 600:
-                    rec["assigns"].append({"caller": caller, "var": n.target.id, "type": _dotted(n.annotation), "line": n.lineno})
+                if isinstance(n, (ast.If, ast.For, ast.AsyncFor, ast.While, ast.Try, ast.IfExp, ast.Match) + ((ast.TryStar,) if hasattr(ast, "TryStar") else ())):
+                    branch.update(id(c) for c in ast.walk(n) if c is not n)
+        here = [None]
+
+        def put(**a):
+            if len(rec["assigns"]) < 800:
+                rec["assigns"].append({"caller": caller, **a, **({"cond": True} if id(here[0]) in branch else {})})
+
+        def var_of(t) -> str | None:
+            if isinstance(t, ast.Name):
+                return t.id
+            if isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name) and t.value.id == "self":
+                return f"self.{t.attr}"
+            return None
+
+        def source(var: str, value, line: int):
+            """Record what `value` says about `var`; anything unreadable is recorded as unknown, so an earlier type is dropped."""
+            if isinstance(value, ast.Await):
+                value = value.value
+            if isinstance(value, ast.Call):
+                name, recv = _call_parts(value)
+                if name:
+                    return put(var=var, call=(recv + "." if recv else "") + name, line=line)
+            elif var_of(value):
+                return put(var=var, **{"from": var_of(value)}, line=line)
+            elif isinstance(value, ast.Subscript) and var_of(value.value):
+                return put(var=var, of=var_of(value.value), via="item", line=line)
+            if not (isinstance(value, ast.Constant) and value.value is None):      # `x = None` then `x = Foo()` keeps Foo
+                put(var=var, line=line)
+
+        def loop(target, it, line: int):
+            if isinstance(it, ast.Call) and isinstance(it.func, ast.Attribute) and it.func.attr in ("values", "items") and not it.args and var_of(it.func.value):
+                if it.func.attr == "items":
+                    target = target.elts[1] if isinstance(target, ast.Tuple) and len(target.elts) == 2 else None
+                if var_of(target):
+                    put(var=var_of(target), of=var_of(it.func.value), via="values", line=line)
+            elif var_of(target) and var_of(it):
+                put(var=var_of(target), of=var_of(it), via="iter", line=line)
+            elif var_of(target):
+                put(var=var_of(target), line=line)
+
+        for top in body_nodes:
+            for n in ast.walk(top):
+                here[0] = n
+                if isinstance(n, ast.Assign) and len(n.targets) == 1 and var_of(n.targets[0]):
+                    source(var_of(n.targets[0]), n.value, n.lineno)
+                elif isinstance(n, ast.NamedExpr) and isinstance(n.target, ast.Name):
+                    source(n.target.id, n.value, n.lineno)
+                elif isinstance(n, ast.AnnAssign) and var_of(n.target):
+                    t, elem, val = _ann(n.annotation)
+                    if t:
+                        put(var=var_of(n.target), type=t, **({"elem": elem} if elem else {}), **({"val": val} if val else {}), line=n.lineno)
+                elif isinstance(n, (ast.For, ast.AsyncFor)):
+                    loop(n.target, n.iter, n.lineno)
+                elif isinstance(n, ast.comprehension):
+                    loop(n.target, n.iter, getattr(n.target, "lineno", 0))
                 elif isinstance(n, (ast.With, ast.AsyncWith)):
                     for it in n.items:
                         if isinstance(it.optional_vars, ast.Name) and isinstance(it.context_expr, ast.Call):
                             name, recv = _call_parts(it.context_expr)
-                            if name and len(rec["assigns"]) < 600:
-                                rec["assigns"].append({"caller": caller, "var": it.optional_vars.id, "call": (recv + "." if recv else "") + name, "line": n.lineno})
+                            if name:
+                                put(var=it.optional_vars.id, call=(recv + "." if recv else "") + name, line=n.lineno)
 
     def refs(body_nodes, caller: str):
         """Functions handed over by name instead of being called: `Thread(target=work)`, `map(parse, rows)`, `handlers = [on_save]`."""
@@ -336,7 +444,7 @@ def parse_python(path: str, src: str) -> tuple[dict, list[dict]]:
                             rec["tables"].append({"name": n.args[0].value, "mode": mode,
                                                   "caller": caller, "line": n.lineno})
                 elif isinstance(n, ast.Constant) and isinstance(n.value, str) and SQL_START.match(n.value) \
-                        and len(n.value) > 15:
+                        and len(n.value) > 15 and id(n) not in docstrings:
                     for tname, mode in sql_tables(n.value):
                         rec["tables"].append({"name": tname, "mode": mode, "caller": caller, "line": n.lineno})
                     if len(rec["sql"]) < MAX_SQL_STMTS and len(n.value) <= MAX_SQL_LEN:
@@ -418,17 +526,18 @@ def parse_sql_file(src: str) -> dict:
 
 # ---------- driver ----------
 def index_repo(root: str | Path, name: str | None = None, write: bool = True, scip: bool | list | None = None,
-               graphify: bool | Path | str | None = None, accuracy: str | None = None) -> dict:
-    """Index under a per-repo lock, so two indexing runs (watcher, UI, CLI) never interleave their writes."""
+               graphify: bool | Path | str | None = None, accuracy: str | None = None, progress=None) -> dict:
+    """Index under a per-repo lock, so two indexing runs (watcher, UI, CLI) never interleave their writes.
+    `progress(stage, done, total)` is called as the work moves on (the UI shows it); it must not raise."""
     if not write:
-        return _index_repo(root, name, write, scip, graphify, accuracy)
+        return _index_repo(root, name, write, scip, graphify, accuracy, progress)
     from .paths import repo_lock
     with repo_lock(Path(root).resolve()):
-        return _index_repo(root, name, write, scip, graphify, accuracy)
+        return _index_repo(root, name, write, scip, graphify, accuracy, progress)
 
 
 def _index_repo(root: str | Path, name: str | None = None, write: bool = True, scip: bool | list | None = None,
-                graphify: bool | Path | str | None = None, accuracy: str | None = None) -> dict:
+                graphify: bool | Path | str | None = None, accuracy: str | None = None, progress=None) -> dict:
     """Accuracy is not optional. By default (accuracy "strict", or DEVMEM_ACCURACY unset) SCIP type-resolved edges and the Graphify
     cross-check run whenever files they have not seen changed (cached per file hash, so unchanged repos re-index instantly), and
     a missing/failed tool or parser raises AccuracyError. accuracy="fast" skips them and records that in stats.
@@ -446,10 +555,21 @@ def _index_repo(root: str | Path, name: str | None = None, write: bool = True, s
     for s in prev.get("symbols", []):
         prev_syms.setdefault(s["file"], []).append(s)
 
+    def step(stage: str, done: int = 0, total: int = 0):
+        if progress is not None:
+            try:
+                progress(stage, done, total)
+            except Exception:
+                pass
+
     idx = new_index(name or root.name, git_head(root))
     stats = {"parsed": 0, "reused": 0}
     js_ok = jsparse.available()
-    for rel in list_files(root):
+    step("listing files")
+    all_files = list_files(root)
+    for n, rel in enumerate(all_files):
+        if n % 25 == 0:
+            step("reading files", n, len(all_files))
         fp = root / rel
         try:
             if fp.stat().st_size > MAX_FILE_BYTES:
@@ -492,12 +612,14 @@ def _index_repo(root: str | Path, name: str | None = None, write: bool = True, s
         idx["symbols"].extend(syms)
         stats["parsed"] += 1
 
+    step("linking calls")
     idx["edges"] = graph.build_edges(idx)
     present = {f["lang"] for f in idx["files"].values()}
     if isinstance(scip, list):
         scip_mod.build_cache(root, idx, [Path(f) for f in scip])
     elif scip is True or (scip is None and strict and scip_mod.applicable(root, idx)
                           and stale_files(root, scip_mod.CACHE, idx, scip_mod.applicable(root, idx))):
+        step("resolving types (SCIP)")
         files, msgs = scip_mod.run_indexer(root, idx)
         if files:
             scip_mod.build_cache(root, idx, files)
@@ -509,6 +631,7 @@ def _index_repo(root: str | Path, name: str | None = None, write: bool = True, s
         graphify_mod.build_cache(root, idx, Path(graphify))
     elif graphify is True or (graphify is None and strict and present & graphify_mod.CODE_LANGS
                               and stale_files(root, graphify_mod.CACHE, idx, graphify_mod.CODE_LANGS)):
+        step("cross-checking calls (Graphify)")
         gf, msg = graphify_mod.run_graphify(root)
         if gf:
             graphify_mod.build_cache(root, idx, gf)
@@ -526,6 +649,7 @@ def _index_repo(root: str | Path, name: str | None = None, write: bool = True, s
     stats["accuracy"] = "full" if strict else "fast"
     idx["stats"] = stats
     if write:
+        step("writing the index")
         p.parent.mkdir(parents=True, exist_ok=True)
         atomic_write(p, json.dumps(idx, indent=1, sort_keys=True))    # readers never see a half-written index
         write_db(Index(idx, root))

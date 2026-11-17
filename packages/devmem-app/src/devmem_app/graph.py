@@ -167,6 +167,10 @@ def build_edges(idx: dict) -> list[dict]:
                         hit = by_file.get(f, {}).get(rest)
                         if hit:
                             return hit
+            if "." not in rest:                       # `Store.default`: a method (often an alternative constructor) of a class
+                owner = resolve_ref(path, head)
+                if owner and owner["kind"] == "class":
+                    return method_of(owner, rest)
             return None
         loc = by_file.get(path, {}).get(text)
         if loc and loc["kind"] in ("class", "function"):
@@ -196,14 +200,46 @@ def build_edges(idx: dict) -> list[dict]:
 
     def type_of(path: str, ref: str, depth: int = 0) -> dict | None:
         """The class a constructor call or a function call written as `ref` produces."""
-        t = resolve_ref(path, ref)
+        return produced(resolve_ref(path, ref), depth)
+
+    def produced(t: dict | None, depth: int = 0) -> dict | None:
+        """The class you hold after calling `t`: the class itself, or what a function or method is declared to return."""
         if t is None or depth > 2:
             return None
         if t["kind"] == "class":
             return t
         if t.get("returns"):
+            if t["kind"] == "method" and t["returns"] in ("cls", "Self", "self", "typing.Self", t["qualname"].split(".")[0]):
+                owner = by_file.get(t["file"], {}).get(t["qualname"].rsplit(".", 1)[0])       # `return cls(...)`, `-> Self`
+                return owner if owner and owner["kind"] == "class" else None
             return type_of(t["file"], t["returns"], depth + 1)
         return None
+
+    children: dict[str, list[dict]] = {}
+
+    def in_subclasses(cls: dict, name: str) -> list[dict]:
+        """`name` as defined by classes that inherit from `cls`: a receiver declared as the base class (then narrowed with
+        isinstance, or holding any implementation) calls one of these."""
+        if not children:
+            children[""] = []
+            for c in idx["symbols"]:
+                if c["kind"] == "class":
+                    for b in c.get("bases", []):
+                        bc = base_class(c, b)
+                        if bc:
+                            children.setdefault(bc["id"], []).append(c)
+        out, seen, queue = [], {cls["id"]}, [cls]
+        while queue and len(seen) < 200:
+            for sub in children.get(queue.pop(0)["id"], []):
+                if sub["id"] in seen:
+                    continue
+                seen.add(sub["id"])
+                m = by_file.get(sub["file"], {}).get(f"{sub['qualname']}.{name}")
+                if m:
+                    out.append(m)
+                else:
+                    queue.append(sub)             # not defined here: its own subclasses may define it
+        return out
 
     def method_of(cls: dict, name: str, depth: int = 0) -> dict | None:
         """`name` on `cls`, or inherited from its bases (first base first)."""
@@ -218,35 +254,139 @@ def build_edges(idx: dict) -> list[dict]:
                     return m
         return None
 
-    var_types: dict[tuple[str, str], dict[str, dict | None]] = {}
-
     EXTERNAL = {"id": "<external>"}       # a value whose class lives outside the repo
 
-    def typed(path: str, a: dict):
-        ref = a.get("type") or a.get("call") or ""
+    def ref_class(path: str, ref: str):
         t = type_of(path, ref)
-        return t if t is not None else (EXTERNAL if external(path, ref) else None)
+        return t if t is not None else (EXTERNAL if ref and external(path, ref) else None)
 
-    def var_table(path: str, caller: str) -> dict:
-        """var -> class (or EXTERNAL, or None = unknown) for one function, then the module's globals as a fallback."""
-        key = (path, caller)
-        if key not in var_types:
-            vt: dict = {}
-            fn = by_file.get(path, {}).get(caller)
-            for v, ann in ((fn or {}).get("params") or {}).items():
-                vt[v] = type_of(path, ann) or (EXTERNAL if external(path, ann) else None)
-            for a in sorted((x for x in files.get(path, {}).get("assigns", []) if x["caller"] == caller), key=lambda x: x["line"]):
-                t = typed(path, a)
-                if a["var"] in vt and vt[a["var"]] is not None and t is not None and vt[a["var"]]["id"] != t["id"]:
-                    vt[a["var"]] = None              # assigned two different classes: unknown
-                elif a["var"] not in vt:
-                    vt[a["var"]] = t
-            var_types[key] = vt
-        return var_types[key]
+    MISSING = {"id": "<never assigned>"}
+    assign_idx: dict[str, tuple[dict, dict]] = {}
 
-    def receiver_class(path: str, caller: str, recv: str) -> tuple[dict | None, bool]:
-        """(class, known?) for the receiver expression of a call. known is False when nothing can be said; (None, True) means
-        the receiver is a builtin or library object, so no method in the repo can be the target."""
+    def assigns_of(path: str) -> tuple[dict, dict]:
+        """({function: {var: [assignments, top to bottom]}}, {(class, "self.x"): [assignments]}) for one file."""
+        if path not in assign_idx:
+            by_caller: dict = {}
+            by_attr: dict = {}
+            for a in sorted(files.get(path, {}).get("assigns", []), key=lambda x: x["line"]):
+                if a["var"].startswith("self."):
+                    by_attr.setdefault((a["caller"].split(".")[0], a["var"]), []).append(a)
+                else:
+                    by_caller.setdefault(a["caller"], {}).setdefault(a["var"], []).append(a)
+            assign_idx[path] = (by_caller, by_attr)
+        return assign_idx[path]
+
+    def agreed(types: list):
+        """One class when every assignment that says something says the same; None when they disagree or none is known."""
+        found = None
+        for t in types:
+            if t is None:
+                continue
+            if found is not None and found["id"] != t["id"]:
+                return None
+            found = t
+        return found
+
+    def self_attr(path: str, cls_name: str, attr: str, what: str = "type", depth: int = 0):
+        """The class held by `self.x` (what="type"), or by its elements ("elem") / mapping values ("val"), from the
+        assignments to it in the class's methods: `self.x = Foo()`, `self.x = param`, `self.x: Foo | None = None`."""
+        if depth > 12:
+            return None
+        out = []
+        for a in assigns_of(path)[1].get((cls_name, attr), []):
+            if what == "type":
+                out.append(typed(path, a, depth + 1))
+            elif a.get(what):
+                out.append(ref_class(path, a[what]))
+            elif a.get("from"):
+                out.append(part_of(path, a["caller"], a["from"], what, a["line"], depth + 1))
+        return agreed(out)
+
+    def window(path: str, caller: str, var: str, line: int) -> list[dict]:
+        """The assignments to `var` that decide what it holds at `line`: the last one above it, plus, while that one sits in an
+        if / loop / try, the ones before it back to the last unconditional one. Used above its first assignment (a loop): that one."""
+        hist = assigns_of(path)[0].get(caller, {}).get(var) or []
+        prev = [a for a in hist if a["line"] < line]
+        if not prev:
+            return [a for a in hist[:1] if a["line"] != line]
+        out = []
+        for a in reversed(prev):
+            out.append(a)
+            if not a.get("cond"):
+                break
+        return out
+
+    def var_at(path: str, caller: str, var: str, line: int, depth: int = 0):
+        """What the local `var` holds at `line` of `caller`: a class, EXTERNAL, None (unknown) or MISSING (not a local here)."""
+        if depth > 12:
+            return None
+        win = window(path, caller, var, line)
+        params = (by_file.get(path, {}).get(caller) or {}).get("params") or {}
+        if not win:
+            return ref_class(path, params[var]) if var in params else MISSING
+        types = [typed(path, a, depth + 1) for a in win]
+        if win[-1].get("cond") and var in params:         # only conditional assignments: the parameter's own class may still be there
+            types.append(ref_class(path, params[var]))
+        return None if any(t is None for t in types) else agreed(types)
+
+    def part_of(path: str, caller: str, name: str, what: str, line: int, depth: int = 0):
+        """Class of the elements (what="elem") or mapping values (what="val") of the variable `name` at `line` of `caller`."""
+        if depth > 12:
+            return None
+        if name.startswith("self."):
+            return self_attr(path, caller.split(".")[0], name, what, depth + 1) if "." in caller else None
+        win = window(path, caller, name, line)
+        if not win:
+            ref = ((by_file.get(path, {}).get(caller) or {}).get("elems" if what == "elem" else "vals") or {}).get(name)
+            return ref_class(path, ref) if ref else None
+        if len(win) != 1:
+            return None
+        if win[0].get(what):
+            return ref_class(path, win[0][what])
+        return part_of(path, caller, win[0]["from"], what, win[0]["line"], depth + 1) if win[0].get("from") else None
+
+    def holder(path: str, caller: str, recv: str, line: int, depth: int = 0):
+        """The class of a receiver written as `self`, `self.x` or a variable name; None when it cannot be told."""
+        cls_name = caller.split(".")[0] if "." in caller else None
+        if recv in ("self", "cls") and cls_name:              # in a plain function `self` is an ordinary (often annotated) parameter
+            c = by_file.get(path, {}).get(cls_name)
+            return c if c and c["kind"] == "class" else None
+        if recv.startswith("self.") and recv.count(".") == 1:
+            return self_attr(path, cls_name, recv, "type", depth + 1) if cls_name else None
+        if recv.isidentifier():
+            t = var_at(path, caller, recv, line, depth + 1)
+            if t is MISSING and caller != "<module>":
+                t = var_at(path, "<module>", recv, 10 ** 9, depth + 1)      # a module-level object (a compiled regex, a client)
+            return None if t is MISSING else t
+        return None
+
+    def typed(path: str, a: dict, depth: int = 0):
+        """What one recorded assignment says its variable holds: a class, EXTERNAL, or None (unknown)."""
+        if a.get("type"):
+            return ref_class(path, a["type"])
+        if depth > 12:
+            return None
+        if a.get("call"):
+            t = ref_class(path, a["call"])
+            if t is None and "." in a["call"]:                # x = y.method(): what the method of y's class returns
+                recv, meth = a["call"].rsplit(".", 1)
+                owner = holder(path, a["caller"], recv, a["line"], depth + 1)
+                if owner is not None and owner is not EXTERNAL:
+                    m = method_of(owner, meth)
+                    if m is not None and m.get("returns"):
+                        t = produced(m, 1)
+                        t = t if t is not None else (EXTERNAL if external(m["file"], m["returns"]) else None)
+            return t
+        if a.get("from"):                       # x = y, self.x = param
+            return holder(path, a["caller"], a["from"], a["line"], depth + 1)
+        if a.get("of"):                         # for x in items / x = items[0] / for x in d.values()
+            whats = {"iter": ("elem",), "values": ("val",), "item": ("elem", "val")}[a.get("via", "iter")]
+            return next((t for t in (part_of(path, a["caller"], a["of"], w, a["line"], depth + 1) for w in whats) if t is not None), None)
+        return None
+
+    def receiver_class(path: str, caller: str, recv: str, line: int = 10 ** 9) -> tuple[dict | None, bool]:
+        """(class, known?) for the receiver expression of a call at `line`. known is False when nothing can be said; (None, True)
+        means the receiver is a builtin or library object, so no method in the repo can be the target."""
         local = by_file.get(path, {})
         cls_name = caller.split(".")[0] if "." in caller else None
         if recv in ("self", "cls") and cls_name:
@@ -260,24 +400,11 @@ def build_edges(idx: dict) -> list[dict]:
             if t is not None:
                 return t, True
             return (None, True) if external(path, ref) else (None, False)
-        if recv.startswith("self.") and recv.count(".") == 1 and cls_name:
-            found = None
-            for a in files.get(path, {}).get("assigns", []):
-                if a["var"] == recv and a["caller"].startswith(cls_name + "."):
-                    t = typed(path, a)
-                    if t is None or (found is not None and found["id"] != t["id"]):
-                        return None, False           # unknown, or two different classes over the class's methods
-                    found = t
-            if found is not None:
-                return (None, True) if found is EXTERNAL else (found, True)
-            return None, False
-        if recv.isidentifier():
-            t = var_table(path, caller).get(recv)
-            if t is None and recv not in var_table(path, caller):
-                t = var_table(path, "<module>").get(recv)     # a module-level object (a compiled regex, a client)
+        if (recv.startswith("self.") and recv.count(".") == 1 and cls_name) or recv.isidentifier():
+            t = holder(path, caller, recv, line)
             if t is EXTERNAL:
                 return None, True
-            return (t, t is not None)
+            return t, t is not None
         return None, False
 
     for path, rec in files.items():
@@ -333,7 +460,7 @@ def build_edges(idx: dict) -> list[dict]:
                     cands = [s for s in by_name.get(name, []) if s["kind"] != "method"]
             else:
                 head = recv.split(".")[0]
-                cls, known = receiver_class(path, c["caller"], recv)
+                cls, known = receiver_class(path, c["caller"], recv, c.get("line") or 10 ** 9)
                 if known and cls is None:
                     continue                  # a builtin or library object: a same-named method in the repo is not the target
                 if known and cls.get("id") == "<super>":
@@ -349,7 +476,12 @@ def build_edges(idx: dict) -> list[dict]:
                             add(src_id, m["id"], "tests" if by_id[src_id]["is_test"] else "calls", CONF_STRUCTURAL)
                         continue
                     if recv not in ("self", "cls"):
-                        continue          # the class is known and has no such method (a library base class, a typo): no guess
+                        subs = in_subclasses(cls, name)       # declared as the base class, defined by the implementations
+                        if 0 < len(subs) <= MAX_AMBIGUOUS:
+                            for d in subs:
+                                if d["id"] != src_id:
+                                    add(src_id, d["id"], "tests" if by_id[src_id]["is_test"] else "calls", CONF_STRUCTURAL if len(subs) == 1 else CONF_AMBIGUOUS)
+                        continue          # otherwise the class is known and has no such method (a library base class, a typo): no guess
                 if recv in ("self", "cls") and "." in c["caller"]:
                     cls = c["caller"].split(".")[0]
                     q = f"{cls}.{name}"

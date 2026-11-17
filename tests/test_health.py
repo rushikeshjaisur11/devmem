@@ -170,6 +170,27 @@ def test_sonar_api_connection_mapping_and_sync(env, tmp_path):
     h = api.get("/api/repos/py_app/health").json()
     assert h["available"] and h["summary"]["total"] == 4 and h["sonar"]["project"] == P and h["local"] is None
     assert h["sonar_setup"]["configured"] and h["sonar_setup"]["project"]["key"] == P and h["findings"][0]["symbol"] == "retry"
+    assert all(h["explain"][f"{f['source']}:{f['code']}"]["what"] for f in h["findings"])           # each finding comes with what it means
     assert (tmp_path / "home/settings.json").stat().st_mode & 0o077 == 0
     s = api.put("/api/integrations/sonar", json={"url": "", "clear_token": True}, headers=H).json()
     assert not s["configured"] and not s["has_token"]
+
+
+def test_every_finding_has_a_plain_description_of_the_problem_and_the_fix():
+    """Code health and Modernize show what an issue means, not only the tool's one-line message: the exact rule when it is
+    known, else its family, else the tool, else the category (SonarQube rules cannot be listed offline)."""
+    from devmem_app import explain, modernize
+    assert "never used" in explain.finding("ruff", "F401")["what"] and explain.finding("ruff", "F401")["fix"].startswith("Delete the import")
+    assert "SQL injection" in explain.finding("bandit", "B608")["what"]
+    assert "20 independent paths" in explain.finding("radon", "CCD")["what"] and "10 independent paths" in explain.finding("radon", "CCC")["what"]
+    assert explain.finding("ruff", "E203")["fix"] == "Run the formatter."                                   # family: E2xx whitespace
+    assert explain.finding("ruff", "PLE0101") is explain.finding("ruff", "PLE9999") and "error" in explain.finding("ruff", "PLE0101")["what"]
+    assert explain.finding("eslint", "some-plugin/no-unused-vars") is explain.finding("eslint", "no-unused-vars")
+    assert explain.finding("eslint", "made-up-rule") is explain.TOOLS["eslint"]                              # tool fallback
+    assert explain.finding("sonar", "python:S1481", "bug") is explain.CATEGORIES["bug"]                      # category fallback
+    assert explain.finding("unknown-tool", "X1") is None
+    for tool, rules in explain.RULES.items():
+        for code, d in rules.items():
+            assert len(d["what"]) > 15 and d["fix"], (tool, code)
+    assert {r["id"] for r in modernize.RULES} <= set(explain.MODERNIZE), "every Modernize pattern says why to replace it"
+    assert all(explain.modernize(k) for k in ("docs-match", "new-release", "ai-release")) and explain.modernize("nope") == ""

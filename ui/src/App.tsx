@@ -94,6 +94,60 @@ function SignIn({ onDone }: { onDone: () => void }) {
   );
 }
 
+/** The repo the page shows: a button with its name and branch that opens a searchable list. Each row says how big the repo
+ *  is and whether its index is current, so the choice is informed; arrow keys, Enter and Escape work. */
+function RepoSwitcher({ repo, repos, onPick }: { repo: string; repos: any[]; onPick: (v: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const [i, setI] = useState(0);
+  const box = useRef<HTMLDivElement>(null);
+  const cur = repos.find((r) => r.name === repo);
+  const list = repos.filter((r) => r.name.toLowerCase().includes(q.trim().toLowerCase()));
+  useEffect(() => {
+    if (!open) return;
+    setQ(""); setI(Math.max(0, repos.findIndex((r) => r.name === repo)));
+    const out = (e: MouseEvent) => { if (!box.current?.contains(e.target as Node)) setOpen(false); };
+    window.addEventListener("mousedown", out);
+    return () => window.removeEventListener("mousedown", out);
+  }, [open]); // eslint-disable-line
+  const pick = (r: any) => { if (r) { onPick(r.name); setOpen(false); } };
+  const state = (r: any) => !r.indexed ? ["off", "not indexed"] : r.stale ? ["warn", "behind HEAD"] : ["good", "up to date"];
+  const keys = (e: React.KeyboardEvent) => {
+    if (e.key === "Escape") setOpen(false);
+    else if (e.key === "ArrowDown") { e.preventDefault(); setI(Math.min(i + 1, list.length - 1)); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setI(Math.max(i - 1, 0)); }
+    else if (e.key === "Enter") { e.preventDefault(); pick(list[i]); }
+  };
+  return (
+    <div className="rsw" ref={box}>
+      <button className={`rsw-btn${open ? " open" : ""}`} aria-haspopup="listbox" aria-expanded={open} aria-label={`Repository: ${repo}. Change repository`}
+        title="The repo this page shows. It stays the same as you move between pages." onClick={() => setOpen((o) => !o)}
+        onKeyDown={(e) => { if (!open && (e.key === "ArrowDown" || e.key === "ArrowUp")) { e.preventDefault(); setOpen(true); } }}>
+        <span className="rsw-ico"><Icon name="folder" /></span>
+        <span className="rsw-name">{repo || "Choose a repo"}</span>
+        {cur?.branch && <span className="rsw-branch"><Icon name="git" />{cur.branch}</span>}
+        <svg className="rsw-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m8 10 4-4 4 4M8 14l4 4 4-4" /></svg>
+      </button>
+      {open && (
+        <div className="rsw-pop">
+          {repos.length > 5 && <div className="rsw-find"><Icon name="search" /><input autoFocus value={q} placeholder="Find a repo" aria-label="Find a repo" onChange={(e) => { setQ(e.target.value); setI(0); }} onKeyDown={keys} /></div>}
+          <ul role="listbox" aria-label="Repositories" tabIndex={repos.length > 5 ? -1 : 0} ref={(el) => { if (el && repos.length <= 5) el.focus(); }} onKeyDown={keys}>
+            {list.map((r, n) => (
+              <li key={r.name} role="option" aria-selected={r.name === repo} className={`${n === i ? "on" : ""}${r.name === repo ? " cur" : ""}`} onMouseEnter={() => setI(n)} onClick={() => pick(r)}>
+                <i className={`rsw-dot ${state(r)[0]}`} title={state(r)[1]} />
+                <span className="rsw-row"><b>{r.name}</b><small>{[r.branch, r.symbols != null ? `${r.symbols.toLocaleString()} symbols` : "", state(r)[1]].filter(Boolean).join(" · ")}</small></span>
+                {r.name === repo && <Icon name="check" />}
+              </li>
+            ))}
+            {!list.length && <li className="none">No repo called “{q}”.</li>}
+          </ul>
+          <a className="rsw-foot" href="#/repos" onClick={() => setOpen(false)}><Icon name="plus" />Add or manage repos</a>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Ctrl/Cmd+K: jump to any page, or check impact in a repo. */
 function Palette({ onClose }: { onClose: () => void }) {
   const repos = useRepos();
@@ -145,6 +199,7 @@ export default function App() {
   useEffect(() => { if (!edMenu) return; const f = () => setEdMenu(false); window.addEventListener("click", f); return () => window.removeEventListener("click", f); }, [edMenu]);
   useEffect(() => { if (cfg.data) setLocked(!cfg.data.signed_in); }, [cfg.data]);
   useEffect(() => { const f = () => setLocked(true); window.addEventListener("devmem-signin", f); return () => window.removeEventListener("devmem-signin", f); }, []);
+  useEffect(() => { const f = () => repos.reload(); window.addEventListener("devmem-repos", f); return () => window.removeEventListener("devmem-repos", f); }, [repos.reload]);   // the Repos page added or removed one
   useEffect(() => setMenu(false), [page, params.repo]);
   const [editor, setEditor] = useState(getEditor);
   const pickEditor = (v: string) => { try { localStorage.setItem("devmem-editor", v); } catch { /* private mode */ } setEditor(v); };
@@ -199,12 +254,7 @@ export default function App() {
         <span className="crumb"><b>{LABEL[page] || "Overview"}</b></span>
         {!REPO_PAGES.has(page) && <span className="topbar-lead" />}
         {REPO_PAGES.has(page) && indexed.length > 0 && (
-          <label className="repo-switch" title="The repo this page shows. It stays the same as you move between pages.">
-            <Icon name="folder" />
-            <select value={repo} onChange={(e) => setRepo(e.target.value)} aria-label="Repository">
-              {(page === "memory" ? repos.data || [] : indexed).map((r) => <option key={r.name} value={r.name}>{r.name}</option>)}
-            </select>
-          </label>
+          <RepoSwitcher repo={repo} repos={page === "memory" ? repos.data || [] : indexed} onPick={setRepo} />
         )}
         <button className="kbtn" onClick={() => setPalette(true)} aria-label="Go to a page or repo">{ic('<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>')}<span>Go to a page or repo</span><kbd>{mac ? "⌘" : "Ctrl"} K</kbd></button>
         <span className="spacer" />
