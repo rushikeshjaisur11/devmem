@@ -359,6 +359,35 @@ def build_edges(idx: dict) -> list[dict]:
             if t is MISSING and caller != "<module>":
                 t = var_at(path, "<module>", recv, 10 ** 9, depth + 1)      # a module-level object (a compiled regex, a client)
             return None if t is MISSING else t
+        parts = recv.split(".")
+        if len(parts) > 1 and all(p.isidentifier() for p in parts) and depth < 12:
+            # `self.console.line()`, `response.headers.get()`: the head's class, then each attribute's class in turn
+            t = holder(path, caller, parts[0] if parts[0] not in ("self", "cls") else ".".join(parts[:2]), line, depth + 1)
+            for a in parts[(1 if parts[0] not in ("self", "cls") else 2):]:
+                t = attr_class(t, a, depth + 1)
+                if t is None:
+                    return None
+            return t
+        return None
+
+    def attr_class(cls, attr: str, depth: int = 0):
+        """The class held by attribute `attr` of an instance of `cls`: from assignments to `self.attr` in its methods, an
+        annotation in its body, or a property declaring what it returns; looked up through the base classes too."""
+        if cls is None or cls is EXTERNAL or str(cls.get("id", "")).startswith("<") or depth > 12:
+            return None                    # an attribute of a library object may hold anything, even one of ours: unknown
+        c, seen = cls, set()
+        while c is not None and c["id"] not in seen and len(seen) < 6:
+            seen.add(c["id"])
+            t = self_attr(c["file"], c["qualname"], f"self.{attr}", "type", depth + 1)
+            if t is not None:
+                return t
+            m = by_file.get(c["file"], {}).get(f"{c['qualname']}.{attr}")
+            if m is not None:
+                if m["kind"] == "method" and m.get("returns") and any(d.split(".")[-1] in ("property", "cached_property") for d in m.get("decorators", [])):
+                    t = produced(m, 1)
+                    return t if t is not None else (EXTERNAL if external(m["file"], m["returns"]) else None)
+                return None
+            c = next((bc for b in c.get("bases", []) if (bc := base_class(c, b))), None)
         return None
 
     def typed(path: str, a: dict, depth: int = 0):
@@ -401,7 +430,8 @@ def build_edges(idx: dict) -> list[dict]:
             if t is not None:
                 return t, True
             return (None, True) if external(path, ref) else (None, False)
-        if (recv.startswith("self.") and recv.count(".") == 1 and cls_name) or recv.isidentifier():
+        if (recv.startswith("self.") and recv.count(".") == 1 and cls_name) or recv.isidentifier() or \
+                ("." in recv and all(p.isidentifier() for p in recv.split("."))):
             t = holder(path, caller, recv, line)
             if t is EXTERNAL:
                 return None, True

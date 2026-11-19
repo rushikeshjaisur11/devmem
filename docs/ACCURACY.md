@@ -113,6 +113,34 @@ Graphify's own output (graph.json, its cache and manifest) is written to `~/.dev
 left in a repo by an older devmem can be deleted. When Graphify refuses to overwrite a graph that shrank (files deleted),
 devmem rebuilds it with `--force` instead of reading the stale graph.
 
+## Final check: eight codebases, and recall on real call sites (2026-11-19)
+
+The final index (structural, then the Graphify merge), scored against scip-python / scip-typescript, library code only:
+
+| Codebase | Precision | Recall (all SCIP references) | Recall (call sites only) |
+| --- | --- | --- | --- |
+| devmem_app | 0.996 | 0.949 | |
+| requests 2.32.3 | 0.969 | 0.909 | |
+| click 8.1.7 | 0.982 | 0.602 | |
+| starlette 0.41.3 | 0.979 | 0.526 | 0.947 |
+| httpx 0.28.1 | 0.989 | 0.503 | 0.964 |
+| rich 13.9.4 | 0.982 | 0.511 | 0.964 |
+| ky (TypeScript) | 0.917 | 0.790 | |
+| zustand (TypeScript) | 1.000 | 0.509 | |
+
+"Recall (all SCIP references)" is low on starlette, httpx and rich because SCIP also counts type annotations,
+`isinstance` checks, `except X` and names passed around; devmem does not model those as call edges. Counting only the
+references written as a call (`name(` on that line), devmem finds 95-96% of them. On ky the "wrong" edges are
+`new TimeoutError(...)`: scip-typescript files them under the constructor and devmem under the class, so the edge is right.
+
+Receiver classes are now also read from attribute chains (`self.console.line()`, `response.headers.get()`, looked up
+through `self.x = ...` in the class, an annotation in the class body, or a property's return type, base classes
+included) and from conditional values (`a if c else b`, `a or b`: one class when every side agrees). That raised
+call-site recall from 0.958 / 0.944 / 0.955 to 0.964 / 0.947 / 0.964 (httpx / starlette / rich) with no loss of precision.
+
+What the remaining real misses are: values produced by a generator's `yield`, loop variables over containers whose
+element type is not declared, and receivers that are function results without a declared return type.
+
 ## Checks that run on every change
 
 - `fixtures/accuracy_py` is built around the traps above (the same method name on three classes, `dict.items()` beside a

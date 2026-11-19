@@ -153,3 +153,40 @@ def test_python_calls_do_not_resolve_to_names_the_file_cannot_see(tmp_path):
     assert read.get("pkg/client.py#Client.get") == "ambiguous"             # `m` is unknown: a guess at most
     assert read.get("pkg/star.py#starred") == "ambiguous"                  # reachable through the star import
     assert out("pkg/use.py#typed") == {"pkg/client.py#Client": "structural", "pkg/client.py#Client.get": "structural"}
+
+
+def test_receivers_reached_through_attributes_and_conditional_assignments(tmp_path):
+    """The calls scip-python found that devmem missed on httpx, starlette and rich were mostly receivers reached through an
+    attribute (`self.console.line()`, `response.headers.get()`), a class-body annotation, a property, or a value picked by
+    `a if c else b` / `a or b`. Each resolves to one class when every side agrees, and stays unknown when they disagree."""
+    root = tmp_path / "r"
+    (root / "app").mkdir(parents=True)
+    (root / "app/__init__.py").write_text("")
+    (root / "app/models.py").write_text(
+        "class Headers:\n    def get_list(self, k):\n        return [k]\n\n\n"
+        "class Console:\n    def line(self):\n        return 1\n\n\n"
+        "class Other:\n    def line(self):\n        return 2\n\n\n"
+        "def get_console() -> Console:\n    return Console()\n\n\n"
+        "class Response:\n"
+        "    status: Headers\n"
+        "    def __init__(self):\n        self.headers = Headers()\n\n"
+        "    @property\n    def console(self) -> Console:\n        return Console()\n")
+    (root / "app/use.py").write_text(
+        "from app.models import Console, Other, Response, get_console\n\n\n"
+        "def auth(response: Response):\n    return response.headers.get_list('a')\n\n\n"
+        "def status(response: Response):\n    return response.status.get_list('a')\n\n\n"
+        "def prop(response: Response):\n    return response.console.line()\n\n\n"
+        "class Live:\n"
+        "    def __init__(self, console: Console | None = None, flag=False):\n"
+        "        self.console = console if console is not None else get_console()\n"
+        "        self.either = Console() if flag else Other()\n\n"
+        "    def stop(self):\n        self.console.line()\n\n"
+        "    def mixed(self):\n        self.either.line()\n")
+    idx = indexer.index_repo(root, "r", accuracy="fast")
+    edges = {(e["src"], e["dst"]): e["conf"] for e in idx["edges"] if e["type"] == "calls" and "." in e["dst"].split("#")[1]}
+    out = lambda src: {d: c for (s, d), c in edges.items() if s == src}
+    assert out("app/use.py#auth") == {"app/models.py#Headers.get_list": "structural"}
+    assert out("app/use.py#status") == {"app/models.py#Headers.get_list": "structural"}      # class-body annotation
+    assert out("app/use.py#prop") == {"app/models.py#Console.line": "structural"}            # property return type
+    assert out("app/use.py#Live.stop") == {"app/models.py#Console.line": "structural"}       # both sides are a Console
+    assert all(c == "ambiguous" for c in out("app/use.py#Live.mixed").values())             # Console or Other: a guess

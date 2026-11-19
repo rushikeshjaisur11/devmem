@@ -30,7 +30,8 @@ MAX_FILE_BYTES = 1_000_000
 MAX_SQL_STMTS, MAX_SQL_LEN = 60, 20_000
 COLUMN_FUNCS = {"select", "withColumn", "col", "groupBy", "groupby", "orderBy", "sort", "drop", "withColumnRenamed",
                 "sum", "avg", "max", "min", "count", "countDistinct", "first", "collect_list", "agg", "join"}
-PARSER_VERSION = 11  # bump when per-file records gain fields or parsing changes (forces re-parse of cached files)
+MAX_ASSIGNS = 800
+PARSER_VERSION = 12  # bump when per-file records gain fields or parsing changes (forces re-parse of cached files)
 
 
 class AccuracyError(RuntimeError):
@@ -345,9 +346,9 @@ def parse_python(path: str, src: str) -> tuple[dict, list[dict]]:
                     branch.update(id(c) for c in ast.walk(n) if c is not n)
         here = [None]
 
-        def put(**a):
-            if len(rec["assigns"]) < 800:
-                rec["assigns"].append({"caller": caller, **a, **({"cond": True} if id(here[0]) in branch else {})})
+        def put(cond=False, **a):
+            if len(rec["assigns"]) < MAX_ASSIGNS:
+                rec["assigns"].append({"caller": caller, **a, **({"cond": True} if cond or id(here[0]) in branch else {})})
 
         def var_of(t) -> str | None:
             if isinstance(t, ast.Name):
@@ -360,6 +361,21 @@ def parse_python(path: str, src: str) -> tuple[dict, list[dict]]:
             """Record what `value` says about `var`; anything unreadable is recorded as unknown, so an earlier type is dropped."""
             if isinstance(value, ast.Await):
                 value = value.value
+            # `x = a if c else b`, `x = a or b`: each side is one thing x may hold (a None side says nothing); agreeing sides
+            # give x's class, disagreeing ones leave it unknown
+            sides = [value.body, value.orelse] if isinstance(value, ast.IfExp) else \
+                value.values if isinstance(value, ast.BoolOp) and isinstance(value.op, ast.Or) else None
+            if sides is not None:
+                sides = [v for v in sides if not (isinstance(v, ast.Constant) and v.value is None)]
+                if sides and all(isinstance(v, ast.Call) and _call_parts(v)[0] or var_of(v) for v in sides):
+                    for i, v in enumerate(sides):     # later sides are conditional, so a reader walking back takes them all
+                        if isinstance(v, ast.Call):
+                            name, recv = _call_parts(v)
+                            put(var=var, call=(recv + "." if recv else "") + name, line=line, cond=i > 0)
+                        else:
+                            put(var=var, **{"from": var_of(v)}, line=line, cond=i > 0)
+                    return None
+                return put(var=var, line=line)
             if isinstance(value, ast.Call):
                 name, recv = _call_parts(value)
                 if name:
@@ -481,6 +497,11 @@ def parse_python(path: str, src: str) -> tuple[dict, list[dict]]:
             cls_test = test_file and node.name.startswith("Test")
             add_symbol(node, node.name, "class", False)
             for m in node.body:
+                if isinstance(m, ast.AnnAssign) and isinstance(m.target, ast.Name):    # `headers: Headers` in the class body
+                    t, elem, val = _ann(m.annotation)
+                    if t and len(rec["assigns"]) < MAX_ASSIGNS:
+                        rec["assigns"].append({"caller": f"{node.name}.<body>", "var": f"self.{m.target.id}", "type": t, "line": m.lineno,
+                                               **({"elem": elem} if elem else {}), **({"val": val} if val else {})})
                 if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     q = f"{node.name}.{m.name}"
                     add_symbol(m, q, "method", cls_test and m.name.startswith("test"))
