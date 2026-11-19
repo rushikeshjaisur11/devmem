@@ -21,7 +21,8 @@ BUILTIN_METHODS = {"items", "values", "keys", "pop", "popitem", "setdefault", "u
                    "filter", "reduce", "forEach", "toString"}
 # Generic verbs (also on files, clients, loggers): the candidate must live in the caller's file or a file it imports.
 COMMON_METHODS = {"get", "send", "run", "start", "stop", "load", "dump", "dumps", "loads", "read", "write", "close", "open",
-                  "then", "catch", "json", "text"}
+                  "then", "catch", "json", "text",
+                  "search", "match", "fullmatch", "findall", "finditer", "sub", "group"}   # also every compiled regex
 
 
 def _module_files(files: dict, module: str) -> list[str]:
@@ -358,6 +359,35 @@ def build_edges(idx: dict) -> list[dict]:
             if t is MISSING and caller != "<module>":
                 t = var_at(path, "<module>", recv, 10 ** 9, depth + 1)      # a module-level object (a compiled regex, a client)
             return None if t is MISSING else t
+        parts = recv.split(".")
+        if len(parts) > 1 and all(p.isidentifier() for p in parts) and depth < 12:
+            # `self.console.line()`, `response.headers.get()`: the head's class, then each attribute's class in turn
+            t = holder(path, caller, parts[0] if parts[0] not in ("self", "cls") else ".".join(parts[:2]), line, depth + 1)
+            for a in parts[(1 if parts[0] not in ("self", "cls") else 2):]:
+                t = attr_class(t, a, depth + 1)
+                if t is None:
+                    return None
+            return t
+        return None
+
+    def attr_class(cls, attr: str, depth: int = 0):
+        """The class held by attribute `attr` of an instance of `cls`: from assignments to `self.attr` in its methods, an
+        annotation in its body, or a property declaring what it returns; looked up through the base classes too."""
+        if cls is None or cls is EXTERNAL or str(cls.get("id", "")).startswith("<") or depth > 12:
+            return None                    # an attribute of a library object may hold anything, even one of ours: unknown
+        c, seen = cls, set()
+        while c is not None and c["id"] not in seen and len(seen) < 6:
+            seen.add(c["id"])
+            t = self_attr(c["file"], c["qualname"], f"self.{attr}", "type", depth + 1)
+            if t is not None:
+                return t
+            m = by_file.get(c["file"], {}).get(f"{c['qualname']}.{attr}")
+            if m is not None:
+                if m["kind"] == "method" and m.get("returns") and any(d.split(".")[-1] in ("property", "cached_property") for d in m.get("decorators", [])):
+                    t = produced(m, 1)
+                    return t if t is not None else (EXTERNAL if external(m["file"], m["returns"]) else None)
+                return None
+            c = next((bc for b in c.get("bases", []) if (bc := base_class(c, b))), None)
         return None
 
     def typed(path: str, a: dict, depth: int = 0):
@@ -400,12 +430,24 @@ def build_edges(idx: dict) -> list[dict]:
             if t is not None:
                 return t, True
             return (None, True) if external(path, ref) else (None, False)
-        if (recv.startswith("self.") and recv.count(".") == 1 and cls_name) or recv.isidentifier():
+        if (recv.startswith("self.") and recv.count(".") == 1 and cls_name) or recv.isidentifier() or \
+                ("." in recv and all(p.isidentifier() for p in recv.split("."))):
             t = holder(path, caller, recv, line)
             if t is EXTERNAL:
                 return None, True
+            if t is None and recv.isidentifier() and not _assigned_or_param(path, caller, recv):
+                ref = resolve_ref(path, recv)           # `Store.default()`: an imported (or same-file) class used directly
+                if ref is not None and ref["kind"] == "class":
+                    return ref, True
+                if external(path, recv):                # `core_docs.search()`, `np.where()`: a module or name from a library
+                    return None, True
             return t, t is not None
         return None, False
+
+    def _assigned_or_param(path: str, caller: str, var: str) -> bool:
+        by_caller = assigns_of(path)[0]
+        params = (by_file.get(path, {}).get(caller) or {}).get("params") or {}
+        return var in params or var in by_caller.get(caller, {}) or var in by_caller.get("<module>", {})
 
     for path, rec in files.items():
         if rec.get("lang") in ("go", "java", "csharp", "kotlin", "rust"):
@@ -441,6 +483,7 @@ def build_edges(idx: dict) -> list[dict]:
                 mod_alias[i["alias"]] = f"{i['module']}.{i['name']}"
         local = by_file.get(path, {})
         near: set[str] | None = None
+        star = {f for i in imports if i["name"] == "*" for f in _module_files(files, i["module"])}
 
         for c in rec.get("calls", []):
             src_id = f"{path}#{c['caller']}"
@@ -449,6 +492,7 @@ def build_edges(idx: dict) -> list[dict]:
             name, recv = c["name"], c["recv"]
             cands: list[dict] = []
             conf = CONF_STRUCTURAL
+            guessed = False
             if recv is None:
                 if name in from_imp:
                     imp = from_imp[name]
@@ -456,8 +500,11 @@ def build_edges(idx: dict) -> list[dict]:
                         cands += [s for q, s in by_file.get(f, {}).items() if s["name"] == imp["name"] and "." not in q]
                 elif name in local and "." not in name:
                     cands = [local[name]]
-                else:
-                    cands = [s for s in by_name.get(name, []) if s["kind"] != "method"]
+                elif star:
+                    # Python looks a bare name up locally, in the module, then builtins: another file's function is reachable
+                    # only through an import. A star import is the one way in that does not name it.
+                    cands = [s for s in by_name.get(name, []) if s["kind"] != "method" and "." not in s["qualname"] and s["file"] in star]
+                    conf = CONF_AMBIGUOUS
             else:
                 head = recv.split(".")[0]
                 cls, known = receiver_class(path, c["caller"], recv, c.get("line") or 10 ** 9)
@@ -489,16 +536,18 @@ def build_edges(idx: dict) -> list[dict]:
                 if not cands and head in mod_alias:
                     for f in _module_files(files, mod_alias[head]):
                         cands += [s for q, s in by_file.get(f, {}).items() if s["name"] == name and "." not in q]
-                if not cands and head not in mod_alias:
-                    cands = [s for s in by_name.get(name, []) if s["kind"] == "method"]
-                elif not cands and head in from_imp:  # Class.method / imported_obj.method
-                    cands = [s for s in by_name.get(name, []) if s["kind"] == "method"]
+                if not cands and (head not in mod_alias or head in from_imp):
+                    # receiver of unknown class: matched by method name alone, among Python methods only
+                    cands = [s for s in by_name.get(name, []) if s["kind"] == "method" and files.get(s["file"], {}).get("lang") == "python"]
+                    guessed = True
                 if cands and name in BUILTIN_METHODS:
                     cands = []
                 elif cands and name in COMMON_METHODS:
                     if near is None:   # once per file, not once per call
                         near = _imported_files(files, path, imports)
                     cands = [s for s in cands if s["file"] in near]
+                    if guessed:        # `x.get()` with x unknown is far more often a dict, a response, a file than this class
+                        conf = CONF_AMBIGUOUS
             if not cands:
                 continue
             if len(cands) > 1:
@@ -538,6 +587,15 @@ def build_edges(idx: dict) -> list[dict]:
             for d in cands[:2]:
                 if d["id"] != src_id:
                     add(src_id, d["id"], "refs", CONF_STRUCTURAL)
+
+        # classes named without a call (annotations, isinstance, except, bare raise): a rename or removal breaks these
+        for t in rec.get("types", []):
+            src_id = f"{path}#{t['caller']}"
+            if src_id not in by_id:
+                continue
+            d = resolve_ref(path, t["name"])
+            if d is not None and d["kind"] == "class" and d["id"] != src_id and not src_id.startswith(d["id"] + "."):
+                add(src_id, d["id"], "uses", CONF_STRUCTURAL)
 
     for cls in idx["symbols"]:
         if cls["kind"] != "class" or not cls.get("bases"):

@@ -290,11 +290,22 @@ class Index:
                 if e["type"] == "tests":
                     tests.add(e["src"])
             measured.update((self.coverage.get("tests") or {}).get(sid, []))
+        # classes named without a call (type hints, isinstance, except): renaming or removing the target breaks these too
+        users = {e["src"] for t in targets for e in self.inc.get(t["id"], []) if e["type"] == "uses"} - seen
+        tests.update(u for u in users if (self.symbols.get(u) or {}).get("is_test"))
+        res["type_users"] = sorted(u for u in users if not (self.symbols.get(u) or {}).get("is_test"))
+        # a class's subclasses inherit what it defines: a change to it changes them
+        subs, queue = set(), [t["id"] for t in targets]
+        while queue and len(subs) < 200:                                 # their subclasses too
+            for e in self.inc.get(queue.pop(), []):
+                if e["type"] == "inherits" and e["src"] not in subs and e["src"] not in res["targets"]:
+                    subs.add(e["src"]); queue.append(e["src"])
+        res["subclasses"] = sorted(subs)
         res["tests"] = sorted(tests | measured)
         res["tests_measured"] = sorted(measured - tests)
         res["coverage"] = {t["id"]: (self.coverage.get("functions") or {}).get(t["id"]) for t in targets} if self.coverage else {}
         res["files"] = sorted({i.split("#")[0] for k in ("hop1", "hop2") for i in (x["id"] for x in res[k])}
-                              | {s["file"] for s in targets})
+                              | {i.split("#")[0] for i in res["type_users"] + res["subclasses"]} | {s["file"] for s in targets})
         res["cochange"] = self._cochange_for(res["files"])
         # inheritance: who overrides the target (their signatures must follow it), and whose callers reach it through a base class
         res["overridden_by"] = sorted({e["src"] for t in targets for e in self.inc.get(t["id"], []) if e["type"] == "overrides"})

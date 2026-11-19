@@ -179,7 +179,8 @@ always says where its selection came from.
 
 **What devmem cannot see, it says.** Answers read code as the file is now: a file edited since indexing is re-parsed (or the
 definition searched for) and the answer notes it; renamed or deleted code is refused instead of printing the wrong lines. `impact`
-follows inheritance (overrides, callers through a base class) and functions passed by name, and prints a `BLIND SPOT` line when a
+follows inheritance (overrides, callers through a base class, subclasses of a class), functions passed by name, and classes
+named without a call (type hints, `isinstance`, `except`), which a rename or removal breaks too, and prints a `BLIND SPOT` line when a
 decorator, an `__all__` export or the name used as text means a caller may be invisible.
 
 **How far to trust each index.** `devmem-app selfcheck <repo>` (or *Measure it* on the Overview) reports the share of call

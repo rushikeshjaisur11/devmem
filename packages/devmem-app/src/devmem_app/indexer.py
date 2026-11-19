@@ -30,7 +30,8 @@ MAX_FILE_BYTES = 1_000_000
 MAX_SQL_STMTS, MAX_SQL_LEN = 60, 20_000
 COLUMN_FUNCS = {"select", "withColumn", "col", "groupBy", "groupby", "orderBy", "sort", "drop", "withColumnRenamed",
                 "sum", "avg", "max", "min", "count", "countDistinct", "first", "collect_list", "agg", "join"}
-PARSER_VERSION = 11  # bump when per-file records gain fields or parsing changes (forces re-parse of cached files)
+MAX_ASSIGNS = 800
+PARSER_VERSION = 13  # bump when per-file records gain fields or parsing changes (forces re-parse of cached files)
 
 
 class AccuracyError(RuntimeError):
@@ -181,6 +182,28 @@ def _call_parts(call: ast.Call):
     return None, None
 
 
+def _type_names(node, depth: int = 0) -> list[str]:
+    """Every class an annotation or an isinstance/except argument names, as written: `Optional["Store"] | list[mod.Item]`
+    -> ["Optional", "Store", "list", "mod.Item"]. Builtins and typing names are dropped later, when they resolve to nothing."""
+    if node is None or depth > 6:
+        return []
+    if isinstance(node, (ast.Name, ast.Attribute)):
+        d = _dotted(node)
+        return [d] if d else []
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        try:
+            return _type_names(ast.parse(node.value.strip(), mode="eval").body, depth + 1)
+        except SyntaxError:
+            return []
+    out = []
+    for c in ast.iter_child_nodes(node):
+        out += _type_names(c, depth + 1)
+    return out
+
+
+MAX_TYPE_REFS = 1500
+
+
 def _dotted(n) -> str:
     """`a.b.C` (or the callee of a call) as text; "" for anything that is not a plain dotted name."""
     if isinstance(n, ast.Call):
@@ -278,7 +301,7 @@ def _features(tree) -> dict:
 def parse_python(path: str, src: str) -> tuple[dict, list[dict]]:
     """Return (file_record, symbols)."""
     rec = {"lang": "python", "imports": [], "tables": [], "calls": [], "lines": len(src.splitlines()), "sql": [],
-           "df_columns": [], "refs": [], "strs": [], "exports": [], "assigns": []}
+           "df_columns": [], "refs": [], "strs": [], "exports": [], "assigns": [], "types": []}
     syms: list[dict] = []
     try:
         tree = ast.parse(src)
@@ -345,9 +368,9 @@ def parse_python(path: str, src: str) -> tuple[dict, list[dict]]:
                     branch.update(id(c) for c in ast.walk(n) if c is not n)
         here = [None]
 
-        def put(**a):
-            if len(rec["assigns"]) < 800:
-                rec["assigns"].append({"caller": caller, **a, **({"cond": True} if id(here[0]) in branch else {})})
+        def put(cond=False, **a):
+            if len(rec["assigns"]) < MAX_ASSIGNS:
+                rec["assigns"].append({"caller": caller, **a, **({"cond": True} if cond or id(here[0]) in branch else {})})
 
         def var_of(t) -> str | None:
             if isinstance(t, ast.Name):
@@ -360,6 +383,21 @@ def parse_python(path: str, src: str) -> tuple[dict, list[dict]]:
             """Record what `value` says about `var`; anything unreadable is recorded as unknown, so an earlier type is dropped."""
             if isinstance(value, ast.Await):
                 value = value.value
+            # `x = a if c else b`, `x = a or b`: each side is one thing x may hold (a None side says nothing); agreeing sides
+            # give x's class, disagreeing ones leave it unknown
+            sides = [value.body, value.orelse] if isinstance(value, ast.IfExp) else \
+                value.values if isinstance(value, ast.BoolOp) and isinstance(value.op, ast.Or) else None
+            if sides is not None:
+                sides = [v for v in sides if not (isinstance(v, ast.Constant) and v.value is None)]
+                if sides and all(isinstance(v, ast.Call) and _call_parts(v)[0] or var_of(v) for v in sides):
+                    for i, v in enumerate(sides):     # later sides are conditional, so a reader walking back takes them all
+                        if isinstance(v, ast.Call):
+                            name, recv = _call_parts(v)
+                            put(var=var, call=(recv + "." if recv else "") + name, line=line, cond=i > 0)
+                        else:
+                            put(var=var, **{"from": var_of(v)}, line=line, cond=i > 0)
+                    return None
+                return put(var=var, line=line)
             if isinstance(value, ast.Call):
                 name, recv = _call_parts(value)
                 if name:
@@ -403,6 +441,36 @@ def parse_python(path: str, src: str) -> tuple[dict, list[dict]]:
                             name, recv = _call_parts(it.context_expr)
                             if name:
                                 put(var=it.optional_vars.id, call=(recv + "." if recv else "") + name, line=n.lineno)
+
+    def type_refs(body_nodes, caller: str, fn=None):
+        """Classes named without being called: annotations, isinstance/issubclass, `except X`, a bare `raise X`. Renaming or
+        removing the class breaks these too, although no call to it is written here."""
+        seen = set()
+
+        def put(expr, how: str, line: int):
+            for name in _type_names(expr):
+                if (name, how) not in seen and len(rec["types"]) < MAX_TYPE_REFS:
+                    seen.add((name, how))
+                    rec["types"].append({"caller": caller, "name": name, "how": how, "line": line})
+        if fn is not None:
+            a = fn.args
+            for arg in a.posonlyargs + a.args + a.kwonlyargs + [x for x in (a.vararg, a.kwarg) if x]:
+                put(arg.annotation, "annotation", fn.lineno)
+            put(fn.returns, "annotation", fn.lineno)
+        for top in body_nodes:
+            for n in ast.walk(top):
+                if isinstance(n, ast.AnnAssign):
+                    put(n.annotation, "annotation", n.lineno)
+                elif isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in ("isinstance", "issubclass") and len(n.args) == 2:
+                    put(n.args[1], "isinstance", n.lineno)
+                elif isinstance(n, ast.ExceptHandler) and n.type is not None:
+                    put(n.type, "except", n.lineno)
+                elif isinstance(n, ast.Raise) and isinstance(n.exc, (ast.Name, ast.Attribute)):
+                    put(n.exc, "raise", n.lineno)
+                elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    for arg in n.args.posonlyargs + n.args.args + n.args.kwonlyargs:   # a nested function's annotations
+                        put(arg.annotation, "annotation", n.lineno)
+                    put(n.returns, "annotation", n.lineno)
 
     def refs(body_nodes, caller: str):
         """Functions handed over by name instead of being called: `Thread(target=work)`, `map(parse, rows)`, `handlers = [on_save]`."""
@@ -475,17 +543,26 @@ def parse_python(path: str, src: str) -> tuple[dict, list[dict]]:
             add_symbol(node, node.name, "function", test_file and node.name.startswith("test"))
             scan(node.body, node.name)
             refs(node.body, node.name)
+            type_refs(node.body, node.name, node)
             assigns(node.body, node.name)
             df_cols(node.body, node.name)
         elif isinstance(node, ast.ClassDef):
             cls_test = test_file and node.name.startswith("Test")
             add_symbol(node, node.name, "class", False)
             for m in node.body:
+                if isinstance(m, ast.AnnAssign):
+                    type_refs([m], node.name)
+                if isinstance(m, ast.AnnAssign) and isinstance(m.target, ast.Name):    # `headers: Headers` in the class body
+                    t, elem, val = _ann(m.annotation)
+                    if t and len(rec["assigns"]) < MAX_ASSIGNS:
+                        rec["assigns"].append({"caller": f"{node.name}.<body>", "var": f"self.{m.target.id}", "type": t, "line": m.lineno,
+                                               **({"elem": elem} if elem else {}), **({"val": val} if val else {})})
                 if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     q = f"{node.name}.{m.name}"
                     add_symbol(m, q, "method", cls_test and m.name.startswith("test"))
                     scan(m.body, q)
                     refs(m.body, q)
+                    type_refs(m.body, q, m)
                     assigns(m.body, q)
                     df_cols(m.body, q)
         else:
@@ -499,6 +576,7 @@ def parse_python(path: str, src: str) -> tuple[dict, list[dict]]:
     if module_body:
         scan(module_body, "<module>")
         refs(module_body, "<module>")
+        type_refs(module_body, "<module>")
         assigns(module_body, "<module>")
         df_cols(module_body, "<module>")
         syms.append({"id": f"{path}#<module>", "name": "<module>", "qualname": "<module>", "kind": "module",

@@ -327,10 +327,33 @@ def test_repo_files_named_like_standard_modules_do_not_break_the_tools(tmp_path)
     (root / "app.py").write_text("def f():\n    return g()\n\n\ndef g():\n    return 1\n")
     graph, msg = graphify.run_graphify(root)
     assert graph is not None and graph.exists(), msg
+    assert not (root / "graphify-out").exists()
     from devmem.runner import run_argv
     import sys
     r = run_argv([sys.executable, "-c", "import types; print(types.ModuleType.__name__)"], root, isolate=True)
     assert r["code"] == 0 and r["out"].strip() == "module"
+
+
+def test_graphify_writes_outside_the_repo_and_follows_deletions(tmp_path, monkeypatch):
+    """Graphify's default output is <repo>/graphify-out (graph.json, graph.html, a report, a cache): devmem left that in every
+    repo it indexed. Its output now lives under devmem's home, and a graph that shrank is rebuilt rather than kept stale."""
+    from devmem_app import graphify
+    if not shutil.which("graphify"):
+        pytest.skip("graphify not installed")
+    monkeypatch.setenv("DEVMEM_HOME", str(tmp_path / "home"))
+    root = tmp_path / "repo"
+    (root / "pkg").mkdir(parents=True)
+    (root / "pkg/a.py").write_text("from pkg.b import g\n\n\ndef f():\n    return g()\n")
+    (root / "pkg/b.py").write_text("def g():\n    return 1\n")
+    (root / "pkg/c.py").write_text("".join(f"def h{i}():\n    return {i}\n\n\n" for i in range(30)))
+    graph, msg = graphify.run_graphify(root)
+    assert graph is not None, msg
+    assert sorted(p.name for p in root.iterdir()) == ["pkg"]                      # nothing written into the repo
+    assert graph.is_relative_to(tmp_path / "home") and "pkg/c.py" in graph.read_text()
+    (root / "pkg/c.py").unlink()
+    graph, msg = graphify.run_graphify(root)
+    assert graph is not None, msg
+    assert "c.py" not in graph.read_text() and sorted(p.name for p in root.iterdir()) == ["pkg"]
 
 
 def test_unknown_impact_target_is_reported_not_treated_as_an_empty_table(tmp_path, capsys):

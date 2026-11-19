@@ -125,6 +125,10 @@ def cmd_impact(ix: Index, a) -> int:
     if guesses:
         print(f"possible callers (name match only, usually a different function of the same name: verify before relying on them): {grouped(guesses, cap or 6)}")
     print("hop 2 (contract check): " + grouped([i["id"] for i in r["hop2"]], cap))
+    if r.get("subclasses"):
+        print("subclasses (inherit it, so a change to it changes them): " + grouped(r["subclasses"], cap))
+    if r.get("type_users"):
+        print("type references (name it in a type hint, isinstance or except: a rename or removal breaks them): " + grouped(r["type_users"], cap))
     print("tests: " + grouped(r["tests"], cap) + (f"  ({len(r['tests_measured'])} found only by measured coverage)" if r.get("tests_measured") else ""))
     for sid, c in (r.get("coverage") or {}).items():
         if c:
@@ -137,7 +141,7 @@ def cmd_impact(ix: Index, a) -> int:
         print("overrides: " + grouped(r["overrides"], cap) + (f"; callers of the base method reach this too: {grouped(r['via_base'], cap)}" if r.get("via_base") else ""))
     for b in r.get("blind_spots", []):
         print(f"BLIND SPOT: {b}")
-    if not r["hop1"] and not r.get("via_base") and not r["capped"]:
+    if not r["hop1"] and not r.get("via_base") and not r["capped"] and not r.get("type_users") and not r.get("subclasses"):
         print("no callers found" + (": but see the blind spots above before treating it as unused" if r.get("blind_spots") else " in this repo (other repos are not searched)"))
     stale = ix.changed_files(r["files"])
     if stale:   # the lists above were computed when the index was built: say which of the files they name have moved on
