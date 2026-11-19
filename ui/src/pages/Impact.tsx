@@ -52,11 +52,19 @@ export default function Impact({ params }: { params: Record<string, string> }) {
         {(examples.data || []).length > 0 && <div className="examples" style={{ justifyContent: "center" }}><span className="muted">Widely used here:</span>{examples.data.map((g: any) => <button key={g.id} className="chip" onClick={() => pickExample(g.id)}>{g.id.split("#")[1]}</button>)}</div>}
       </Empty></div>}
       {res?.kind === "symbol" && (() => {
-        const name = res.targets[0]?.split("#")[1] || target, risk = riskOf(res.hop1.filter((i: any) => i.conf !== "ambiguous").length, res.tests.length, !!res.capped?.length);
+        const sure = res.hop1.filter((i: any) => i.conf !== "ambiguous").length, subs = res.subclasses?.length || 0, users = res.type_users?.length || 0;
+        const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+        const name = res.targets[0]?.split("#")[1] || target, risk = riskOf(sure + subs + users, res.tests.length, !!res.capped?.length);
         const tests = res.tests.length ? `${res.tests.length} test${res.tests.length === 1 ? "" : "s"} reach it, so run those after the change` : "no test reaches it, so add one before you change it";
         const cap = (res.capped || []).find((c: any) => res.targets.includes(c.symbol));   // too many callers to list one by one
-        const who = cap ? `${cap.callers} places call it (a widely used utility, so they are not listed one by one)`
-          : res.hop1.filter((i: any) => i.conf !== "ambiguous").length ? `${res.hop1.filter((i: any) => i.conf !== "ambiguous").length} function${res.hop1.filter((i: any) => i.conf !== "ambiguous").length === 1 ? "" : "s"} call${res.hop1.filter((i: any) => i.conf !== "ambiguous").length === 1 ? "s" : ""} it directly${res.hop2.length ? ` and ${res.hop2.length} more depend on those` : ""}` : "nothing in this repo calls it";
+        // callers, subclasses and code naming it in type hints all break when it changes: the sentence names each that exists
+        const parts = [
+          cap ? `${cap.callers} places call it (a widely used utility, so they are not listed one by one)`
+            : sure ? `${plural(sure, "function calls", "functions call")} it directly${res.hop2.length ? ` and ${res.hop2.length} more depend on those` : ""}` : "",
+          subs ? `${plural(subs, "class inherits", "classes inherit")} from it` : "",
+          users ? `${plural(users, "function names", "functions name")} it in a type hint, isinstance or except` : "",
+        ].filter(Boolean);
+        const who = parts.length ? parts.join(", ") : "nothing in this repo calls it";
         return <div className={`card verdict ${risk}`}><p>Changing <code>{name}</code>: {who}; {tests}.</p>
           <div className="tags"><span className={`badge ${risk === "high" ? "bad" : risk === "medium" ? "warn" : "good"}`}>{risk} risk</span>{res.capped?.length ? <span className="tag">widely used utility: change it backwards-compatibly</span> : null}<span className="tag">{res.files.length} file{res.files.length === 1 ? "" : "s"} in scope</span></div></div>;
       })()}

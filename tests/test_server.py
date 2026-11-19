@@ -254,3 +254,41 @@ def test_map_links_a_service_to_the_shared_library_it_imports(api, tmp_path):
     assert any(l["kind"] == "imports" and l["target"] == "sharedlib_repo:sharedlib/backoff.py#with_backoff" for l in syms)
     # the fixtures' own `app` packages resolve at home, so same-named packages in different repos never cross-link
     assert not any(l["kind"] == "imports" and l["source"].split(":")[0] in ("py_app", "conv_app") for l in files)
+
+
+def _old_graphify_out(root: Path, semantic: bool = False) -> Path:
+    """What devmem before 2026-11-19 left in a repo: graphify-out/ with an AST-only graph."""
+    d = root / "graphify-out"
+    (d / "cache").mkdir(parents=True)
+    nodes = [{"id": "a", "_origin": "ast", "source_file": "app/x.py", "source_location": "L1"}, {"id": "json", "external": True}]
+    if semantic:
+        nodes.append({"id": "idea", "_origin": "semantic", "source_file": "docs/design.md", "rationale": "why"})
+    (d / "graph.json").write_text(json.dumps({"nodes": nodes, "links": []}))
+    (d / "manifest.json").write_text("{}")
+    (d / "graph.html").write_text("<html></html>")
+    (d / ".graphify_root").write_text(".")
+    return d
+
+
+def test_graphify_folder_an_old_devmem_left_is_offered_for_deletion_never_removed_unasked(api):
+    from devmem_app import graphify
+    root = api.repos["py_app"]
+    d = _old_graphify_out(root)
+    al = [a for a in api.get("/api/alerts").json() if a.get("action")]
+    assert len(al) == 1 and al[0]["repo"] == "py_app" and "older devmem" in al[0]["text"] and d.exists()   # only offered
+    assert api.delete(al[0]["action"]["url"], headers=H).status_code == 200 and not d.exists()
+    assert api.delete(al[0]["action"]["url"], headers=H).status_code == 404
+    mine = _old_graphify_out(root, semantic=True)            # built with Graphify's LLM mode: someone's own, not ours
+    assert graphify.leftover(root) is None and api.delete(al[0]["action"]["url"], headers=H).status_code == 404 and mine.exists()
+    shutil.rmtree(mine)
+    extra = _old_graphify_out(root)
+    (extra / "notes.txt").write_text("mine")                 # a file Graphify does not write: leave it alone
+    assert graphify.leftover(root) is None
+
+
+def test_removing_a_repo_removes_its_graphify_output(api):
+    from devmem_app import graphify
+    out = graphify.out_dir(api.repos["messy"])
+    out.mkdir(parents=True)
+    (out / "graph.json").write_text("{}")
+    assert api.delete("/api/repos/messy", headers=H).status_code == 200 and not out.exists()

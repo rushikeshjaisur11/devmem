@@ -162,6 +162,15 @@ which this measurement leaves out of the oracle on purpose; read by hand they ar
 `refs` edges too and every SCIP-covered caller, so it differs slightly from the table above.) What is still missing is
 mostly names passed around as values (`cls=Foo`, a class in a registry dict) and module-level aliases (`HeaderTypes = ...`).
 
+## Re-running these measurements
+
+`python scripts/benchmark.py` downloads the corpus (requests, click, starlette, httpx, rich from PyPI), indexes each with
+scip-python as the oracle and Graphify as in production, and prints precision (structural only and after Graphify),
+recall, call-site recall and the precision of `uses` edges for library code. `--save docs/benchmark.json` records a run
+(the committed one is from 2026-11-19); `--check docs/benchmark.json` exits 1 if any of those fell by more than 0.01, so a
+resolver change can be checked before it is merged. `--repo <path>` scores your own checkouts, Python or TypeScript.
+It takes about a minute and needs network, Node.js and graphifyy, so it is not part of the CI test run.
+
 ## Checks that run on every change
 
 - `fixtures/accuracy_py` is built around the traps above (the same method name on three classes, `dict.items()` beside a

@@ -162,3 +162,45 @@ def apply_cache(root: Path, idx: dict) -> dict | None:
     stats = merge(idx, edges, ok)
     stats["stale_files"] = len(c["hashes"]) - len(ok)
     return stats
+
+
+def forget(root: Path) -> None:
+    """Remove devmem's Graphify output for a repo (when the repo is removed from devmem)."""
+    shutil.rmtree(out_dir(root), ignore_errors=True)
+
+
+def leftover(root: Path) -> dict | None:
+    """A `graphify-out/` folder in the repo that devmem itself is likely to have written there (devmem before it kept
+    Graphify's output under its home): graph.json + manifest.json, no graph Graphify built with an LLM, and not tracked by
+    git. None when there is nothing, or when it may be the user's own (anything else in it, or committed)."""
+    d = Path(root) / "graphify-out"
+    if not (d / "graph.json").is_file() or not (d / "manifest.json").is_file():
+        return None
+    known = {"graph.json", "graph.html", "GRAPH_REPORT.md", "manifest.json", "cache", "cost.json", ".graphify_version",
+             "graph.json.bak", ".needs_update", ".rebuild.lock", ".html_stale"}
+    if any(p.name not in known and not p.name.startswith(".graphify") for p in d.iterdir()):
+        return None
+    try:
+        tracked = subprocess.run(["git", "ls-files", "--", "graphify-out"], cwd=str(root), capture_output=True, text=True, timeout=30)
+        if tracked.returncode == 0 and tracked.stdout.strip():
+            return None
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    try:
+        nodes = json.loads((d / "graph.json").read_text(encoding="utf-8")).get("nodes", [])
+    except (OSError, ValueError):
+        return None
+    def from_code(n: dict) -> bool:          # Graphify's own test: an AST node, or an import stub
+        o = n.get("_origin")
+        return n.get("external") or o == "ast" or (o is None and bool(re.match(r"L\d+", str(n.get("source_location") or ""))))
+    if not all(from_code(n) for n in nodes):
+        return None                      # semantic nodes (docs, papers, rationale): someone ran Graphify's LLM mode here
+    files = [p for p in d.rglob("*") if p.is_file()]
+    return {"path": str(d), "files": len(files), "bytes": sum(p.stat().st_size for p in files)}
+
+
+def remove_leftover(root: Path) -> bool:
+    if leftover(root) is None:
+        return False
+    shutil.rmtree(Path(root) / "graphify-out")
+    return True

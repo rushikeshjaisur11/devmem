@@ -508,6 +508,9 @@ def create_app() -> FastAPI:
                 raise HTTPException(409, f"{name} is being worked on; wait for that to finish, then remove it")
             path = set_repo(name, None)
         cache.pop(name, None)
+        if path:
+            from . import graphify
+            graphify.forget(Path(path))                # Graphify's output for it lives under devmem's home, not in the repo
         if path and uploads.uploads_dir().resolve() in Path(path).resolve().parents:
             shutil.rmtree(path, ignore_errors=True)   # an upload is devmem's own copy; a path or clone is left alone
         return {"ok": True}
@@ -1586,6 +1589,13 @@ def create_app() -> FastAPI:
                 out.append({"level": "info", "repo": name, "text": "not published yet: agents have no map", "page": "repos"})
             if not any(cn.status(Path(path)).values()):
                 out.append({"level": "info", "repo": name, "text": "no agent connected (MCP)", "page": "agents"})
+            from . import graphify
+            left = graphify.leftover(Path(path))
+            if left:      # written by devmem before it kept Graphify's output under its home: offered for deletion, never removed unasked
+                out.append({"level": "info", "repo": name, "page": "repos",
+                            "text": f"graphify-out/ in the repo ({left['files']} files, {left['bytes'] // 1024} KB) was left by an older devmem and is no longer used",
+                            "action": {"label": "Delete it", "url": f"/api/repos/{name}/graphify-leftover",
+                                       "confirm": f"Delete {left['path']}? devmem no longer reads it."}})
         for lib in dm.list_libs():
             if (lib.get("age_days") or 0) > 120:
                 out.append({"level": "warn", "repo": None, "text": f"{lib['name']} docs are {lib['age_days']} days old: refresh them", "page": "docs"})
@@ -1599,6 +1609,13 @@ def create_app() -> FastAPI:
                 seen.add((d["area"], d["repo"], d["message"]))
                 out.append({"level": "warn", "repo": d["repo"] or None, "text": f"{d['area']}: {d['message']}", "page": {"docs": "docs", "sonar": "integrations"}.get(d["area"], "repos")})
         return sorted(out, key=lambda x: rank[x["level"]])
+
+    @app.delete("/api/repos/{name}/graphify-leftover")
+    def graphify_leftover_delete(name: str):
+        from . import graphify
+        if not graphify.remove_leftover(root_of(name)):
+            raise HTTPException(404, "no graphify-out/ written by devmem in this repo (one that may be your own is left alone)")
+        return {"ok": True}
 
     @app.get("/api/diagnostics")
     def diagnostics_list():

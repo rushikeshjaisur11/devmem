@@ -301,6 +301,12 @@ class Index:
                 if e["type"] == "inherits" and e["src"] not in subs and e["src"] not in res["targets"]:
                     subs.add(e["src"]); queue.append(e["src"])
         res["subclasses"] = sorted(subs)
+        for sub in subs:                     # tests of a subclass (and of its methods) exercise what it inherits from the target
+            sym = self.symbols.get(sub)
+            ids = [sub] + ([m["id"] for m in self.by_file.get(sym["file"], []) if m["qualname"].startswith(sym["qualname"] + ".")] if sym else [])
+            for sid in ids:
+                tests.update(e["src"] for e in self.inc.get(sid, []) if e["type"] == "tests")
+                measured.update((self.coverage.get("tests") or {}).get(sid, []))
         res["tests"] = sorted(tests | measured)
         res["tests_measured"] = sorted(measured - tests)
         res["coverage"] = {t["id"]: (self.coverage.get("functions") or {}).get(t["id"]) for t in targets} if self.coverage else {}
