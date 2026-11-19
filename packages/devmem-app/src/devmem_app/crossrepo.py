@@ -89,10 +89,113 @@ def cross_links(repos: dict[str, tuple[Path, dict]]) -> list[dict]:
                             if sub in paths:
                                 hit = (dst, paths[sub], name)
                             break
-                if hit and (key := (src, f, *hit)) not in seen:
+                if hit and (key := (src, f, *hit, imp.get("alias"))) not in seen:
                     seen.add(key)
-                    out.append({"src_repo": src, "src_file": f, "dst_repo": hit[0], "dst_file": hit[1], "name": hit[2]})
+                    out.append({"src_repo": src, "src_file": f, "dst_repo": hit[0], "dst_file": hit[1], "name": hit[2],
+                                "alias": imp.get("alias")})
     return out
+
+
+def consumers(target: str, repos: dict[str, tuple[Path, dict]]) -> dict[str, list[dict]]:
+    """{symbol id in `target`: [{"repo", "id", "how"}]}: functions in the other repos that call a symbol of `target`, subclass
+    it, name it in a type hint, pass it by name or (for a method) call a method of that name on the class they import.
+    Matched through the import that links the two files, so a same-named function elsewhere never counts."""
+    if target not in repos:
+        return {}
+    tdata = repos[target][1]
+    tsyms = {s["id"]: s for s in tdata["symbols"] if s["kind"] != "module"}
+    out: dict[str, dict[tuple, str]] = {}
+
+    def put(dst: str, repo: str, src_id: str, how: str):
+        if dst in tsyms:
+            out.setdefault(dst, {}).setdefault((repo, src_id), how)
+
+    for link in cross_links(repos):
+        if link["dst_repo"] != target or not link.get("alias"):
+            continue
+        repo, f, alias = link["src_repo"], link["src_file"], link["alias"]
+        data = repos[repo][1]
+        rec = data["files"].get(f, {})
+        ids = {s["id"] for s in data["symbols"]}
+        src = lambda caller: f"{f}#{caller}" if f"{f}#{caller}" in ids else f"{f}#<module>"
+        dfile, name = link["dst_file"], link["name"]
+        if name == "default":
+            name = repos[target][1]["files"].get(dfile, {}).get("default_export")
+
+        def resolve(text: str) -> str | None:
+            """`alias`, `alias.X` or `alias.X.y` as written in the importing file -> the target symbol id it names."""
+            head, _, rest = text.partition(".")
+            if head != alias:
+                return None
+            q = (f"{name}.{rest}" if rest else name) if name else rest
+            while q and not name and f"{dfile}#{q}" not in tsyms and "." in q:
+                q = q.split(".", 1)[1]                # `import shared.retry` used as `shared.retry.with_backoff()`
+            return f"{dfile}#{q}" if q else None
+        imported_classes = set()
+        for c in rec.get("calls", []):
+            if c.get("recv") is None:
+                dst = resolve(c["name"])
+            else:
+                dst = resolve(f"{c['recv']}.{c['name']}")
+            if dst:
+                put(dst, repo, src(c["caller"]), "calls it")
+                if tsyms.get(dst, {}).get("kind") == "class":
+                    imported_classes.add(dst)
+        for t in rec.get("types", []):
+            dst = resolve(t["name"])
+            if dst:
+                put(dst, repo, src(t["caller"]), "names it in a type hint, isinstance or except")
+                if tsyms.get(dst, {}).get("kind") == "class":
+                    imported_classes.add(dst)
+        for r in rec.get("refs", []):
+            dst = resolve(f"{r['recv']}.{r['name']}" if r.get("recv") else r["name"])
+            if dst:
+                put(dst, repo, src(r["caller"]), "passes it by name")
+        for s in data["symbols"]:
+            if s["file"] == f and s["kind"] == "class":
+                for b in s.get("bases", []):
+                    dst = resolve(b)
+                    if dst:
+                        put(dst, repo, s["id"], "inherits from it")
+                        imported_classes.add(dst)
+        # a method of a class this file uses, called on some object: the object's class is not known across repos
+        for cls in imported_classes:
+            methods = {s["name"]: sid for sid, s in tsyms.items() if s["kind"] == "method" and sid.startswith(cls + ".")}
+            for c in rec.get("calls", []):
+                if c.get("recv") and c["name"] in methods and not resolve(f"{c['recv']}.{c['name']}"):
+                    put(methods[c["name"]], repo, src(c["caller"]), "may call it (a method of a class it uses)")
+    return {sid: [{"repo": r, "id": i, "how": h} for (r, i), h in sorted(users.items())] for sid, users in sorted(out.items())}
+
+
+def load_repos(paths: dict[str, str | Path]) -> dict[str, tuple[Path, dict]]:
+    out = {}
+    for name, p in paths.items():
+        ip = Path(p) / ".devmem/index.json"
+        try:
+            out[name] = (Path(p), json.loads(ip.read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            continue
+    return out
+
+
+CONSUMERS = ".devmem/consumers.json"
+
+
+def write_consumers(target: str, root: Path, paths: dict[str, str | Path]) -> bool:
+    """Record in `root` who uses its symbols in the other onboarded repos, for `devmem impact` to show offline. Removed when
+    nothing outside uses it."""
+    import datetime as dt
+    repos = load_repos({n: p for n, p in paths.items() if n == target or Path(p).resolve() != Path(root).resolve()})
+    users = consumers(target, repos) if target in repos else {}
+    p = Path(root) / CONSUMERS
+    if not users:
+        p.unlink(missing_ok=True)
+        return False
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"generated": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d"),
+                             "repos": sorted(n for n in repos if n != target), "symbols": users}, indent=1, sort_keys=True) + "\n",
+                 encoding="utf-8")
+    return True
 
 
 if __name__ == "__main__":   # self-check: a service importing a shared Python package and a JS library

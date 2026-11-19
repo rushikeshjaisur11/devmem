@@ -37,6 +37,8 @@ with nothing changed 1.2 s (it was 78 s when every import scanned every file). `
 
 - `files`: `{path: {hash, lang, imports, tables, calls}}`
 - `symbols`: `{id: "path#qualname", name, qualname, kind, file, line, end_line, sig, doc, is_test}`
+- `.devmem/consumers.json` (written by publish when other repos are onboarded): `{symbols: {id: [{repo, id, how}]}}`, the
+  functions in other repos that use each symbol, matched through the import that links the two files; `impact` reads it.
 - `edges`: `{src, dst, type: calls|tests|refs|uses|inherits|overrides|reads|writes, conf: precise|structural|ambiguous|co-change}` (`refs`: a function passed by name; `uses`: a class, interface or type named without a call: a type hint, `isinstance` / `instanceof`, `except`, a bare `raise`, `as`, a generic argument; Python and JS/TS); table edges use `dst = "table:<name>"`.
 
 `Index` (`index.py`) loads the whole file into dicts (`symbols`, `out`, `inc`) and answers every query in memory.

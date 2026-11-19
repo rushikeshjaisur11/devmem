@@ -292,3 +292,43 @@ def test_removing_a_repo_removes_its_graphify_output(api):
     out.mkdir(parents=True)
     (out / "graph.json").write_text("{}")
     assert api.delete("/api/repos/messy", headers=H).status_code == 200 and not out.exists()
+
+
+def test_impact_lists_users_in_other_repos(tmp_path, monkeypatch, capsys):
+    """A shared library and a service that imports it: impact on the library's function names the service's callers, live
+    in the app and, after publish, offline in `devmem impact` inside the library repo."""
+    monkeypatch.setenv("DEVMEM_HOME", str(tmp_path / "home"))
+    lib, app = tmp_path / "shared", tmp_path / "svc"
+    (lib / "shared").mkdir(parents=True)
+    (lib / "shared/__init__.py").write_text("")
+    (lib / "shared/retry.py").write_text(
+        "def with_backoff(fn):\n    return fn()\n\n\ndef unused():\n    return 1\n\n\n"
+        "class Policy:\n    def wait(self):\n        return 1\n")
+    (app / "svc").mkdir(parents=True)
+    (app / "svc/__init__.py").write_text("")
+    (app / "svc/jobs.py").write_text(
+        "from shared.retry import with_backoff, Policy\n"
+        "import shared.retry as r\n\n\n"
+        "def nightly():\n    return with_backoff(lambda: 1)\n\n\n"
+        "def hourly(p: Policy):\n    return p.wait()\n\n\n"
+        "class Strict(r.Policy):\n    pass\n\n\n"
+        "def direct():\n    return r.with_backoff(lambda: 2)\n")
+    c = TestClient(create_app())
+    for d in (lib, app):
+        assert c.post("/api/repos", json={"path": str(d)}, headers=H).status_code == 200
+    r = c.get("/api/repos/shared/impact", params={"target": "shared/retry.py#with_backoff"}).json()
+    assert {(u["repo"], u["id"]) for u in r["other_repos"]} == {("svc", "svc/jobs.py#nightly"), ("svc", "svc/jobs.py#direct")}
+    pol = {u["id"]: u["how"] for u in c.get("/api/repos/shared/impact", params={"target": "shared/retry.py#Policy"}).json()["other_repos"]}
+    assert pol == {"svc/jobs.py#Strict": "inherits from it", "svc/jobs.py#hourly": "names it in a type hint, isinstance or except"}
+    wait = c.get("/api/repos/shared/impact", params={"target": "shared/retry.py#Policy.wait"}).json()["other_repos"]
+    assert [u["id"] for u in wait] == ["svc/jobs.py#hourly"] and wait[0]["how"].startswith("may call it")
+    assert c.get("/api/repos/shared/impact", params={"target": "shared/retry.py#unused"}).json()["other_repos"] == []
+    # offline: publish records it in the library repo, and the agent CLI shows it there
+    assert ".devmem/consumers.json" in c.post("/api/repos/shared/publish", json={}, headers=H).json()["written"]
+    from devmem import cli
+    capsys.readouterr()
+    assert cli.run(["impact", "shared/retry.py#with_backoff"], root=lib) == 0
+    out = capsys.readouterr().out
+    assert "other repos (as of" in out and "svc: svc/jobs.py#direct, svc/jobs.py#nightly" in out and "no callers found" not in out
+    assert cli.run(["impact", "shared/retry.py#unused"], root=lib) == 0
+    assert "no callers found in this repo or svc (as of" in capsys.readouterr().out

@@ -319,7 +319,20 @@ class Index:
         res["overrides"] = bases
         res["via_base"] = sorted({e["src"] for b in bases for e in self.inc.get(b, []) if e["type"] in ("calls", "refs")} - seen)
         res["blind_spots"] = [n for t in targets for n in self.blind_spots(t)]
+        # users in the other onboarded repos, as recorded when this repo was last published (devmem-app has all the indexes)
+        cons = self.consumers()
+        res["other_repos"] = [u for t in targets for u in cons.get("symbols", {}).get(t["id"], [])]
+        res["other_repos_checked"] = cons.get("repos", [])
+        res["other_repos_date"] = cons.get("generated")
         return res
+
+    def consumers(self) -> dict:
+        if not hasattr(self, "_consumers"):
+            try:
+                self._consumers = json.loads((self.root / ".devmem/consumers.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                self._consumers = {}
+        return self._consumers
 
     def blind_spots(self, s: dict) -> list[str]:
         """What the call graph cannot show about a symbol, in plain words. "No callers" is only safe to rely on when this is

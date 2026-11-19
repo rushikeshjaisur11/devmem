@@ -233,6 +233,9 @@ def publish(root: str | Path, idx: dict, peers: dict | None = None) -> list[str]
         entries = memmod.build_cross_repo(idx["repo"], root, peers)
         if entries:
             _write(root, f"{k}/cross-repo.md", memmod.render_cross_repo_md(entries), commit, written)
+        from . import crossrepo
+        if crossrepo.write_consumers(idx["repo"], root, {**peers, idx["repo"]: root}):
+            written.append(crossrepo.CONSUMERS)
         from . import reuse as reusemod
         if reusemod.write_catalog(idx["repo"], root, peers):
             written.append(".devmem/reuse-catalog.json")
