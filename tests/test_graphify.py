@@ -17,23 +17,35 @@ def test_import_real_graphify_output_with_prefixed_paths(tmp_path):
 
 
 def test_policy_upgrade_drop_add():
-    idx = {"symbols": [{"id": f"{f}#{n}", "name": n, "qualname": n, "kind": "function", "file": f, "line": 1, "end_line": 9, "is_test": False}
-                       for f, n in (("a.py", "run"), ("b.py", "go"), ("c.py", "go"), ("d.py", "extra"))],
-           "files": {f: {} for f in ("a.py", "b.py", "c.py", "d.py")},
+    """Confirmed guess -> structural; unconfirmed guess from a covered file -> dropped; Graphify-only edges join when Graphify
+    resolved them (EXTRACTED), its own guesses (INFERRED) only from tests, and library code never gains an edge into a test."""
+    def sym(f, n, test=False):
+        return {"id": f"{f}#{n}", "name": n, "qualname": n, "kind": "function", "file": f, "line": 1, "end_line": 9, "is_test": test}
+    files = ("a.py", "b.py", "c.py", "d.py", "e.py", "test_x.py")
+    idx = {"symbols": [sym(f, n) for f, n in (("a.py", "run"), ("b.py", "go"), ("c.py", "go"), ("d.py", "extra"), ("e.py", "solid"))]
+                      + [sym("test_x.py", "test_run", True)],
+           "files": {f: {} for f in files},
            "edges": [{"src": "a.py#run", "dst": "b.py#go", "type": "calls", "conf": "ambiguous"},
                      {"src": "a.py#run", "dst": "c.py#go", "type": "calls", "conf": "ambiguous"},
                      {"src": "a.py#run", "dst": "table:t", "type": "reads", "conf": "structural"}]}
     node = lambda i, f: {"id": i, "source_file": f, "source_location": "L2"}
-    graph = {"nodes": [node("n1", "a.py"), node("n2", "b.py"), node("n3", "d.py")],
-             "links": [{"source": "n1", "target": "n2", "relation": "calls", "confidence": "EXTRACTED"},
-                       {"source": "n1", "target": "n3", "relation": "indirect_call", "confidence": "INFERRED"},
-                       {"source": "n1", "target": "n2", "relation": "contains", "confidence": "EXTRACTED"}]}
+    link = lambda a, b, conf, rel="calls": {"source": a, "target": b, "relation": rel, "confidence": conf}
+    graph = {"nodes": [node("n1", "a.py"), node("n2", "b.py"), node("n3", "d.py"), node("n4", "e.py"), node("t", "test_x.py")],
+             "links": [link("n1", "n2", "EXTRACTED"),
+                       link("n1", "n3", "INFERRED", "indirect_call"),     # library guess: not added
+                       link("n1", "n4", "EXTRACTED"),                     # resolved by Graphify: added
+                       link("t", "n3", "INFERRED"),                       # guess from a test: added as a guess
+                       link("n1", "t", "EXTRACTED"),                      # library -> test: never
+                       link("n1", "n2", "EXTRACTED", "contains")]}
     edges, covered = graphify.edges_from(idx, graph)
     stats = graphify.merge(idx, edges, covered)
-    assert stats == {"edges": 2, "upgraded": 1, "dropped_ambiguous": 1, "added": 1}
-    got = {(e["src"], e["dst"]): e["conf"] for e in idx["edges"]}
-    assert got[("a.py#run", "b.py#go")] == "structural" and ("a.py#run", "c.py#go") not in got
-    assert got[("a.py#run", "d.py#extra")] == "ambiguous" and got[("a.py#run", "table:t")] == "structural"
+    assert stats == {"edges": 5, "upgraded": 1, "dropped_ambiguous": 1, "added": 2}
+    got = {(e["src"], e["dst"]): (e["type"], e["conf"]) for e in idx["edges"]}
+    assert got[("a.py#run", "b.py#go")] == ("calls", "structural") and ("a.py#run", "c.py#go") not in got
+    assert ("a.py#run", "d.py#extra") not in got and ("a.py#run", "test_x.py#test_run") not in got
+    assert got[("a.py#run", "e.py#solid")] == ("calls", "structural")
+    assert got[("test_x.py#test_run", "d.py#extra")] == ("tests", "ambiguous")
+    assert got[("a.py#run", "table:t")] == ("reads", "structural")
 
 
 def test_graphify_missing_is_reported(tmp_path, monkeypatch):

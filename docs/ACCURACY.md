@@ -1,7 +1,7 @@
 # Edge accuracy
 
 How good are the call/test edges that drive impact, test selection and the repo map? Measured with
-`scripts/accuracy.py <repo> <index.scip> <graphify-out/graph.json>` against **SCIP (type-resolved scip-python) as the
+`scripts/accuracy.py <repo> <index.scip> <graph.json>` against **SCIP (type-resolved scip-python) as the
 oracle** on [psf/requests](https://github.com/psf/requests) (`src/requests`, 292 oracle edges after restricting to
 files SCIP covered and non-module callers; measured 2026-10-17).
 
@@ -78,6 +78,41 @@ Lineage, same date: `UPDATE`, `DELETE`, `DROP`, `ALTER` and `TRUNCATE` now count
 as reads), and a docstring that opens with "Create ..." / "Delete ..." is no longer parsed as a query (it could add tables
 that do not exist, such as `stale` and `cache` from "Delete stale entries from cache").
 
+## Fourth measurement: what the file can see, and which Graphify edges to trust (2026-11-19)
+
+Same oracle (scip-python), now scoring the **final** index (structural, then the Graphify merge) rather than each source
+apart, on devmem's own `devmem_app` package and on requests 2.32.3 and click 8.1.7 from PyPI (library code only: in their
+`tests/` scip-python cannot resolve `import requests` / `import click`, so the oracle is blind there).
+
+What changed:
+- A bare Python call resolves only to what the file can see: a function of the same file, a from-import, or a star import
+  (then as a guess). Before, a call to a local closure (`add`) or a builtin (`id`) matched any same-named function in the
+  repo, even one in a minified JS bundle, and was marked `structural`.
+- A method matched by name alone (receiver of unknown class) is searched among Python methods only, and is a guess
+  (`ambiguous`) for generic verbs (`get`, `run`, ...) and regex methods (`search`, `match`, `sub`, ...), which are far more
+  often a dict, a response or a compiled pattern than the one class in an imported file with that name.
+- A receiver that is an imported library module or name (`from devmem import docs as core_docs`; `core_docs.search()`)
+  gets no edge; an imported class used directly (`Store.default()`) resolves through that class.
+- Graphify-only edges are added when Graphify resolved them (`EXTRACTED`). Its `INFERRED` / `AMBIGUOUS` links are added
+  only from tests (an extra test is cheap, a missed one is not), and never from library code into a test.
+
+| Final index, precision / recall | Before | After |
+| --- | --- | --- |
+| devmem_app, structural only (`--fast`) | 0.885 / 0.943 | 0.924 / 0.943 |
+| devmem_app, with Graphify | 0.948 / 0.953 | 0.996 / 0.949 |
+| requests library code, structural only | 0.839 / 0.905 | 0.843 / 0.909 |
+| requests library code, with Graphify | 0.936 / 0.905 | 0.969 / 0.909 |
+| click library code, structural only | 0.948 / 0.620 | 0.948 / 0.620 |
+| click library code, with Graphify | 0.944 / 0.608 | 0.982 / 0.602 |
+
+On click the old Graphify policy made library code slightly *worse* than no Graphify (0.948 to 0.944), because its
+guesses were added unchecked (343 added, 342 of them guesses, some linking library code to test functions).
+
+Graphify's own output (graph.json, its cache and manifest) is written to `~/.devmem/graphify/<repo>-<hash>/`
+(`DEVMEM_HOME` moves it), never into the repo: Graphify's default is `<repo>/graphify-out/`. A `graphify-out/` folder
+left in a repo by an older devmem can be deleted. When Graphify refuses to overwrite a graph that shrank (files deleted),
+devmem rebuilds it with `--force` instead of reading the stale graph.
+
 ## Checks that run on every change
 
 - `fixtures/accuracy_py` is built around the traps above (the same method name on three classes, `dict.items()` beside a
@@ -97,5 +132,5 @@ signal, not as the rate a user will see.
 ## What the pipeline does with these results
 
 `structural` (import/name resolved) -> Graphify cross-check (upgrade confirmed ambiguous, drop unconfirmed
-ambiguous, add Graphify-only edges) -> SCIP (precise edges win; unconfirmed ambiguous edges dropped).
+ambiguous, add Graphify-only edges it resolved itself, and its guesses only from tests) -> SCIP (precise edges win; unconfirmed ambiguous edges dropped).
 `devmem impact` prints each hop-1 edge with its confidence, and the skill tells agents to verify `ambiguous` ones.

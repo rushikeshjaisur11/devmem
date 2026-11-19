@@ -1,11 +1,12 @@
 """Graphify integration (https://graphify.com, `pip install graphifyy`): import its tree-sitter call graph as an
-independent second opinion on our edges. No LLM or network is needed: `graphify update <repo>` writes
-graphify-out/graph.json (node-link JSON: nodes with source_file/source_location "L14"; links with relation and
+independent second opinion on our edges. No LLM or network is needed: `graphify update <repo>` writes a
+graph.json (node-link JSON: nodes with source_file/source_location "L14"; links with relation and
 confidence EXTRACTED|INFERRED|AMBIGUOUS).
 
 Policy (measured against SCIP on psf/requests, see README): an edge both tools find is almost always right, an
 ambiguous edge of ours that Graphify did not confirm is almost always wrong. So: confirmed ambiguous -> structural;
-unconfirmed ambiguous edges from files Graphify covered are dropped; edges only Graphify found are added."""
+unconfirmed ambiguous edges from files Graphify covered are dropped; edges only Graphify found are added when
+Graphify resolved them itself (EXTRACTED); its own guesses (INFERRED/AMBIGUOUS) only from tests."""
 from __future__ import annotations
 
 import json
@@ -19,17 +20,41 @@ CALL_RELATIONS = {"calls", "indirect_call"}
 CONF = {"EXTRACTED": "structural", "INFERRED": "ambiguous", "AMBIGUOUS": "ambiguous"}
 
 
+def out_dir(root: Path) -> Path:
+    """Where Graphify writes for this repo: under devmem's home, never inside the repo (graphify's default is
+    <repo>/graphify-out, which left graph.json, graph.html, a report and a cache in the user's working tree)."""
+    import hashlib
+    from .paths import devmem_home
+    root = Path(root).resolve()
+    key = hashlib.sha1(str(root).encode("utf-8")).hexdigest()[:12]
+    return devmem_home() / "graphify" / f"{re.sub(r'[^A-Za-z0-9_.-]', '_', root.name)[:40]}-{key}"
+
+
 def run_graphify(root: Path, timeout: int = 900) -> tuple[Path | None, str]:
     exe = shutil.which("graphify")
     if not exe:
         return None, "graphify not found: pip install graphifyy (or pass an existing graph with --graphify-file)"
+    out = out_dir(root)
+    out.mkdir(parents=True, exist_ok=True)
+    g = out / "graph.json"
+    from devmem.runner import tool_env   # a repo file named like a standard module (types.py) must not shadow it inside Graphify
+    env = {**tool_env(), "GRAPHIFY_OUT": str(out), "GRAPHIFY_NO_TIPS": "1"}
+
+    def run(*extra):
+        # --no-cluster: devmem reads only nodes and call links, so community detection and graph.html are wasted work
+        return subprocess.run([exe, "update", ".", "--no-cluster", *extra], cwd=str(root), capture_output=True, text=True,
+                              errors="replace", timeout=timeout, env=env)
     try:
-        from devmem.runner import tool_env   # a repo file named like a standard module (types.py) must not shadow it inside Graphify
-        r = subprocess.run([exe, "update", "."], cwd=str(root), capture_output=True, text=True, errors="replace", timeout=timeout, env=tool_env())
+        r = run()
+        # Graphify refuses to overwrite a graph that shrank unless --force; the old graph.json would then be read as if
+        # current and give edges for code that is gone. Rebuild with --force instead.
+        if "Refusing to overwrite" in (r.stderr or "") + (r.stdout or ""):
+            r = run("--force")
     except (subprocess.TimeoutExpired, OSError) as e:
         return None, f"graphify: {e}"
-    g = root / "graphify-out/graph.json"
-    return (g, "") if g.exists() else (None, f"graphify failed: {(r.stderr or r.stdout).strip()[-160:]}")
+    if r.returncode != 0 or not g.exists():
+        return None, f"graphify failed: {(r.stderr or r.stdout).strip()[-160:]}"
+    return g, ""
 
 
 def _suffix_match(files: set[str], p: str) -> str | None:
@@ -99,7 +124,13 @@ def merge(idx: dict, g_edges: list[dict], covered: set[str]) -> dict:
                     dropped += 1
                     continue
         kept.append(e)
-    added = [e for k, e in gk.items() if k not in have]
+    # Graphify-only edges join when Graphify itself resolved them (EXTRACTED). Its INFERRED/AMBIGUOUS links are name guesses
+    # like our own ambiguous ones: on click 8.1.7 adding them unchecked (342 of them) made the index less precise than no
+    # Graphify at all, some linking library code to test functions. So they are kept only from tests, where picking an
+    # extra test is cheap and missing one is not, and never point into a test.
+    test_ids = {s["id"] for s in idx["symbols"] if s.get("is_test")}
+    added = [e for k, e in gk.items() if k not in have and e["dst"] not in test_ids
+             and (e["conf"] == "structural" or e["src"] in test_ids)]
     idx["edges"] = sorted(kept + added, key=lambda e: (e["src"], e["dst"], e["type"]))
     return {"edges": len(g_edges), "upgraded": upgraded, "dropped_ambiguous": dropped, "added": len(added)}
 

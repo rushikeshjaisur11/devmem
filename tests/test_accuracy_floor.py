@@ -108,3 +108,48 @@ def test_receiver_classes_come_from_how_code_declares_them(tmp_path):
     assert not certain - want, f"wrong certain edges: {sorted(certain - want)}"
     assert not want - certain, "missed: " + "; ".join(f"{a} -> {b} ({why[(a, b)]})" for a, b in sorted(want - certain))
     assert {k for k, c in edges.items() if c == "ambiguous"} == {(a, b) for a, b, _ in truth["guesses"]}
+
+
+def test_python_calls_do_not_resolve_to_names_the_file_cannot_see(tmp_path):
+    """Measured against scip-python on devmem's own source, these were most of the wrong `structural` edges: a bare call to a
+    local closure (`add`) or a builtin (`id`) matched to a same-named function in some other file, even a minified JS bundle;
+    `m.get()` on a dict matched to the one class with a `get` in an imported file; `rx.search()` on a compiled regex and
+    `lib.search()` on a library module matched to a user method. Python reaches another file's function only through an import."""
+    root = tmp_path / "r"
+    (root / "pkg").mkdir(parents=True)
+    (root / "web").mkdir()
+    (root / "pkg/__init__.py").write_text("")
+    (root / "pkg/docs.py").write_text("def add(x):\n    return x\n\n\ndef helper():\n    return 1\n")
+    (root / "pkg/client.py").write_text("class Client:\n    def get(self, k):\n        return k\n\n\nclass Corpus:\n    def search(self, q):\n        return q\n")
+    (root / "web/bundle.js").write_text("function id(e){return e}\nexport { id };\n")
+    (root / "pkg/use.py").write_text(
+        "import re\n"
+        "from devmem import docs as core_docs\n"
+        "from pkg.client import Client\n"
+        "from pkg.star import *\n"
+        "RX = re.compile('a')\n\n\n"
+        "def build(items):\n"
+        "    def add(x):\n"
+        "        return x\n"
+        "    for i in items:\n"
+        "        add(i)\n"
+        "    return id(items)\n\n\n"
+        "def lib():\n"
+        "    return core_docs.search('q')\n\n\n"
+        "def read(m, rx):\n"
+        "    rx.search('a')\n"
+        "    starred()\n"
+        "    return m.get('k')\n\n\n"
+        "def typed():\n"
+        "    return Client().get('k')\n")
+    (root / "pkg/star.py").write_text("def starred():\n    return 1\n")
+    idx = indexer.index_repo(root, "r", accuracy="fast")
+    edges = {(e["src"], e["dst"]): e["conf"] for e in idx["edges"] if e["type"] == "calls"}
+    out = lambda src: {d: c for (s, d), c in edges.items() if s == src}
+    assert out("pkg/use.py#build") == {}                                  # not docs.add, not bundle.js#id
+    read = out("pkg/use.py#read")
+    assert out("pkg/use.py#lib") == {}                                    # a library module's function, not Corpus.search
+    assert read.get("pkg/client.py#Corpus.search") == "ambiguous"          # `rx` is unknown (a regex here): a guess at most
+    assert read.get("pkg/client.py#Client.get") == "ambiguous"             # `m` is unknown: a guess at most
+    assert read.get("pkg/star.py#starred") == "ambiguous"                  # reachable through the star import
+    assert out("pkg/use.py#typed") == {"pkg/client.py#Client": "structural", "pkg/client.py#Client.get": "structural"}

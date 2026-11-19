@@ -21,7 +21,8 @@ BUILTIN_METHODS = {"items", "values", "keys", "pop", "popitem", "setdefault", "u
                    "filter", "reduce", "forEach", "toString"}
 # Generic verbs (also on files, clients, loggers): the candidate must live in the caller's file or a file it imports.
 COMMON_METHODS = {"get", "send", "run", "start", "stop", "load", "dump", "dumps", "loads", "read", "write", "close", "open",
-                  "then", "catch", "json", "text"}
+                  "then", "catch", "json", "text",
+                  "search", "match", "fullmatch", "findall", "finditer", "sub", "group"}   # also every compiled regex
 
 
 def _module_files(files: dict, module: str) -> list[str]:
@@ -404,8 +405,19 @@ def build_edges(idx: dict) -> list[dict]:
             t = holder(path, caller, recv, line)
             if t is EXTERNAL:
                 return None, True
+            if t is None and recv.isidentifier() and not _assigned_or_param(path, caller, recv):
+                ref = resolve_ref(path, recv)           # `Store.default()`: an imported (or same-file) class used directly
+                if ref is not None and ref["kind"] == "class":
+                    return ref, True
+                if external(path, recv):                # `core_docs.search()`, `np.where()`: a module or name from a library
+                    return None, True
             return t, t is not None
         return None, False
+
+    def _assigned_or_param(path: str, caller: str, var: str) -> bool:
+        by_caller = assigns_of(path)[0]
+        params = (by_file.get(path, {}).get(caller) or {}).get("params") or {}
+        return var in params or var in by_caller.get(caller, {}) or var in by_caller.get("<module>", {})
 
     for path, rec in files.items():
         if rec.get("lang") in ("go", "java", "csharp", "kotlin", "rust"):
@@ -441,6 +453,7 @@ def build_edges(idx: dict) -> list[dict]:
                 mod_alias[i["alias"]] = f"{i['module']}.{i['name']}"
         local = by_file.get(path, {})
         near: set[str] | None = None
+        star = {f for i in imports if i["name"] == "*" for f in _module_files(files, i["module"])}
 
         for c in rec.get("calls", []):
             src_id = f"{path}#{c['caller']}"
@@ -449,6 +462,7 @@ def build_edges(idx: dict) -> list[dict]:
             name, recv = c["name"], c["recv"]
             cands: list[dict] = []
             conf = CONF_STRUCTURAL
+            guessed = False
             if recv is None:
                 if name in from_imp:
                     imp = from_imp[name]
@@ -456,8 +470,11 @@ def build_edges(idx: dict) -> list[dict]:
                         cands += [s for q, s in by_file.get(f, {}).items() if s["name"] == imp["name"] and "." not in q]
                 elif name in local and "." not in name:
                     cands = [local[name]]
-                else:
-                    cands = [s for s in by_name.get(name, []) if s["kind"] != "method"]
+                elif star:
+                    # Python looks a bare name up locally, in the module, then builtins: another file's function is reachable
+                    # only through an import. A star import is the one way in that does not name it.
+                    cands = [s for s in by_name.get(name, []) if s["kind"] != "method" and "." not in s["qualname"] and s["file"] in star]
+                    conf = CONF_AMBIGUOUS
             else:
                 head = recv.split(".")[0]
                 cls, known = receiver_class(path, c["caller"], recv, c.get("line") or 10 ** 9)
@@ -489,16 +506,18 @@ def build_edges(idx: dict) -> list[dict]:
                 if not cands and head in mod_alias:
                     for f in _module_files(files, mod_alias[head]):
                         cands += [s for q, s in by_file.get(f, {}).items() if s["name"] == name and "." not in q]
-                if not cands and head not in mod_alias:
-                    cands = [s for s in by_name.get(name, []) if s["kind"] == "method"]
-                elif not cands and head in from_imp:  # Class.method / imported_obj.method
-                    cands = [s for s in by_name.get(name, []) if s["kind"] == "method"]
+                if not cands and (head not in mod_alias or head in from_imp):
+                    # receiver of unknown class: matched by method name alone, among Python methods only
+                    cands = [s for s in by_name.get(name, []) if s["kind"] == "method" and files.get(s["file"], {}).get("lang") == "python"]
+                    guessed = True
                 if cands and name in BUILTIN_METHODS:
                     cands = []
                 elif cands and name in COMMON_METHODS:
                     if near is None:   # once per file, not once per call
                         near = _imported_files(files, path, imports)
                     cands = [s for s in cands if s["file"] in near]
+                    if guessed:        # `x.get()` with x unknown is far more often a dict, a response, a file than this class
+                        conf = CONF_AMBIGUOUS
             if not cands:
                 continue
             if len(cands) > 1:
