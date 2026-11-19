@@ -189,7 +189,8 @@ hono from GitHub at pinned commits), indexes each with scip-python / scip-typesc
 recall, call-site recall and the precision of `uses` edges for library code. `--save docs/benchmark.json` records a run
 (the committed one is from 2026-11-19); `--check docs/benchmark.json` exits 1 if any of those fell by more than 0.01, so a
 resolver change can be checked before it is merged. `--repo <path>` scores your own checkouts, Python or TypeScript.
-It takes about two minutes and needs network, Node.js and graphifyy, so it is not part of the CI test run.
+It takes about two minutes and needs network, Node.js and graphifyy, so instead of running on every push it runs weekly
+(and on demand) in `.github/workflows/benchmark.yml`, which fails when a number fell and keeps each run's results as an artifact.
 
 ## Checks that run on every change
 

@@ -1,0 +1,33 @@
+name: accuracy benchmark
+# Scores devmem's call graph against SCIP on the pinned corpus in scripts/benchmark.py and fails when precision or recall
+# fell by more than 0.01 against docs/benchmark.json. Needs network (PyPI, GitHub, npx), so it runs weekly and on demand
+# rather than on every push. After an intended change in accuracy, re-record: `python scripts/benchmark.py --save docs/benchmark.json`.
+on:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install
+        run: pip install -e packages/devmem -e "packages/devmem-app[test]"
+      - name: Benchmark against the record
+        run: python scripts/benchmark.py --work "$RUNNER_TEMP/bench" --check docs/benchmark.json --save "$RUNNER_TEMP/benchmark.json"
+      - name: Keep this run's numbers
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark
+          path: ${{ runner.temp }}/benchmark.json
+          if-no-files-found: ignore
