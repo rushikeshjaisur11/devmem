@@ -162,3 +162,47 @@ def test_review_summarises_changed_symbols_and_gaps_lists_untested_code(tmp_path
     assert main(["gaps"]) == 0
     out = capsys.readouterr().out
     assert "no test reaches it" in out or "no untested code" in out
+
+
+def _broken(res):
+    return [x for x in res[0] if x.check == "breaks_dependents"]
+
+
+def test_rename_that_leaves_callers_behind_is_blocked_and_naming_them(repo):
+    """Renaming `build_client` without touching service.py breaks `load_user`: diffcheck names the caller."""
+    edit(repo, "app/client.py", "def build_client(base):", "def make_client(base):")
+    b = _broken(run(repo))
+    assert len(b) == 1 and b[0].path == "app/client.py#build_client"
+    assert "removed or renamed" in b[0].msg and "1 calls it: app/service.py#load_user" in b[0].msg
+
+
+def test_rename_with_callers_updated_passes(repo):
+    edit(repo, "app/client.py", "def build_client(base):", "def make_client(base):")
+    edit(repo, "app/service.py", "build_client", "make_client")
+    assert _broken(run(repo)) == []
+
+
+def test_caller_in_the_diff_that_still_names_the_removed_function_is_blocked(repo):
+    edit(repo, "app/client.py", "def build_client(base):", "def make_client(base):")
+    edit(repo, "app/service.py", '"""Load a user record from the API."""', '"""Load a user record from the API (edited)."""')
+    assert [x.path for x in _broken(run(repo))] == ["app/client.py#build_client"]
+
+
+def test_incompatible_signature_with_unchanged_callers_is_blocked(repo):
+    edit(repo, "app/client.py", "def build_client(base):", "def build_client(base, timeout):")
+    b = _broken(run(repo))
+    assert len(b) == 1 and "signature changed to def build_client(base, timeout)" in b[0].msg
+    blocked, passed = run(repo, allow="devmem-allow: breaks_dependents callers fixed in the next PR")
+    assert not _broken((blocked, passed)) and any(x.check == "breaks_dependents" for x in passed)
+
+
+def test_removed_class_reports_once_with_its_methods_dependents(repo):
+    (repo / "app/client.py").write_text("from app.retry import retry\n\n\ndef build_client(base):\n    return None\n")
+    b = _broken(run(repo))
+    assert [x.path for x in b] == ["app/client.py#ApiClient"] and "app/service.py#load_user" in b[0].msg   # via ApiClient.get
+    assert "build_client" not in b[0].msg            # rewritten in the same diff, and no longer names ApiClient
+
+
+def test_removing_an_unused_function_is_not_a_broken_dependent(repo):
+    (repo / "app/other.py").write_text("")
+    assert _broken(run(repo)) == []

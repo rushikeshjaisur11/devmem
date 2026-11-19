@@ -30,6 +30,7 @@ checks:
   duplicate_helpers: true
   lint_fixes_outside_changed_lines: true
   no_touch_paths: true
+  unupdated_dependents: true
 """
 
 DEFAULT_RULES = """# Rules (global + repo)
