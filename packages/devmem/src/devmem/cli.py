@@ -125,6 +125,12 @@ def cmd_impact(ix: Index, a) -> int:
     if guesses:
         print(f"possible callers (name match only, usually a different function of the same name: verify before relying on them): {grouped(guesses, cap or 6)}")
     print("hop 2 (contract check): " + grouped([i["id"] for i in r["hop2"]], cap))
+    if r.get("other_repos"):
+        by_repo: dict = {}
+        for u in r["other_repos"]:
+            by_repo.setdefault(u["repo"], []).append(u["id"] + ("" if u["how"] == "calls it" else f" [{u['how']}]"))
+        print(f"other repos (as of {r.get('other_repos_date') or 'the last publish'}): "
+              + "; ".join(f"{repo}: {', '.join(ids[: cap or 6])}{' ...' if cap and len(ids) > cap else ''}" for repo, ids in by_repo.items()))
     if r.get("subclasses"):
         print("subclasses (inherit it, so a change to it changes them): " + grouped(r["subclasses"], cap))
     if r.get("type_users"):
@@ -141,8 +147,11 @@ def cmd_impact(ix: Index, a) -> int:
         print("overrides: " + grouped(r["overrides"], cap) + (f"; callers of the base method reach this too: {grouped(r['via_base'], cap)}" if r.get("via_base") else ""))
     for b in r.get("blind_spots", []):
         print(f"BLIND SPOT: {b}")
-    if not r["hop1"] and not r.get("via_base") and not r["capped"] and not r.get("type_users") and not r.get("subclasses"):
-        print("no callers found" + (": but see the blind spots above before treating it as unused" if r.get("blind_spots") else " in this repo (other repos are not searched)"))
+    if not r["hop1"] and not r.get("via_base") and not r["capped"] and not r.get("type_users") and not r.get("subclasses") \
+            and not r.get("other_repos"):
+        where = (f" in this repo or {', '.join(r['other_repos_checked'])} (as of {r.get('other_repos_date')})" if r.get("other_repos_checked")
+                 else " in this repo (other repos are not searched: publish from devmem-app to record their uses)")
+        print("no callers found" + (": but see the blind spots above before treating it as unused" if r.get("blind_spots") else where))
     stale = ix.changed_files(r["files"])
     if stale:   # the lists above were computed when the index was built: say which of the files they name have moved on
         print(f"NOTE: changed since the index was built: {', '.join(stale[:6])}{' …' if len(stale) > 6 else ''}. "

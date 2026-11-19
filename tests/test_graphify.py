@@ -63,3 +63,13 @@ def test_common_method_names_do_not_resolve_by_name(tmp_path):
     idx = indexer.index_repo(d, "r", write=False)
     dst = {(e["src"], e["dst"]) for e in idx["edges"]}
     assert ("b.py#f", "a.py#Jar.items") not in dst and ("b.py#g", "a.py#Jar.special") in dst
+
+
+def test_graphify_edge_from_a_class_to_its_own_method_is_not_added():
+    sym = lambda q, k: {"id": f"q.ts#{q}", "name": q.split(".")[-1], "qualname": q, "kind": k, "file": "q.ts", "line": 1 if k == "class" else 3,
+                        "end_line": 20 if k == "class" else 5, "is_test": False}
+    idx = {"symbols": [sym("Queue", "class"), sym("Queue.add", "method")], "files": {"q.ts": {}}, "edges": []}
+    graph = {"nodes": [{"id": "c", "source_file": "q.ts", "source_location": "L10"}, {"id": "m", "source_file": "q.ts", "source_location": "L4"}],
+             "links": [{"source": "c", "target": "m", "relation": "calls", "confidence": "EXTRACTED"}]}
+    edges, covered = graphify.edges_from(idx, graph)
+    assert graphify.merge(idx, edges, covered)["added"] == 0 and idx["edges"] == []

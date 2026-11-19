@@ -31,7 +31,7 @@ MAX_SQL_STMTS, MAX_SQL_LEN = 60, 20_000
 COLUMN_FUNCS = {"select", "withColumn", "col", "groupBy", "groupby", "orderBy", "sort", "drop", "withColumnRenamed",
                 "sum", "avg", "max", "min", "count", "countDistinct", "first", "collect_list", "agg", "join"}
 MAX_ASSIGNS = 800
-PARSER_VERSION = 13  # bump when per-file records gain fields or parsing changes (forces re-parse of cached files)
+PARSER_VERSION = 14  # bump when per-file records gain fields or parsing changes (forces re-parse of cached files)
 
 
 class AccuracyError(RuntimeError):

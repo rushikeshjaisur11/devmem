@@ -2,7 +2,7 @@
 
 Checks (config names in .devmem/config.yaml `checks:`):
   size, out_of_scope_files, format_only_changes, new_dependencies, deleted_tests,
-  api_signature_changes, duplicate_helpers
+  api_signature_changes, duplicate_helpers, unupdated_dependents
 Escape hatch: a line `devmem-allow: <check> <reason>` in the PR body / commit message / --allow text lets that
 check pass; it is still listed so the reviewer sees it. (lint-fixes-outside-changed-lines needs ruff: later.)
 """
@@ -32,6 +32,7 @@ CHECKS = {
     "duplicate_helpers": "duplicate",
     "lint_fixes_outside_changed_lines": "lint_fix",
     "no_touch_paths": "no_touch",
+    "unupdated_dependents": "breaks_dependents",
 }
 DEFAULTS = {"diff_budget": {"max_changed_lines": 200, "max_files": 8}, "checks": {k: True for k in CHECKS}}
 NON_CODE = {".md", ".txt", ".rst", ".yaml", ".yml", ".json", ".toml", ".cfg", ".ini", ".sql", ".csv"}
@@ -404,6 +405,8 @@ def run_checks(root: Path, files: list[FileDiff], cfg: dict, base: str | None = 
                             break
                         except Exception:
                             continue
+    if on.get("unupdated_dependents", True) and ix is not None:
+        v += _broken_dependents(root, ix, files, base)
     if lint_hunks and any(not fixed for *_, fixed in lint_hunks):
         by_sym: dict[tuple[str, str], list] = {}
         for path, sym, line, fixed in lint_hunks:
@@ -413,6 +416,75 @@ def run_checks(root: Path, files: list[FileDiff], cfg: dict, base: str | None = 
                 v.append(Violation("lint_fix", f"{path}:{hs[0][0]}", f"lint-only edit in {sym.split('#')[-1]}, unrelated "
                                    "to the substantive change (leave existing lint issues alone)"))
     return v
+
+
+def _broken_dependents(root: Path, ix: Index, files: list[FileDiff], base: str | None) -> list[Violation]:
+    """A symbol the diff removes, renames or gives an incompatible signature, while code that depends on it (callers,
+    subclasses, overrides, type hints / isinstance / except) is left as it was: the change breaks it. Any language for removals
+    (the index's definition is looked for in the file as it is now); Python for signature changes. Dependents in files the diff
+    also changes count as updated, except that after a removal they must no longer name the symbol."""
+    changed = {f.path: f for f in files}
+    gone: dict[str, str] = {}                 # symbol id -> what happened to it
+    for f in files:
+        if f.status == "A" or _is_test(f.path):
+            continue
+        for sym in ix.by_file.get(f.path, []):
+            if sym["kind"] == "module" or sym["is_test"]:
+                continue
+            if f.status == "D":
+                gone[sym["id"]] = "removed (its file was deleted)"
+                continue
+            try:
+                ix.read(sym)
+            except LookupError:
+                gone[sym["id"]] = "removed or renamed"
+    sig: dict[str, str] = {}
+    for f in files:
+        if f.status == "M" and f.path.endswith(".py") and not _is_test(f.path):
+            of, nf = _funcs(_parse(_old(root, base, f.path))), _funcs(_parse(_new(root, f.path)))
+            for q, node in of.items():
+                if q in nf and not isinstance(node, ast.ClassDef) and not isinstance(nf[q], ast.ClassDef) \
+                        and not _compatible(node.args, nf[q].args) and f"{f.path}#{q}" in ix.symbols:
+                    sig[f"{f.path}#{q}"] = f"signature changed to {_sig(nf[q])}"
+
+    def owner(sid: str) -> str | None:        # a method's class, when the class itself is gone (reported once, for the class)
+        path, q = sid.split("#", 1)
+        return f"{path}#{q.split('.')[0]}" if "." in q and f"{path}#{q.split('.')[0]}" in gone else None
+
+    found: dict[str, dict[str, str]] = {}     # reported symbol -> {dependent: how it depends}
+    for sid, what in {**sig, **gone}.items():
+        sym = ix.symbols.get(sid)
+        if sym is None:
+            continue
+        r = ix.impact(sid)
+        deps = [(i["id"], "calls it") for i in r["hop1"] if i["conf"] != "ambiguous"]
+        deps += [(d, "inherits from it") for d in r.get("subclasses", [])] + [(d, "names it in a type hint, isinstance or except")
+                                                                           for d in r.get("type_users", [])]
+        deps += [(d, "overrides it") for d in r.get("overridden_by", [])]
+        key = owner(sid) or sid
+        for dep, how in deps:
+            d = ix.symbols.get(dep)
+            if d is None or dep in gone or owner(dep) or dep.startswith(key + ".") or d["file"] in changed and changed[d["file"]].status == "D":
+                continue
+            if d["file"] in changed:
+                if sid not in gone:
+                    continue                  # its file is part of the change: assume the call was updated
+                try:
+                    if not re.search(rf"\b{re.escape(sym['name'])}\b", ix.read(d)[0]):
+                        continue              # updated: it no longer names what was removed
+                except LookupError:
+                    continue
+            found.setdefault(key, {})[dep] = how
+    out = []
+    for key, deps in found.items():
+        what = gone.get(key) or sig.get(key) or "changed"
+        by_how: dict[str, list[str]] = {}
+        for dep, how in sorted(deps.items()):
+            by_how.setdefault(how, []).append(dep)
+        detail = "; ".join(f"{len(ds)} {how}: " + ", ".join(ds[:4]) + (" ..." if len(ds) > 4 else "") for how, ds in by_how.items())
+        out.append(Violation("breaks_dependents", key, f"`{key.split('#', 1)[1]}` {what}, but code that depends on it was not "
+                             f"updated ({detail}). Update them in this change, or keep the old name/signature working."))
+    return out
 
 
 def allowances(text: str) -> dict[str, str]:

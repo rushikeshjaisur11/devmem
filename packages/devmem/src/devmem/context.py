@@ -140,6 +140,9 @@ def build(ix: Index, task: str, files: list[str] | None = None, budget: int = DE
     guesses = [i["id"] for i in imp["hop1"] if i["conf"] == "ambiguous"]
     if guesses:
         facts.append(f" possible callers (name match only, usually wrong: verify): {grouped(guesses, 4)}")
+    if imp.get("other_repos"):
+        facts.append(" used in other repos: " + ", ".join(f"{u['repo']}:{u['id']}" for u in imp["other_repos"][:5])
+                     + (f" (+{len(imp['other_repos']) - 5})" if len(imp["other_repos"]) > 5 else ""))
     if imp.get("subclasses"):
         facts.append(" subclasses (inherit it): " + grouped(imp["subclasses"], 5))
     if imp.get("type_users"):

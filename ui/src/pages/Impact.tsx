@@ -52,11 +52,19 @@ export default function Impact({ params }: { params: Record<string, string> }) {
         {(examples.data || []).length > 0 && <div className="examples" style={{ justifyContent: "center" }}><span className="muted">Widely used here:</span>{examples.data.map((g: any) => <button key={g.id} className="chip" onClick={() => pickExample(g.id)}>{g.id.split("#")[1]}</button>)}</div>}
       </Empty></div>}
       {res?.kind === "symbol" && (() => {
-        const name = res.targets[0]?.split("#")[1] || target, risk = riskOf(res.hop1.filter((i: any) => i.conf !== "ambiguous").length, res.tests.length, !!res.capped?.length);
+        const sure = res.hop1.filter((i: any) => i.conf !== "ambiguous").length, subs = res.subclasses?.length || 0, users = res.type_users?.length || 0;
+        const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+        const name = res.targets[0]?.split("#")[1] || target, risk = riskOf(sure + subs + users, res.tests.length, !!res.capped?.length);
         const tests = res.tests.length ? `${res.tests.length} test${res.tests.length === 1 ? "" : "s"} reach it, so run those after the change` : "no test reaches it, so add one before you change it";
         const cap = (res.capped || []).find((c: any) => res.targets.includes(c.symbol));   // too many callers to list one by one
-        const who = cap ? `${cap.callers} places call it (a widely used utility, so they are not listed one by one)`
-          : res.hop1.filter((i: any) => i.conf !== "ambiguous").length ? `${res.hop1.filter((i: any) => i.conf !== "ambiguous").length} function${res.hop1.filter((i: any) => i.conf !== "ambiguous").length === 1 ? "" : "s"} call${res.hop1.filter((i: any) => i.conf !== "ambiguous").length === 1 ? "s" : ""} it directly${res.hop2.length ? ` and ${res.hop2.length} more depend on those` : ""}` : "nothing in this repo calls it";
+        // callers, subclasses and code naming it in type hints all break when it changes: the sentence names each that exists
+        const parts = [
+          cap ? `${cap.callers} places call it (a widely used utility, so they are not listed one by one)`
+            : sure ? `${plural(sure, "function calls", "functions call")} it directly${res.hop2.length ? ` and ${res.hop2.length} more depend on those` : ""}` : "",
+          subs ? `${plural(subs, "class inherits", "classes inherit")} from it` : "",
+          users ? `${plural(users, "function names", "functions name")} it in a type hint, isinstance or except` : "",
+        ].filter(Boolean);
+        const who = parts.length ? parts.join(", ") : "nothing in this repo calls it";
         return <div className={`card verdict ${risk}`}><p>Changing <code>{name}</code>: {who}; {tests}.</p>
           <div className="tags"><span className={`badge ${risk === "high" ? "bad" : risk === "medium" ? "warn" : "good"}`}>{risk} risk</span>{res.capped?.length ? <span className="tag">widely used utility: change it backwards-compatibly</span> : null}<span className="tag">{res.files.length} file{res.files.length === 1 ? "" : "s"} in scope</span></div></div>;
       })()}
@@ -65,6 +73,9 @@ export default function Impact({ params }: { params: Record<string, string> }) {
           {res.capped?.length ? <div>{res.capped.map((c: any) => <Badge key={c.symbol} kind="warn">{c.symbol} has {c.callers} callers: widely used</Badge>)}</div> : null}</div>
         {(res.blind_spots || []).length > 0 && <div className="card blind"><b>The call graph cannot see every caller of this.</b><ul className="plain">{res.blind_spots.map((b: string) => <li key={b}>{b}</li>)}</ul><span className="hint">Search for the name before treating it as unused or changing its signature.</span></div>}
         <List title={<><Term k="hop1">Direct callers</Term>: must still work</>} items={res.hop1.filter((i: any) => i.conf !== "ambiguous")} repo={repo} link={link} hint="Resolved from imports, types or a type checker. [by-name] = the function is passed somewhere (a callback, a handler table), not called directly." />
+        {res.other_repos?.length ? <div className="card"><h3>Used in other repos <span className="muted">({res.other_repos.length})</span></h3>
+          <p className="muted" style={{ marginTop: 0 }}>Code in other onboarded repos that imports it. Changing it changes them too, and their tests are not run here.</p>
+          <div className="list">{res.other_repos.map((u: any) => <div key={u.repo + u.id} className="row"><a href={`#/impact?repo=${encodeURIComponent(u.repo)}&target=${encodeURIComponent(u.id)}`} className="mono">{u.repo}: {u.id}</a>{u.how !== "calls it" && <span className="tag">{u.how}</span>}</div>)}</div></div> : null}
         {res.subclasses?.length ? <List title="Subclasses: they inherit it, so a change to it changes them" items={res.subclasses} repo={repo} link={link} /> : null}
         {res.type_users?.length ? <List title="Type references: renaming or removing it breaks these" items={res.type_users} repo={repo} link={link} hint="They name the class in a type hint, an isinstance check or an except clause without calling it." /> : null}
         {res.overridden_by?.length ? <List title="Overridden by: keep their signatures in step" items={res.overridden_by} repo={repo} link={link} /> : null}

@@ -34,9 +34,11 @@ def build(ix, files, blocked=(), allowed=()) -> dict:
     rows = []
     for s in changed_symbols(ix, files):
         r = ix.impact(s["id"])
-        rows.append({"id": s["id"], "line": s["line"], "is_test": s["is_test"], "hop1": len(r["hop1"]), "hop2": len(r["hop2"]),
+        # what depends on it directly: callers, and for a class also its subclasses and the code naming it in type hints
+        direct = len(r["hop1"]) + len(r.get("subclasses", [])) + len(r.get("type_users", []))
+        rows.append({"id": s["id"], "line": s["line"], "is_test": s["is_test"], "hop1": direct, "hop2": len(r["hop2"]),
                      "tests": len(r["tests"]), "capped": bool(r["capped"]),
-                     "risk": "low" if s["is_test"] else risk(len(r["hop1"]), len(r["hop2"]), len(r["tests"]), bool(r["capped"]))})
+                     "risk": "low" if s["is_test"] else risk(direct, len(r["hop2"]), len(r["tests"]), bool(r["capped"]))})
     order = {"high": 0, "medium": 1, "low": 2}
     rows.sort(key=lambda x: (order[x["risk"]], -x["hop1"], x["id"]))
     from .check import tests_for
@@ -52,7 +54,7 @@ def render_md(r: dict, limit: int = 15) -> str:
             + (f"{r['untested']} changed symbol{'s' if r['untested'] != 1 else ''} with no test reaching it." if r["untested"] else "Every changed symbol is reached by a test."))
     out = ["### devmem review", head, ""]
     if rows:
-        out += ["| Changed symbol | Callers (direct / indirect) | Tests reaching it | Risk |", "|---|---|---|---|"]
+        out += ["| Changed symbol | Dependents (direct / indirect) | Tests reaching it | Risk |", "|---|---|---|---|"]
         out += [f"| `{x['id']}` | {x['hop1']}{'+' if x['capped'] else ''} / {x['hop2']} | {x['tests'] or '**none**'} | {x['risk']} |" for x in rows[:limit]]
         if len(rows) > limit:
             out.append(f"| +{len(rows) - limit} more | | | |")

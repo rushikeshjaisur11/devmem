@@ -234,8 +234,17 @@ def test_impact_of_a_base_class_lists_its_subclasses(tmp_path, capsys):
     root = tmp_path / "r"
     root.mkdir()
     (root / "errors.py").write_text("class Base(Exception):\n    pass\n\n\nclass Child(Base):\n    pass\n\n\nclass Grandchild(Child):\n    pass\n")
+    (root / "tests").mkdir()
+    (root / "tests/test_errors.py").write_text("from errors import Grandchild\n\n\ndef test_grandchild():\n    assert Grandchild()\n")
     indexer.index_repo(root, "r", accuracy="fast")
-    assert Index.load(root).impact("errors.py#Base")["subclasses"] == ["errors.py#Child", "errors.py#Grandchild"]
+    r = Index.load(root).impact("errors.py#Base")
+    assert r["subclasses"] == ["errors.py#Child", "errors.py#Grandchild"]
+    assert r["tests"] == ["tests/test_errors.py#test_grandchild"]          # a subclass's test exercises what it inherits
+    from types import SimpleNamespace
+    from devmem import review
+    diff = SimpleNamespace(path="errors.py", status="M", ignored=False, hunks=[(1, 1, 1, 1, "", "")], added=1, removed=0)
+    row = review.build(Index.load(root), [diff])["symbols"][0]
+    assert row["id"] == "errors.py#Base" and row["hop1"] == 2 and row["risk"] == "medium"   # not "low": two classes depend on it
     capsys.readouterr()
     assert cli.run(["impact", "errors.py#Base"], root=root) == 0
     out = capsys.readouterr().out

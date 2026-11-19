@@ -7,10 +7,12 @@ files, and builds prompts for the agent that will do the work.
 - **Index** repos into a call/test/table graph (Python, JS/TS, Go, Java, C#, Kotlin, Rust, SQL, Spark) with blast-radius analysis, test selection and lineage.
 - **Publish** `.devmem/` knowledge into each repo plus an `AGENTS.md` block; agents query it offline with the small `devmem` CLI.
 - **Cross-repo reuse**: find what other repos already built, rated by effort to adapt; share it through a central **hub** git repo.
+  **Cross-repo impact**: "what breaks if" also lists the functions in other onboarded repos that call, subclass or type-hint
+  the symbol (live in the app; in `devmem impact` as of the last publish, from `.devmem/consumers.json`).
 - **Library docs** (llms.txt, web pages, PyPI, npm, or a local docs folder) fetched where there is internet and shipped to agents that have none; reuse
   suggestions are checked against them and flagged `MODERNIZE` when code hand-rolls what a library now provides.
 - **Chat** (web UI): ask your repos, or describe something new / paste a plan and get a compact prompt for another agent.
-- **Guards**: `devmem diffcheck` blocks oversized, out-of-scope or test-weakening diffs; lessons and rules (added by agents, or by you in the UI) persist what was learned.
+- **Guards**: `devmem diffcheck` blocks oversized, out-of-scope or test-weakening diffs, and renames or signature changes that leave callers, subclasses or type hints behind; lessons and rules (added by agents, or by you in the UI) persist what was learned.
 - **Token budget**: the `AGENTS.md` block is ~150 tokens and the MCP tool list ~1,000; a task starts with one `devmem context` call
   (~1,200 tokens, measured at about half of the recall + find + show + impact + hygiene answers it replaces on a 21,000-symbol repo);
   every other answer is capped, with a hint for the full version.

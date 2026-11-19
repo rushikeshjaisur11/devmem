@@ -132,3 +132,48 @@ def test_rust_and_csharp_index_to_edges_and_test_commands(tmp_path):
     imp = ix.impact("Svc.cs#Retry.Run")
     assert [h["id"] for h in imp["hop1"]] == ["Svc.cs#Svc.Load"] and "SvcTests.cs#SvcTests.Loads" in imp["tests"]
     assert "FullyQualifiedName~SvcTests.Loads" in chk.tests_for(ix, ["Svc.cs"])[1]
+
+
+def test_typescript_type_references_interfaces_and_subclasses(tmp_path):
+    """Interfaces, type aliases and enums are symbols (exported ones were skipped before); a type named in a signature, a
+    field, a generic, `as` or `instanceof` is a `uses` edge, resolved through imports, `* as ns` and barrel re-exports;
+    `extends` / `implements` give inherits edges, so `impact` lists subclasses; a call never resolves to an interface."""
+    from devmem.index import Index
+    from devmem_app import indexer
+    root = tmp_path / "ts"
+    (root / "src/models").mkdir(parents=True)
+    (root / "package.json").write_text("{}")
+    (root / "src/models/store.ts").write_text(
+        "export interface Store { get(k: string): Item }\n"
+        "export type Item = { id: string }\n"
+        "export enum Kind { A, B }\n"
+        "export class BaseError extends Error {}\n"
+        "export class NotFound extends BaseError {}\n"
+        "export class MemoryStore implements Store { get(k: string): Item { return { id: k } } }\n")
+    (root / "src/models/index.ts").write_text("export { Store, Item, BaseError } from './store';\n")
+    (root / "src/use.ts").write_text(
+        "import { Store, Item, BaseError } from './models';\n"
+        "import * as m from './models/store';\n"
+        "export function read(s: Store, k: string): Item | undefined { return s.get(k) }\n"
+        "export function check(e: unknown) { return e instanceof BaseError }\n"
+        "export const kind = (x: unknown) => (x as m.Kind);\n"
+        "export class Cache { private backing: Store; constructor(b: Store) { this.backing = b } }\n"
+        "export function Response() { return 1 }\n")
+    (root / "src/other.ts").write_text("interface Response { ok: boolean }\nexport function f() { return Response() }\n")
+    idx = indexer.index_repo(root, "ts", accuracy="fast")
+    kinds = {s["id"]: s for s in idx["symbols"]}
+    assert kinds["src/models/store.ts#Store"]["kind"] == "class" and kinds["src/models/store.ts#Store"].get("type_only")
+    assert not kinds["src/models/store.ts#Kind"].get("type_only")
+    uses = {(e["src"], e["dst"]) for e in idx["edges"] if e["type"] == "uses"}
+    for src, dst in [("src/use.ts#read", "src/models/store.ts#Store"), ("src/use.ts#read", "src/models/store.ts#Item"),
+                     ("src/use.ts#check", "src/models/store.ts#BaseError"), ("src/use.ts#kind", "src/models/store.ts#Kind"),
+                     ("src/use.ts#Cache", "src/models/store.ts#Store"), ("src/use.ts#Cache.constructor", "src/models/store.ts#Store")]:
+        assert (src, dst) in uses, (src, dst)
+    inherits = {(e["src"], e["dst"]) for e in idx["edges"] if e["type"] == "inherits"}
+    assert ("src/models/store.ts#NotFound", "src/models/store.ts#BaseError") in inherits
+    assert ("src/models/store.ts#MemoryStore", "src/models/store.ts#Store") in inherits
+    calls = {(e["src"], e["dst"]) for e in idx["edges"] if e["type"] == "calls"}
+    assert ("src/other.ts#f", "src/other.ts#Response") not in calls                 # an interface is never called
+    r = Index.load(root).impact("src/models/store.ts#Store")
+    assert r["subclasses"] == ["src/models/store.ts#MemoryStore"]
+    assert {"src/use.ts#read", "src/use.ts#Cache"} <= set(r["type_users"])

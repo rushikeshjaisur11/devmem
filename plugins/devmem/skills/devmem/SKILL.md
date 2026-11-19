@@ -46,7 +46,7 @@ Before editing a function, class or table column that `context` did not already 
 
 ## 4. Guard the diff, then record it
 
-- `devmem diffcheck` before every commit. If it blocks, reduce the change. Only when the larger change is truly required, add a line to the PR description: `devmem-allow: <check> <reason>` (checks: size, out_of_scope, format_only, new_dependency, deleted_test, api_change, duplicate, lint_fix, no_touch).
+- `devmem diffcheck` before every commit. If it blocks, reduce the change (`breaks_dependents`: update the callers it names). Only when the larger change is truly required, add a line to the PR description: `devmem-allow: <check> <reason>` (checks: size, out_of_scope, format_only, new_dependency, deleted_test, api_change, breaks_dependents, duplicate, lint_fix, no_touch).
 - Before opening the PR: `devmem report --base <default-branch> --task "<what you did>"` and commit the new file under `.devmem/metrics/`. Add `--tokens N` only if you know the real number.
 
 ## 5. Leave a lesson when it was hard

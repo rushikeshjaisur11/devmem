@@ -90,11 +90,49 @@ def parse_js(path: str, src: str) -> tuple[dict, list[dict]]:
     lang = "ts" if kind != "javascript" else "js"
     lines = src.splitlines()
     rec = {"lang": lang, "imports": [], "tables": [], "calls": [], "lines": len(lines), "sql": [], "df_columns": [],
-           "exports": [], "default_export": None}
+           "exports": [], "default_export": None, "types": []}
     syms: list[dict] = []
     tree = _parser(kind).parse(src.encode("utf-8"))
     test_file = is_test_file(path)
     seen_ids: set[str] = set()
+    seen_types: set[tuple] = set()
+
+    def type_ref(caller: str, name: str, how: str, line: int):
+        """A class, interface or type named without a call: an annotation, a generic argument, `as X`, `instanceof X`."""
+        if name and (caller, name) not in seen_types and len(rec["types"]) < 1500:
+            seen_types.add((caller, name))
+            rec["types"].append({"caller": caller, "name": name, "how": how, "line": line})
+
+    def heritage(n) -> list[str]:
+        """What a class extends / implements, or an interface extends, as written (generic arguments dropped)."""
+        out = []
+        for c in n.named_children:
+            if c.type == "class_heritage":
+                for cl in c.named_children:
+                    for t in cl.named_children:
+                        if t.type in ("identifier", "member_expression", "type_identifier", "nested_type_identifier"):
+                            out.append(_t(t))
+                        elif t.type == "generic_type" and t.child_by_field_name("name") is not None:
+                            out.append(_t(t.child_by_field_name("name")))
+            elif c.type == "extends_type_clause":
+                for t in c.named_children:
+                    if t.type in ("type_identifier", "nested_type_identifier"):
+                        out.append(_t(t))
+                    elif t.type == "generic_type" and t.child_by_field_name("name") is not None:
+                        out.append(_t(t.child_by_field_name("name")))
+        return out[:6]
+
+    def set_bases(sid: str, bases: list[str]):
+        sym = next((x for x in syms if x["id"] == sid), None)
+        if bases and sym is not None and not sym.get("bases"):
+            sym["bases"] = bases
+
+    def scan_sig(n, caller: str):
+        """Parameters, return type and type parameters of a function: their annotations (and default values) belong to it."""
+        for f in ("parameters", "return_type", "type_parameters"):
+            c = n.child_by_field_name(f)
+            if c is not None:
+                scan(c, caller)
 
     def add(n, name: str, qual: str, symkind: str, is_test=False, sig=None):
         sid = f"{path}#{qual}"
@@ -107,6 +145,13 @@ def parse_js(path: str, src: str) -> tuple[dict, list[dict]]:
         return sid
 
     def scan(n, caller: str, suites: tuple = ()):
+        if n.type in ("type_identifier", "nested_type_identifier"):
+            type_ref(caller, _t(n), "annotation", n.start_point[0] + 1)
+            return
+        if n.type == "binary_expression" and any(c.type == "instanceof" for c in n.children):
+            r = n.child_by_field_name("right")
+            if r is not None and r.type in ("identifier", "member_expression"):
+                type_ref(caller, _t(r), "instanceof", n.start_point[0] + 1)
         if n.type == "call_expression":
             fn = n.child_by_field_name("function")
             name, recv = _callee(fn) if fn is not None else (None, None)
@@ -151,19 +196,22 @@ def parse_js(path: str, src: str) -> tuple[dict, list[dict]]:
             rec["exports"].append(name)
         if default:
             rec["default_export"] = name
+        scan_sig(n, name)
         body = n.child_by_field_name("body")
         scan(body if body is not None else n, name)
 
     def class_symbol(n, exported=False, default=False):
         nm = n.child_by_field_name("name")
         name = _t(nm) if nm is not None else "default"
-        add(n, name, name, "class", sig=_sig(n, lines))
+        set_bases(add(n, name, name, "class", sig=_sig(n, lines)), heritage(n))
         if exported:
             rec["exports"].append(name)
         if default:
             rec["default_export"] = name
         body = n.child_by_field_name("body")
         for m in (body.named_children if body is not None else []):
+            if m.type in ("public_field_definition", "field_definition") and m.child_by_field_name("type") is not None:
+                scan(m.child_by_field_name("type"), name)          # `private store: Store`
             if m.type in ("method_definition", "public_field_definition", "field_definition"):
                 mn = m.child_by_field_name("name")
                 val = m.child_by_field_name("value") if m.type != "method_definition" else m
@@ -171,6 +219,7 @@ def parse_js(path: str, src: str) -> tuple[dict, list[dict]]:
                     continue
                 q = f"{name}.{_t(mn)}"
                 add(m, _t(mn), q, "method")
+                scan_sig(val, q)
                 scan(val.child_by_field_name("body") or val, q)
 
     def declaration(n, exported=False, default=False) -> bool:
@@ -181,6 +230,22 @@ def parse_js(path: str, src: str) -> tuple[dict, list[dict]]:
             return True
         if t in ("class_declaration", "abstract_class_declaration"):
             class_symbol(n, exported, default)
+            return True
+        if t in ("interface_declaration", "type_alias_declaration", "enum_declaration"):
+            nm = n.child_by_field_name("name")
+            if nm is None:
+                return True
+            name = _t(nm)
+            sid = add(n, name, name, "class", sig=_sig(n, lines))
+            set_bases(sid, heritage(n))
+            if t != "enum_declaration":          # an interface or type alias exists only for the type checker: never called
+                next(x for x in syms if x["id"] == sid)["type_only"] = True
+            if exported:
+                rec["exports"].append(name)
+            for f in ("body", "value", "type_parameters"):               # the types its members / definition name
+                c = n.child_by_field_name(f)
+                if c is not None:
+                    scan(c, name)
             return True
         if t in ("lexical_declaration", "variable_declaration"):
             for d in n.named_children:
@@ -193,6 +258,9 @@ def parse_js(path: str, src: str) -> tuple[dict, list[dict]]:
                     add(d, _t(nm), _t(nm), "function", sig=_sig(d, lines))
                     if exported:
                         rec["exports"].append(_t(nm))
+                    scan_sig(val, _t(nm))
+                    if d.child_by_field_name("type") is not None:      # const f: Handler = () => ...
+                        scan(d.child_by_field_name("type"), _t(nm))
                     scan(val.child_by_field_name("body") or val, _t(nm))
                 elif val.type == "call_expression" and _require(d, nm, val):
                     pass
@@ -275,10 +343,6 @@ def parse_js(path: str, src: str) -> tuple[dict, list[dict]]:
                                 rec["imports"].append({"module": _str(src_n), "name": _t(nm), "alias": _t(al) if al is not None else _t(nm)})
         elif declaration(n):
             continue
-        elif n.type in ("interface_declaration", "type_alias_declaration", "enum_declaration"):
-            nm = n.child_by_field_name("name")
-            if nm is not None:
-                add(n, _t(nm), _t(nm), "class", sig=_sig(n, lines))
         else:
             scan(n, "<module>")
             module_nodes.append(n)

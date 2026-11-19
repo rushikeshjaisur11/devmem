@@ -105,6 +105,8 @@ def _main(argv=None) -> int:
     s.add_argument("--into", required=True, help="repo the agent will work in"); s.add_argument("--need", help="the requirement, in words")
     s.add_argument("--plan", help="markdown plan file you wrote"); s.add_argument("--code", action="store_true", help="include source of existing solutions")
     s.add_argument("--no-fetch", action="store_true", help="do not fetch the plan's Docs: sources")
+    s = sub.add_parser("graphify-cleanup", help="delete a graphify-out/ folder an older devmem left in a repo (asks first)")
+    s.add_argument("path"); s.add_argument("--yes", action="store_true", help="do not ask")
     s = sub.add_parser("clones", help="token-level duplicate code across all onboarded repos")
     a = p.parse_args(argv)
 
@@ -385,6 +387,18 @@ def _main(argv=None) -> int:
                 print(h["prompt"] + "\n")
         if not hits and not a.json:
             print("nothing in the other repos matches; write it fresh")
+    elif a.cmd == "graphify-cleanup":
+        from . import graphify
+        left = graphify.leftover(Path(a.path))
+        if not left:
+            print("no graphify-out/ written by devmem here (a folder that may be your own, or is committed, is left alone)")
+            return 0
+        print(f"{left['path']}: {left['files']} files, {left['bytes'] // 1024} KB, written by an older devmem and no longer read")
+        if not a.yes and input("delete it? [y/N] ").strip().lower() not in ("y", "yes"):
+            print("left as it is")
+            return 0
+        graphify.remove_leftover(Path(a.path))
+        print("deleted")
     elif a.cmd == "clones":
         from .clones import clones_for_repo, find_clones
         srcs = {}
