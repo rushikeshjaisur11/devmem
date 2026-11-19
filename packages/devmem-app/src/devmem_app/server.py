@@ -1053,7 +1053,7 @@ def create_app() -> FastAPI:
             return {"kind": "not_found", **r}
         if "table" in r:
             return {"kind": "table", **r}
-        ids = r["targets"] + [i["id"] for i in r["hop1"] + r["hop2"]] + r["tests"]
+        ids = r["targets"] + [i["id"] for i in r["hop1"] + r["hop2"]] + r["tests"] + r.get("type_users", []) + r.get("subclasses", [])
         return {"kind": "symbol", **r, "lines": {i: ix.symbols[i]["line"] for i in ids if i in ix.symbols}}
 
     @app.get("/api/impact-column")

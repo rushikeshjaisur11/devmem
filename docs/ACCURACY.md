@@ -141,6 +141,27 @@ call-site recall from 0.958 / 0.944 / 0.955 to 0.964 / 0.947 / 0.964 (httpx / st
 What the remaining real misses are: values produced by a generator's `yield`, loop variables over containers whose
 element type is not declared, and receivers that are function results without a declared return type.
 
+## Type references and subclasses (2026-11-19)
+
+Most references scip-python reports that devmem had no edge for were not calls: a class named in a type hint, an
+`isinstance` / `issubclass` check, an `except` clause or a bare `raise X`. Renaming or removing the class breaks those
+functions as surely as its callers. They are now `uses` edges (Python), resolved through the file's imports like calls, and
+`impact` lists them on their own line ("type references") next to the callers, plus every subclass of a class target.
+
+| Library code, against scip-python | Recall: calls only | Recall: calls + `uses` | Precision of the new `uses` edges |
+| --- | --- | --- | --- |
+| devmem_app | 0.955 | 0.983 | 1.000 |
+| requests 2.32.3 | 0.946 | 0.975 | 1.000 |
+| click 8.1.7 | 0.613 | 0.929 | 0.987 |
+| starlette 0.41.3 | 0.594 | 0.802 | 0.985 |
+| httpx 0.28.1 | 0.531 | 0.782 | 1.000 |
+| rich 13.9.4 | 0.551 | 0.775 | 0.953 |
+
+The `uses` edges SCIP does not list are class-to-class field annotations (`class ConsoleOptions: size: ConsoleDimensions`),
+which this measurement leaves out of the oracle on purpose; read by hand they are right. ("Recall: calls only" here counts
+`refs` edges too and every SCIP-covered caller, so it differs slightly from the table above.) What is still missing is
+mostly names passed around as values (`cls=Foo`, a class in a registry dict) and module-level aliases (`HeaderTypes = ...`).
+
 ## Checks that run on every change
 
 - `fixtures/accuracy_py` is built around the traps above (the same method name on three classes, `dict.items()` beside a

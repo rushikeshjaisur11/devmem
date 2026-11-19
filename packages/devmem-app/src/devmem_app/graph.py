@@ -588,6 +588,15 @@ def build_edges(idx: dict) -> list[dict]:
                 if d["id"] != src_id:
                     add(src_id, d["id"], "refs", CONF_STRUCTURAL)
 
+        # classes named without a call (annotations, isinstance, except, bare raise): a rename or removal breaks these
+        for t in rec.get("types", []):
+            src_id = f"{path}#{t['caller']}"
+            if src_id not in by_id:
+                continue
+            d = resolve_ref(path, t["name"])
+            if d is not None and d["kind"] == "class" and d["id"] != src_id and not src_id.startswith(d["id"] + "."):
+                add(src_id, d["id"], "uses", CONF_STRUCTURAL)
+
     for cls in idx["symbols"]:
         if cls["kind"] != "class" or not cls.get("bases"):
             continue

@@ -190,3 +190,53 @@ def test_receivers_reached_through_attributes_and_conditional_assignments(tmp_pa
     assert out("app/use.py#prop") == {"app/models.py#Console.line": "structural"}            # property return type
     assert out("app/use.py#Live.stop") == {"app/models.py#Console.line": "structural"}       # both sides are a Console
     assert all(c == "ambiguous" for c in out("app/use.py#Live.mixed").values())             # Console or Other: a guess
+
+
+def test_classes_named_without_a_call_are_type_references(tmp_path, capsys):
+    """Against scip-python, most references devmem had no edge for were a class named in a type hint, an isinstance check,
+    an `except` or a bare `raise`. Renaming or removing the class breaks those functions as surely as its callers, so
+    `impact` lists them as type references (and tests that name it among the tests)."""
+    root = tmp_path / "r"
+    (root / "app").mkdir(parents=True)
+    (root / "tests").mkdir()
+    (root / "app/__init__.py").write_text("")
+    (root / "app/models.py").write_text(
+        "class Store:\n    pass\n\n\nclass StoreError(Exception):\n    pass\n\n\n"
+        "class Holder:\n    store: 'Store'\n\n    def same(self) -> 'Holder':\n        return self\n")
+    (root / "app/use.py").write_text(
+        "from typing import Optional\n"
+        "from app import models\n"
+        "from app.models import Store, StoreError\n\n\n"
+        "def hint(s: Optional[Store]) -> list['Store']:\n    return [s]\n\n\n"
+        "def check(x):\n    return isinstance(x, (models.Store, int))\n\n\n"
+        "def guard(f):\n    try:\n        return f()\n    except StoreError:\n        raise StoreError\n\n\n"
+        "def nested():\n    def inner(s: Store):\n        return s\n    return inner\n\n\n"
+        "def unrelated(n: int) -> str:\n    return str(n)\n")
+    (root / "tests/test_use.py").write_text(
+        "from app.models import Store\n\n\ndef test_kind():\n    x: Store = None\n    assert x is None\n")
+    idx = indexer.index_repo(root, "r", accuracy="fast")
+    uses = {(e["src"], e["dst"]) for e in idx["edges"] if e["type"] == "uses"}
+    assert uses == {("app/use.py#hint", "app/models.py#Store"), ("app/use.py#check", "app/models.py#Store"),
+                    ("app/use.py#guard", "app/models.py#StoreError"), ("app/use.py#nested", "app/models.py#Store"),
+                    ("app/models.py#Holder", "app/models.py#Store"), ("tests/test_use.py#test_kind", "app/models.py#Store")}
+    r = Index.load(root).impact("app/models.py#Store")
+    assert r["type_users"] == ["app/models.py#Holder", "app/use.py#check", "app/use.py#hint", "app/use.py#nested"]
+    assert "tests/test_use.py#test_kind" in r["tests"] and r["hop1"] == [] and r["subclasses"] == []
+    assert Index.load(root).impact("app/models.py#StoreError")["type_users"] == ["app/use.py#guard"]
+    capsys.readouterr()
+    assert cli.run(["impact", "app/models.py#Store"], root=root) == 0
+    out = capsys.readouterr().out
+    assert "type references" in out and "app/use.py: check, hint, nested" in out and "no callers found" not in out
+
+
+def test_impact_of_a_base_class_lists_its_subclasses(tmp_path, capsys):
+    """httpx's TimeoutException had "no callers found" although four exception classes inherit from it."""
+    root = tmp_path / "r"
+    root.mkdir()
+    (root / "errors.py").write_text("class Base(Exception):\n    pass\n\n\nclass Child(Base):\n    pass\n\n\nclass Grandchild(Child):\n    pass\n")
+    indexer.index_repo(root, "r", accuracy="fast")
+    assert Index.load(root).impact("errors.py#Base")["subclasses"] == ["errors.py#Child", "errors.py#Grandchild"]
+    capsys.readouterr()
+    assert cli.run(["impact", "errors.py#Base"], root=root) == 0
+    out = capsys.readouterr().out
+    assert "subclasses (inherit it" in out and "Child" in out and "no callers found" not in out
