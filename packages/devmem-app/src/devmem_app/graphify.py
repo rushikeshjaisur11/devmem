@@ -128,9 +128,11 @@ def merge(idx: dict, g_edges: list[dict], covered: set[str]) -> dict:
     # like our own ambiguous ones: on click 8.1.7 adding them unchecked (342 of them) made the index less precise than no
     # Graphify at all, some linking library code to test functions. So they are kept only from tests, where picking an
     # extra test is cheap and missing one is not, and never point into a test.
+    # A class -> one of its own methods is Graphify placing a call made inside a method on the class itself (private `#m()`,
+    # getters): on p-queue every such edge it added was wrong.
     test_ids = {s["id"] for s in idx["symbols"] if s.get("is_test")}
     added = [e for k, e in gk.items() if k not in have and e["dst"] not in test_ids
-             and (e["conf"] == "structural" or e["src"] in test_ids)]
+             and (e["conf"] == "structural" or e["src"] in test_ids) and not e["dst"].startswith(e["src"] + ".")]
     idx["edges"] = sorted(kept + added, key=lambda e: (e["src"], e["dst"], e["type"]))
     return {"edges": len(g_edges), "upgraded": upgraded, "dropped_ambiguous": dropped, "added": len(added)}
 

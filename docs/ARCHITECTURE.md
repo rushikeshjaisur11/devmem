@@ -37,7 +37,7 @@ with nothing changed 1.2 s (it was 78 s when every import scanned every file). `
 
 - `files`: `{path: {hash, lang, imports, tables, calls}}`
 - `symbols`: `{id: "path#qualname", name, qualname, kind, file, line, end_line, sig, doc, is_test}`
-- `edges`: `{src, dst, type: calls|tests|refs|uses|inherits|overrides|reads|writes, conf: precise|structural|ambiguous|co-change}` (`refs`: a function passed by name; `uses`: a class named in a type hint, `isinstance`, `except` or a bare `raise`, Python); table edges use `dst = "table:<name>"`.
+- `edges`: `{src, dst, type: calls|tests|refs|uses|inherits|overrides|reads|writes, conf: precise|structural|ambiguous|co-change}` (`refs`: a function passed by name; `uses`: a class, interface or type named without a call: a type hint, `isinstance` / `instanceof`, `except`, a bare `raise`, `as`, a generic argument; Python and JS/TS); table edges use `dst = "table:<name>"`.
 
 `Index` (`index.py`) loads the whole file into dicts (`symbols`, `out`, `inc`) and answers every query in memory.
 `Index.find` picks candidates with an FTS5 query (any shared token, or the query as a substring of the qualname), then scores only those by token overlap on name, doc and path.

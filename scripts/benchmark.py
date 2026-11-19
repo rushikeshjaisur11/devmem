@@ -1,6 +1,6 @@
 """Edge accuracy benchmark: score devmem's final index against SCIP on real code, and compare with a saved run.
 
-    python scripts/benchmark.py                                  # the default PyPI corpus, prints a table
+    python scripts/benchmark.py                                  # the default corpus (PyPI + pinned TypeScript repos)
     python scripts/benchmark.py --save docs/benchmark.json       # ... and records it
     python scripts/benchmark.py --check docs/benchmark.json      # fails if precision or recall fell against that record
     python scripts/benchmark.py --repo ~/src/myapp --repo ~/src/web   # your own checkouts (Python or TypeScript)
@@ -15,7 +15,8 @@ Columns:
                  `full` = after the Graphify merge (what an index built in full mode serves, before SCIP is merged in)
   recall         share of SCIP's references devmem has an edge for, counting `uses` (type hints, isinstance, except)
   call recall    the same, counting only references written as a call (`name(` on that line)
-  uses prec.     share of `uses` edges that are not also call edges and that SCIP confirms
+  uses prec.     share of `uses` edges that are not also call edges and that SCIP confirms (from functions and methods:
+                 SCIP's edges leave out class -> class pairs, so a class's field types cannot be scored)
 """
 from __future__ import annotations
 
@@ -30,12 +31,16 @@ import tarfile
 import tempfile
 from pathlib import Path
 
-CORPUS = [  # (pip requirement, package directory inside the sdist)
+CORPUS = [  # Python: (pip requirement, package directory inside the sdist); TypeScript: (git URL@commit, None)
     ("requests==2.32.3", "src/requests"),
     ("click==8.1.7", "src/click"),
     ("starlette==0.41.3", "starlette"),
     ("httpx==0.28.1", "httpx"),
     ("rich==13.9.4", "rich"),
+    ("https://github.com/sindresorhus/ky@3541888878c4d303a8bc2ad61815f4e048f55a5d", None),
+    ("https://github.com/pmndrs/zustand@9fed2eb2f3af672da9f7bf694b996df3831fc207", None),
+    ("https://github.com/sindresorhus/p-queue@7f272ab5ff2254c0dc2537b7977e88ede1cd55e8", None),
+    ("https://github.com/honojs/hono@75ff8e3ea18485589816881c6278bc9783e56602", None),
 ]
 TEST_DIRS = ("tests/", "test/", "testing/")
 TOLERANCE = 0.01
@@ -60,6 +65,20 @@ def fetch_sdist(req: str, sub: str, work: Path) -> Path:
     shutil.rmtree(dest, ignore_errors=True)
     (dest / sub).parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(top / sub, dest / sub)
+    return dest
+
+
+def fetch_git(spec: str, work: Path) -> Path:
+    url, sha = spec.rsplit("@", 1)
+    dest = work / url.rstrip("/").rsplit("/", 1)[-1]
+    if not (dest / ".git").exists():
+        shutil.rmtree(dest, ignore_errors=True)
+        dest.mkdir(parents=True)
+        for argv in (["git", "init", "-q"], ["git", "remote", "add", "origin", url], ["git", "fetch", "-q", "--depth", "1", "origin", sha],
+                     ["git", "checkout", "-q", "FETCH_HEAD"]):
+            r = sh(argv, cwd=dest)
+            if r.returncode:
+                raise RuntimeError(f"{spec}: {' '.join(argv[:2])} failed: {(r.stderr or r.stdout).strip()[-200:]}")
     return dest
 
 
@@ -142,7 +161,8 @@ def score(root: Path, scip_file: Path) -> dict:
             if re.search(rf"\b{re.escape(defs[sym]['name'])}\s*\(", ln):
                 sites.setdefault((s["id"], defs[sym]["id"]), True)
     called = {k for k in O if k in sites}
-    new_uses = uses - full
+    # SCIP's edges leave out class -> class pairs (a base class, a field's type), so those `uses` edges cannot be scored
+    new_uses = {k for k in uses - full if syms[k[0]]["kind"] != "class"}
 
     def ratio(a, b):
         return round(a / b, 3) if b else None
@@ -165,9 +185,9 @@ def main() -> int:
     targets = [(Path(p).expanduser().resolve(), None) for p in a.repo] or [(None, c) for c in CORPUS]
     results, failed = {}, []
     for path, entry in targets:
-        name = path.name if path else entry[0]
+        name = path.name if path else entry[0].split("@")[0].rstrip("/").rsplit("/", 1)[-1] if entry[1] is None else entry[0]
         try:
-            root = path or fetch_sdist(entry[0], entry[1], work)
+            root = path or (fetch_git(entry[0], work) if entry[1] is None else fetch_sdist(entry[0], entry[1], work))
             results[name] = score(root, scip_index(root, work / f"{root.name}.scip"))
         except Exception as e:
             failed.append(f"{name}: {e}")

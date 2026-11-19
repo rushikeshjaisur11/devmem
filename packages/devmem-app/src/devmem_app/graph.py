@@ -132,9 +132,44 @@ def build_edges(idx: dict) -> list[dict]:
         if k not in best or RANK[conf] > RANK[best[k]]:
             best[k] = conf
 
+    def js_export(f: str, name: str, depth: int = 0) -> dict | None:
+        """The symbol file `f` exports as `name`, following `export { X } from './x'` (barrel files) a few hops."""
+        if name == "default":
+            d = files.get(f, {}).get("default_export")
+            return by_file.get(f, {}).get(d) if d else None
+        hit = by_file.get(f, {}).get(name)
+        if hit is not None or depth > 3:
+            return hit
+        for i in files.get(f, {}).get("imports", []):
+            if i["alias"] == name and i["name"]:
+                for g in _js_files(files, f, i["module"]):
+                    hit = js_export(g, i["name"], depth + 1)
+                    if hit is not None:
+                        return hit
+        return None
+
+    def js_ref(path: str, name: str) -> dict | None:
+        """`Store`, `ns.Store` as written in a JS/TS file -> the symbol it names, through the file's imports or the file itself."""
+        head, _, rest = name.partition(".")
+        for i in files.get(path, {}).get("imports", []):
+            if i["alias"] != head:
+                continue
+            want = (i["name"] if not rest else rest) if i["name"] else rest
+            if not want or (rest and i["name"]):
+                return None
+            for f in _js_files(files, path, i["module"]):
+                hit = js_export(f, want)
+                if hit is not None:
+                    return hit
+            return None
+        return by_file.get(path, {}).get(name) if not rest else None
+
     # ---- receiver types (Python): which class a variable holds, so `x.get()` resolves to one class, not every class with get ----
     def base_class(cls: dict, name: str) -> dict | None:
         rec = files.get(cls["file"], {})
+        if rec.get("lang") in ("js", "ts"):
+            hit = js_ref(cls["file"], name)
+            return hit if hit is not None and hit["kind"] == "class" else None
         simple = name.split(".")[-1]
         loc = by_file.get(cls["file"], {}).get(simple)
         if loc and loc["kind"] == "class" and "." not in name:
@@ -462,13 +497,18 @@ def build_edges(idx: dict) -> list[dict]:
                 src_id = f"{path}#{c['caller']}"
                 if src_id not in by_id:
                     continue
-                cands = _js_cands(path, rec, c, files, by_id, by_name, by_file, local, from_imp, mod_alias)
+                cands = [d for d in _js_cands(path, rec, c, files, by_id, by_name, by_file, local, from_imp, mod_alias) if not d.get("type_only")]
                 if not cands or len(cands) > MAX_AMBIGUOUS:
                     continue
                 conf = CONF_AMBIGUOUS if len(cands) > 1 else CONF_STRUCTURAL
                 for d in cands:
                     if d["id"] != src_id:
                         add(src_id, d["id"], "tests" if by_id[src_id]["is_test"] else "calls", conf)
+            for t in rec.get("types", []):       # classes, interfaces, types named in annotations, generics, `as`, instanceof
+                src_id = f"{path}#{t['caller']}"
+                d = js_ref(path, t["name"]) if src_id in by_id else None
+                if d is not None and d["kind"] == "class" and d["id"] != src_id and not src_id.startswith(d["id"] + "."):
+                    add(src_id, d["id"], "uses", CONF_STRUCTURAL)
             continue
         if rec.get("lang") != "python":
             # SQL files: table edges attach to the file itself

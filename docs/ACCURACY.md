@@ -162,14 +162,34 @@ which this measurement leaves out of the oracle on purpose; read by hand they ar
 `refs` edges too and every SCIP-covered caller, so it differs slightly from the table above.) What is still missing is
 mostly names passed around as values (`cls=Foo`, a class in a registry dict) and module-level aliases (`HeaderTypes = ...`).
 
+## TypeScript: interfaces, type references, inheritance (2026-11-19)
+
+Exported interfaces, type aliases and enums were not indexed at all (only unexported ones were), and JS/TS classes recorded no
+base classes. Now all three are symbols (interfaces and type aliases marked `type_only`, so no call ever resolves to them:
+on hono a call to the global `Response` had matched its `Response` interface); `extends` / `implements` give `inherits`
+edges, so `impact` lists subclasses and implementations; and a type named in a signature, a field, a generic argument,
+`as` or `instanceof` is a `uses` edge, resolved through named imports, `* as ns` and barrel re-exports
+(`export { X } from './x'`). Graphify-only edges from a class to one of its own methods are no longer added: on p-queue
+every one was a call made inside a method that Graphify placed on the class.
+
+| Against scip-typescript, library code | Recall before -> after | Precision (with Graphify) before -> after | `uses` precision |
+| --- | --- | --- | --- |
+| ky | 0.790 -> 0.871 | 0.917 -> 0.917 | 1.0 |
+| zustand | 0.509 -> 1.000 | 1.000 -> 1.000 | 1.0 |
+| p-queue | 0.713 -> 0.817 | 0.905 -> 0.944 | 1.0 |
+| hono | 0.538 -> 0.834 | 0.884 -> 0.900 | 0.999 |
+
+On ky the remaining "wrong" edges are `new TimeoutError(...)`: scip-typescript files them under the constructor, devmem
+under the class. All four are in the benchmark corpus, pinned to the commits measured.
+
 ## Re-running these measurements
 
-`python scripts/benchmark.py` downloads the corpus (requests, click, starlette, httpx, rich from PyPI), indexes each with
-scip-python as the oracle and Graphify as in production, and prints precision (structural only and after Graphify),
+`python scripts/benchmark.py` downloads the corpus (requests, click, starlette, httpx, rich from PyPI; ky, zustand, p-queue,
+hono from GitHub at pinned commits), indexes each with scip-python / scip-typescript as the oracle and Graphify as in production, and prints precision (structural only and after Graphify),
 recall, call-site recall and the precision of `uses` edges for library code. `--save docs/benchmark.json` records a run
 (the committed one is from 2026-11-19); `--check docs/benchmark.json` exits 1 if any of those fell by more than 0.01, so a
 resolver change can be checked before it is merged. `--repo <path>` scores your own checkouts, Python or TypeScript.
-It takes about a minute and needs network, Node.js and graphifyy, so it is not part of the CI test run.
+It takes about two minutes and needs network, Node.js and graphifyy, so it is not part of the CI test run.
 
 ## Checks that run on every change
 
