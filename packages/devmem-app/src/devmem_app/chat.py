@@ -35,15 +35,37 @@ def tokenize(text: str) -> list[str]:
 
 
 # ---------- corpus ----------
+def _uses(root: Path, ix: Index, s: dict, where: dict) -> str:
+    """The imported names a definition's body uses (create_engine, httpx...) and its decorators, so a question about
+    "the database engine" finds the function that calls create_engine even before it has a description."""
+    if s["file"] not in where:   # each file is read once: imported name -> the lines that use it
+        f = ix.data["files"].get(s["file"]) or {}
+        aliases = {i["alias"] for i in f.get("imports", []) if i.get("alias")}
+        at: dict[str, list[int]] = {}
+        if aliases:
+            try:
+                text = (root / s["file"]).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                text = ""
+            for n, line in enumerate(text.splitlines(), 1):
+                for a in aliases & set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", line)):
+                    at.setdefault(a, []).append(n)
+        where[s["file"]] = at
+    lo, hi = s["line"], s.get("end_line", s["line"])
+    used = sorted(a for a, ns in where[s["file"]].items() if any(lo <= n <= hi for n in ns))
+    return " ".join(used + (s.get("decorators") or []))
+
+
 def build_docs(repo: str, root: Path, ix: Index) -> list[dict]:
-    docs = []
+    docs, lines = [], {}
     for s in ix.data["symbols"]:
         if s["kind"] == "module":
             continue
         name_toks = f"{s['name']} {s['qualname']} " * 3
         docs.append({"repo": repo, "kind": "test" if s.get("is_test") else "symbol", "ref": s["id"], "path": s["file"],
                      "line": s["line"], "title": (s.get("sig") or s["qualname"]) if s["kind"] != "class" else f"class {s['qualname']}",
-                     "text": f"{name_toks} {s['file']} {s.get('sig') or ''} {s.get('doc') or ''} {ix.described(s) if not s.get('doc') else ''}"})
+                     "text": f"{name_toks} {s['file']} {s.get('sig') or ''} {s.get('doc') or ''} {ix.described(s) if not s.get('doc') else ''} "
+                             f"{_uses(root, ix, s, lines)}"})
     for path, f in ix.data["files"].items():
         if f["lang"] == "other":
             continue
@@ -180,29 +202,45 @@ class HttpProvider:
         self.base = (base_url or default).rstrip("/")
         self.name = f"{kind}:{model}"
 
+    RETRY_STATUS = (408, 409, 429, 500, 502, 503, 504, 529)   # rate limits, overload and server hiccups pass
+    RETRIES = 3
+
     def _post(self, path: str, body: dict, headers: dict) -> dict:
+        import time
         import urllib.error
         import urllib.request
         req = urllib.request.Request(self.base + path, data=json.dumps(body).encode(), method="POST",
                                      headers={"Content-Type": "application/json", "User-Agent": "devmem", **headers})
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as r:
-                return json.loads(r.read().decode("utf-8", "replace"))
-        except urllib.error.HTTPError as e:
-            detail = e.read().decode("utf-8", "replace")[:300]
+        for attempt in range(self.RETRIES + 1):
             try:
-                err = json.loads(detail).get("error")
-                detail = err.get("message", detail) if isinstance(err, dict) else (err or detail)
-            except (ValueError, AttributeError):
-                pass
-            raise RuntimeError(f"{self.kind} answered HTTP {e.code}: {detail}") from None
-        except (urllib.error.URLError, OSError) as e:
-            raise RuntimeError(f"cannot reach {self.base}: {getattr(e, 'reason', e)}") from None
+                with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                    return json.loads(r.read().decode("utf-8", "replace"))
+            except urllib.error.HTTPError as e:
+                if e.code in self.RETRY_STATUS and attempt < self.RETRIES:
+                    wait = (e.headers.get("retry-after") or "") if e.headers else ""
+                    time.sleep(min(float(wait), 30) if wait.replace(".", "", 1).isdigit() else 2 ** attempt)
+                    continue
+                detail = e.read().decode("utf-8", "replace")[:300]
+                try:
+                    err = json.loads(detail).get("error")
+                    detail = err.get("message", detail) if isinstance(err, dict) else (err or detail)
+                except (ValueError, AttributeError):
+                    pass
+                raise RuntimeError(f"{self.kind} answered HTTP {e.code}: {detail}") from None
+            except (urllib.error.URLError, OSError) as e:
+                # a timed-out answer is not sent again: the user would wait `timeout` several times over
+                if attempt < self.RETRIES and not isinstance(e, TimeoutError) and not isinstance(getattr(e, "reason", None), TimeoutError):
+                    time.sleep(2 ** attempt)
+                    continue
+                raise RuntimeError(f"cannot reach {self.base}: {getattr(e, 'reason', e)}") from None
+        raise AssertionError("unreachable")
 
     def generate(self, prompt: str) -> str:
         if self.kind == "anthropic":
-            r = self._post("/v1/messages", {"model": self.model, "max_tokens": 2048, "messages": [{"role": "user", "content": prompt}]},
+            r = self._post("/v1/messages", {"model": self.model, "max_tokens": 4096, "messages": [{"role": "user", "content": prompt}]},
                            {"x-api-key": self.key, "anthropic-version": "2023-06-01"})
+            if r.get("stop_reason") == "max_tokens":
+                raise RuntimeError("the answer was cut off at the token limit; send fewer items per request")
             return "".join(b.get("text", "") for b in r.get("content", []) if b.get("type") == "text").strip()
         if self.kind == "gemini":
             r = self._post(f"/models/{self.model}:generateContent", {"contents": [{"parts": [{"text": prompt}]}]}, {"x-goog-api-key": self.key})
@@ -227,6 +265,35 @@ class HttpProvider:
                 r = self._post("/embeddings", {"model": self.embed_model, "input": chunk}, {"Authorization": f"Bearer {self.key}"} if self.key else {})
                 out += [d["embedding"] for d in sorted(r["data"], key=lambda d: d.get("index", 0))]
         return out
+
+
+def json_list(reply: str) -> list | None:
+    """The JSON list of objects in a model's reply (code fences, prose and `[n]` citations around it are fine), or the list
+    inside a one-key object such as {"items": [...]}; None when there is none."""
+    dec = json.JSONDecoder()
+    for hit in re.finditer(r"[\[{]", reply):
+        try:
+            v = dec.raw_decode(reply, hit.start())[0]
+        except ValueError:
+            continue
+        if isinstance(v, dict) and len(v) == 1 and isinstance(next(iter(v.values())), list):
+            v = next(iter(v.values()))
+        if isinstance(v, list) and all(isinstance(x, dict) for x in v):
+            return v
+    return None
+
+
+def ask_json_list(provider, prompt: str) -> list:
+    """Ask for a JSON list; a reply without one is sent back once with the reason. Raises ValueError when both fail."""
+    reply = provider.generate(prompt)
+    got = json_list(reply)
+    if got is None:
+        reply = provider.generate(prompt + "\n\nYour previous reply was not the JSON list asked for:\n" + reply[:1500]
+                                  + "\n\nReply again with ONLY the JSON list.")
+        got = json_list(reply)
+    if got is None:
+        raise ValueError("the model did not reply with a JSON list")
+    return got
 
 
 _local: dict = {}

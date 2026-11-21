@@ -10,6 +10,7 @@ from pathlib import Path
 from devmem import reuse as core
 from devmem.index import Index
 
+from .chat import ask_json_list
 from .paths import devmem_home
 from .ranking import pagerank
 
@@ -114,9 +115,7 @@ def summarize(entries: list[dict], provider, batch: int = 12) -> int:
                   "Do not repeat the code. Reply with ONLY a JSON list: [{\"i\": 0, \"summary\": \"...\"}, ...]\n\n"
                   + "\n\n".join(f"### {n}\n{e['sig']}\n{e.get('doc', '')}\n{(e.get('code') or '')[:700]}" for n, e in enumerate(chunk)))
         try:
-            text = provider.generate(prompt).strip().strip("`")
-            text = text[text.index("["): text.rindex("]") + 1]
-            for item in json.loads(text):
+            for item in ask_json_list(provider, prompt):
                 cache[key(chunk[int(item["i"])])] = str(item["summary"])[:300]
         except Exception:
             continue   # a bad batch just stays unsummarized

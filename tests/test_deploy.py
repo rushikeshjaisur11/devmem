@@ -320,10 +320,10 @@ def test_ai_analysis_writes_once_resumes_and_feeds_publish_and_chat(tmp_path, ap
     assert again.state == "done" and len(llm.prompts) == n and again.total == 1 and sum(again.written.values()) == 0
 
     publish(root, idx, {})
-    ov = (root / ".devmem/knowledge/overview.md").read_text()
+    ov = (root / ".devmem/knowledge/overview.md").read_text(encoding="utf-8")
     assert "## What this repo does\n(AI-written, unreviewed) A small payments service" in ov            # labelled until a person approves it
     assert "modules/app.md — (AI-written, unreviewed) Handles ledger reconciliation part 0." in ov
-    assert "Handles ledger reconciliation part 0." in (root / ".devmem/knowledge/modules/app.md").read_text().splitlines()[2]
+    assert "Handles ledger reconciliation part 0." in (root / ".devmem/knowledge/modules/app.md").read_text(encoding="utf-8").splitlines()[2]
     hits = chat.retrieve("what does this repo do", {"conv_app": root})
     assert hits and hits[0]["kind"] == "overview" and "payments service" in hits[0]["snippet"]
 
