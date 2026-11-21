@@ -19,6 +19,7 @@ from devmem import reuse as core_reuse
 from devmem.index import Index
 
 from . import docs as docs_mod
+from .chat import ask_json_list
 from .definitions import TEST_FILE
 from .reuse import _entry, _internal_names
 from devmem.schema import atomic_write
@@ -303,8 +304,7 @@ def discover_with_ai(ix: Index, provider, max_libs: int = 6) -> dict:
                   "possibly empty: [{\"f\": 0, \"n\": 2, \"why\": \"one sentence: what the function does by hand and how the addition replaces it\"}]\n\n"
                   "ADDED IN NEWER RELEASES\n" + "\n".join(f"N{i}. {t}" for i, t in enumerate(feats)) + "\n\nFUNCTIONS\n" + "\n\n".join(parts))
         try:
-            reply = provider.generate(prompt)
-            for item in json.loads(reply[reply.index("["): reply.rindex("]") + 1]):
+            for item in ask_json_list(provider, prompt):
                 s, line = fns[int(item["f"])], feats[int(item["n"])]
                 if (s["id"], lib["name"]) in known:
                     continue
@@ -582,8 +582,7 @@ def verify_with_ai(ix: Index, keys: list[str], provider) -> dict:
                   "would not cover (custom logging, special cases), or \"nothing\". Reply with ONLY a JSON list: "
                   "[{\"i\": 0, \"verdict\": \"yes\" | \"no\", \"note\": \"...\"}]\n\n" + "\n\n".join(parts))
         try:
-            reply = provider.generate(prompt)
-            for item in json.loads(reply[reply.index("["): reply.rindex("]") + 1]):
+            for item in ask_json_list(provider, prompt):
                 f = chunk[int(item["i"])]
                 f["ai"] = {"verdict": "yes" if str(item.get("verdict", "")).lower().startswith("y") else "no", "note": " ".join(str(item.get("note", "")).split())[:240]}
         except Exception as e:

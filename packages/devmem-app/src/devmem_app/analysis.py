@@ -19,6 +19,7 @@ from pathlib import Path
 from devmem.index import Index
 
 from . import definitions as defs
+from .chat import ask_json_list
 from .publisher import _module_of
 from devmem.schema import atomic_write
 
@@ -155,10 +156,6 @@ class Job:
                 "written": self.written, "failed": self.failed, "error": self.error, "model": self.model}
 
 
-def _json_list(reply: str) -> list:
-    return json.loads(reply[reply.index("["): reply.rindex("]") + 1])
-
-
 def run(ix: Index, provider, steps: list[str], limit: int | None, job: Job) -> Job:
     job.model = getattr(provider, "name", "")
     weak = weak_symbols(ix, limit) if "describe" in steps else []
@@ -194,7 +191,7 @@ def run(ix: Index, provider, steps: list[str], limit: int | None, job: Job) -> J
                       "Reply with ONLY a JSON list: [{\"i\": 0, \"text\": \"...\"}, ...]\n\n"
                       + "\n\n".join(f"### {i}\n{inputs[m]}" for i, m in enumerate(chunk)))
             try:
-                for item in _json_list(provider.generate(prompt)):
+                for item in ask_json_list(provider, prompt):
                     m = chunk[int(item["i"])]
                     text = " ".join(str(item["text"]).split())[:MODULE_CHARS]
                     if text:

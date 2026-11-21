@@ -17,6 +17,8 @@ from devmem.index import Index, write_db
 from devmem.schema import DESC_PATH
 from devmem.schema import atomic_write
 
+from .chat import ask_json_list
+
 # names that say what kind of thing happens but not what it is done to
 GENERIC = {"get", "set", "run", "do", "go", "main", "handle", "handler", "process", "execute", "exec", "call", "apply", "invoke",
            "helper", "helpers", "util", "utils", "common", "misc", "data", "info", "item", "items", "obj", "object", "value", "values",
@@ -158,28 +160,35 @@ def describe_with_ai(ix: Index, ids: list[str], provider, batch: int = 8) -> dic
     todo = [ix.symbols[i] for i in dict.fromkeys(ids) if i in ix.symbols]
     entries = load(ix.root)
     written, failed, error = {}, [], ""
-    for n in range(0, len(todo), batch):
-        chunk = todo[n:n + batch]
-        prompt = ("You document code for a search index. For each item below write ONE plain sentence (max 25 words) saying what "
-                  "it does and why a developer would call it, then add up to 6 search words a person might use instead of the "
-                  "identifiers (synonyms, the problem it solves). Describe only what the code shows; if it is unclear, say what "
-                  "is visible rather than guessing. Reply with ONLY a JSON list: [{\"i\": 0, \"text\": \"sentence. Words: a, b, c\"}, ...]\n\n"
-                  + "\n\n".join(f"### {i}\n{_context(ix, s)}" for i, s in enumerate(chunk)))
-        try:
-            reply = provider.generate(prompt).strip()
-            got = json.loads(reply[reply.index("["): reply.rindex("]") + 1])
-            seen = set()
+    skipped: list[dict] = []   # items the model left out of an otherwise good answer get one more request
+    for attempt in range(2):
+        for n in range(0, len(todo), batch):
+            chunk = todo[n:n + batch]
+            prompt = ("You document code for a search index. For each item below write ONE plain sentence (max 25 words) saying what "
+                      "it does and why a developer would call it, then add up to 6 search words a person might use instead of the "
+                      "identifiers (synonyms, the problem it solves). Describe only what the code shows; if it is unclear, say what "
+                      "is visible rather than guessing. Reply with ONLY a JSON list: [{\"i\": 0, \"text\": \"sentence. Words: a, b, c\"}, ...]\n\n"
+                      + "\n\n".join(f"### {i}\n{_context(ix, s)}" for i, s in enumerate(chunk)))
+            try:
+                got = ask_json_list(provider, prompt)
+            except Exception as e:   # a bad reply or a network error leaves this batch undescribed
+                failed += [s["id"] for s in chunk]
+                error = str(e)[:300]
+                continue
             for item in got:
-                s = chunk[int(item["i"])]
-                text = " ".join(str(item["text"]).split())[:MAX_TEXT]
+                try:
+                    s = chunk[int(item["i"])]
+                except (KeyError, TypeError, ValueError, IndexError):
+                    continue   # one malformed item doesn't cost the rest of the batch
+                text = " ".join(str(item.get("text", "")).split())[:MAX_TEXT]
                 if text:
                     entries[s["id"]] = {"text": text, "by": "ai", "code": code_hash(ix, s), "fhash": _fhash(ix, s)}
                     written[s["id"]] = text
-                    seen.add(s["id"])
-            failed += [s["id"] for s in chunk if s["id"] not in seen]
-        except Exception as e:   # a bad reply or a network error leaves this batch undescribed
-            failed += [s["id"] for s in chunk]
-            error = str(e)[:300]
+            skipped += [s for s in chunk if s["id"] not in written]
+        if not skipped or attempt:
+            failed += [s["id"] for s in skipped]
+            break
+        todo, skipped = skipped, []
     if written:
         save(ix, entries)
     return {"written": written, "failed": failed, "error": error}
