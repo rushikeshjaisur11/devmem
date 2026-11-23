@@ -803,3 +803,22 @@ pre.prompt.open { max-height: none; }
 .tag-x:hover { background: var(--pill-bad-bg); color: var(--bad); }
 .btnlike { white-space: nowrap; }
 .btnlike .ico { width: 16px; height: 16px; flex: none; }
+
+/* Upgrades */
+.lib.unread { border-color: var(--accent); }
+.tag.warn { background: var(--pill-warn-bg); color: var(--pill-warn-ink); }
+.lib-use .tag button { margin-left: 6px; }
+.plan .prompt-text { white-space: pre-wrap; padding: 12px 16px; font: 13px/20px var(--mono); max-height: 60vh; }
+.plan .sources li { margin: 6px 0; overflow-wrap: anywhere; }
+.settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px 28px; padding: 12px 0 16px; border-bottom: 1px solid var(--line); margin-bottom: 12px; }
+.settings-grid > div:not(.settings-save) { display: grid; gap: 8px; align-content: start; }
+.settings-save { grid-column: 1 / -1; }
+.aff-list { display: grid; gap: 10px; }
+.aff { border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; }
+.aff .tags { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.aff-site { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 13px; margin-top: 4px; }
+.aff-site code { overflow-wrap: anywhere; }
+.settings-grid h4 { margin: 0; }
+.src-from { font-size: 12px; }
+@media (max-width: 760px) { .settings-grid { grid-template-columns: 1fr; } }
+.plan .seg { max-width: 100%; overflow-x: auto; }

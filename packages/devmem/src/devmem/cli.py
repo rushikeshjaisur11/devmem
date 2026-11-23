@@ -395,6 +395,36 @@ def cmd_docs(ix: Index, a) -> int:
     return 0
 
 
+def cmd_upgrade(ix: Index, a) -> int:
+    """Upgrade prompts devmem-app prepared for this repo (`.devmem/upgrades/`): offline, no network."""
+    import json
+    import re as _re
+    d = ix.root / ".devmem/upgrades"
+    plans = sorted(d.glob("*.json")) if d.is_dir() else []
+    if not a.lib:
+        if not plans:
+            print("no upgrade plans here. Someone with network runs `devmem-app upgrade <repo> <library>` (or uses the Upgrades page) and publishes.")
+            print("Without one: read `.devmem/knowledge/libraries.md` for what is behind, and `devmem docs \"upgrade notes\" --lib <library>`.")
+            return 0
+        for f in plans:
+            try:
+                p = json.loads(f.read_text(encoding="utf-8"))
+            except ValueError:
+                continue
+            print(f"{p['lib']}: {p.get('from') or '?'} -> {p['to']} ({p.get('level', '?')}), {len(p.get('affected', []))} change(s) name code here, "
+                  f"{p.get('usage', {}).get('sites', 0)} line(s) use it; prepared {p.get('ts', '')[:10]}  ->  devmem upgrade {p['lib']}")
+        return 0
+    slug = _re.sub(r"[^a-z0-9]+", "-", a.lib.lower().lstrip("@")).strip("-")
+    md = d / f"{slug}.md"
+    if not md.exists():
+        have = ", ".join(f.stem for f in plans) or "none"
+        print(f"no upgrade plan for {a.lib} (plans here: {have}). Ask for one: `devmem-app upgrade <repo> {a.lib}`; meanwhile "
+              f"`devmem docs \"upgrade notes\" --lib {slug}` may have the release notes.")
+        return 1
+    print(md.read_text(encoding="utf-8"))
+    return 0
+
+
 def cmd_hub(ix: Index, a) -> int:
     from . import hub
     s = hub.spec(ix.root)
@@ -548,6 +578,8 @@ def run(argv=None, via: str = "cli", root=None) -> int:
     s.add_argument("query", nargs="?"); s.add_argument("--lib", help="only this library"); s.add_argument("--list", action="store_true")
     s.add_argument("--for", dest="for_", metavar="FILE|SYMBOL", help="latest docs for the libraries this file or symbol uses")
     s.add_argument("-n", "--limit", type=int, default=4); s.add_argument("--chars", type=int, default=1100); s.set_defaults(fn=cmd_docs)
+    s = sub.add_parser("upgrade", help="the prepared prompt for upgrading a library here (version bump, what changed, the code it touches, tests)")
+    s.add_argument("lib", nargs="?", help="library name; omit to list the prepared upgrades"); s.set_defaults(fn=cmd_upgrade)
     s = sub.add_parser("hub", help="central knowledge repo of all onboarded repos: sync | status | repos | show <repo>")
     s.add_argument("action", choices=["sync", "status", "repos", "show"]); s.add_argument("repo", nargs="?")
     s.add_argument("--chars", type=int, default=6000); s.set_defaults(fn=cmd_hub)

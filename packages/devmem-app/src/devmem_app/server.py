@@ -1622,6 +1622,16 @@ def create_app() -> FastAPI:
                             "text": f"graphify-out/ in the repo ({left['files']} files, {left['bytes'] // 1024} KB) was left by an older devmem and is no longer used",
                             "action": {"label": "Delete it", "url": f"/api/repos/{name}/graphify-leftover",
                                        "confirm": f"Delete {left['path']}? devmem no longer reads it."}})
+        from . import releases as rel
+        onboarded = ws()["repos"]
+        for e in [e for e in rel.load()["events"] if not e.get("read")][:20]:
+            users = [r for r, b in (e.get("behind") or {}).items() if b not in ("none", None) and r in onboarded]
+            if not users:
+                continue
+            flag = "security fixes" if e["summary"].get("security") else "breaking changes" if e["level"] == "major" or e["summary"].get("breaking") else ""
+            out.append({"level": "warn" if flag else "info", "repo": users[0] if len(users) == 1 else None, "page": "upgrades",
+                        "text": f"{e['name']} {e['to']} released ({e['level']}{', ' + flag if flag else ''}): {', '.join(users[:4])} "
+                                f"{'uses' if len(users) == 1 else 'use'} an older version; prepare an upgrade prompt"})
         for lib in dm.list_libs():
             if (lib.get("age_days") or 0) > 120:
                 out.append({"level": "warn", "repo": None, "text": f"{lib['name']} docs are {lib['age_days']} days old: refresh them", "page": "docs"})
@@ -1633,7 +1643,7 @@ def create_app() -> FastAPI:
         for d in diagnostics(50):            # things that failed quietly in the last day: once each, newest first
             if d["ts"] >= day_ago and (d["area"], d["repo"], d["message"]) not in seen:
                 seen.add((d["area"], d["repo"], d["message"]))
-                out.append({"level": "warn", "repo": d["repo"] or None, "text": f"{d['area']}: {d['message']}", "page": {"docs": "docs", "sonar": "integrations"}.get(d["area"], "repos")})
+                out.append({"level": "warn", "repo": d["repo"] or None, "text": f"{d['area']}: {d['message']}", "page": {"docs": "docs", "sonar": "integrations", "releases": "upgrades", "upgrade": "upgrades"}.get(d["area"], "repos")})
         return sorted(out, key=lambda x: rank[x["level"]])
 
     @app.delete("/api/repos/{name}/graphify-leftover")
@@ -1655,6 +1665,107 @@ def create_app() -> FastAPI:
     def docs_upgrade_notes(body: UpgradeIn):
         from . import docs as dm
         return dm.add_upgrade_notes(root_of(body.repo))
+
+    # ---------- releases and upgrades ----------
+    class ReleaseCheck(BaseModel):
+        names: list[str] | None = None
+
+    class ReleaseSettings(BaseModel):
+        interval_hours: int | None = None
+        webhook: str | None = None
+        auto_plan: bool | None = None
+        refresh_docs: bool | None = None
+
+    class ReadIn(BaseModel):
+        ids: list[str] | None = None        # None = every event
+
+    @app.get("/api/releases")
+    def releases_status():
+        from . import releases
+        return releases.status(ws()["repos"])
+
+    @app.post("/api/releases/check")
+    def releases_check(body: ReleaseCheck = ReleaseCheck(), background: bool = False):
+        from . import releases
+        return maybe_job(background, "releases", "", lambda: releases.check(ws()["repos"], body.names or None, log=stage))
+
+    @app.put("/api/releases/settings")
+    def releases_settings(body: ReleaseSettings):
+        from . import releases
+        try:
+            return releases.save_settings(body.model_dump())
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+
+    @app.post("/api/releases/read")
+    def releases_read(body: ReadIn = ReadIn()):
+        from . import releases
+        return {"marked": releases.mark_read(body.ids)}
+
+    class UpgradeReq(BaseModel):
+        lib: str
+        to: str | None = None
+        search: bool = True             # also search the web for migration guides (only the library name and versions are sent)
+        ai: bool = False                # let the configured model suggest the edits from the notes and this repo's call sites
+
+    @app.get("/api/repos/{name}/upgrades")
+    def upgrade_candidates(name: str, refresh: bool = False):
+        from . import upgrade as up
+        try:
+            return {"libs": up.candidates(ix_of(name), online=refresh)}
+        except Exception as e:
+            raise HTTPException(502 if refresh else 500, f"could not read the latest versions: {e}")
+
+    @app.post("/api/repos/{name}/upgrades")
+    def upgrade_plan(name: str, body: UpgradeReq, background: bool = False):
+        from . import upgrade as up
+        root = root_of(name)
+        prov = None
+        if body.ai:
+            prov = chat_mod.provider_from_env()
+            if prov is None:
+                raise HTTPException(409, "no AI model is set up: open AI setup, or untick the model option")
+
+        def _work():
+            try:
+                return up.plan(root, body.lib, body.to or None, body.search, prov, progress=stage, ix=ix_of(name))
+            except (LookupError, ValueError) as e:
+                raise HTTPException(422, str(e))
+        return maybe_job(background, "upgrade", name, _work)
+
+    @app.get("/api/repos/{name}/upgrades/{lib:path}")
+    def upgrade_saved(name: str, lib: str):
+        from . import upgrade as up
+        d = up.load(root_of(name), lib)
+        if not d:
+            raise HTTPException(404, f"no upgrade plan for {lib} yet")
+        return d
+
+    class SearchSettings(BaseModel):
+        provider: str | None = None
+        url: str | None = None
+        cx: str | None = None
+        api_key: str | None = None      # "" keeps the stored key
+
+    @app.get("/api/settings/search")
+    def search_settings():
+        from . import websearch
+        return websearch.public()
+
+    @app.put("/api/settings/search")
+    def search_settings_save(body: SearchSettings):
+        from . import websearch
+        websearch.save(body.model_dump(exclude_unset=True))
+        return websearch.public()
+
+    @app.post("/api/settings/search/test")
+    def search_settings_test():
+        from . import websearch
+        try:
+            hits = websearch.search("python requests library documentation", 3)
+        except websearch.SearchError as e:
+            raise HTTPException(502, str(e))
+        return {"ok": bool(hits), "results": hits}
 
     # ---------- chat ----------
     class Chat(BaseModel):

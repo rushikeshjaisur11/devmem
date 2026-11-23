@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 LOG = ".devmem/usage.jsonl"
-LOGGED = {"context", "find", "show", "outline", "impact", "recall", "reuse", "docs", "helpers", "tests-for", "hygiene", "plan", "gaps", "review"}
+LOGGED = {"context", "find", "show", "outline", "impact", "recall", "reuse", "docs", "helpers", "tests-for", "hygiene", "plan", "gaps", "review", "upgrade"}
 BASELINE = {"context", "find", "show", "outline", "impact", "recall", "reuse", "docs", "helpers", "hygiene"}   # answers that replace reading files
 _PATH = re.compile(r"[\w@.\-/]+\.[A-Za-z0-9]+")
 

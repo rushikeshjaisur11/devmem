@@ -26,12 +26,15 @@ def docs_dir() -> Path:
     return devmem_home() / "docs"
 
 
-def get(url: str, timeout: int = 30, accept: str = "text/markdown, text/plain, text/html;q=0.8, application/json;q=0.8") -> str:
+REGISTRY_MAX = 60_000_000   # a registry's JSON for a project with thousands of release files (sqlalchemy, boto3) is tens of MB
+
+
+def get(url: str, timeout: int = 30, accept: str = "text/markdown, text/plain, text/html;q=0.8, application/json;q=0.8", limit: int = 3_000_000) -> str:
     if not re.match(r"^https?://", url):
         raise ValueError(f"only http(s) URLs are supported: {url}")
     req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": accept})
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        raw = r.read(3_000_000)
+        raw = r.read(limit)
         enc = r.headers.get_content_charset() or "utf-8"
     return raw.decode(enc, errors="replace")
 
@@ -130,55 +133,111 @@ def _try(url: str) -> str | None:
         return None
 
 
+def _llms_from_site(base: str, follow: bool, max_pages: int) -> list[tuple[str, str, str]]:
+    base = base.rstrip("/") + "/"
+    for cand in ("llms-full.txt", "llms.txt"):
+        t = _try(urllib.parse.urljoin(base, cand))
+        if t and not looks_html(t) and len(t) > 80:
+            return _from_llms(urllib.parse.urljoin(base, cand), t, follow, max_pages)
+    return []
+
+
+def from_package(eco: str, pkg: str, want: str = "", follow: bool = True, max_pages: int = 40) -> dict:
+    """A package's docs from where they are written, not from the registry: the git repository at the release's tag (README,
+    docs tree, migration guides, changelog), then the docs site (its llms.txt, else a short crawl), and only when both give
+    nothing the README the registry shows. The registry is asked only for the version and the project's links."""
+    from . import sources
+    meta = sources.package_meta(eco, pkg, want)
+    version, repo = meta["version"], meta["repo"]
+    used, errors, git_pages, site_pages, ref = [], [], [], [], ""
+    if repo:
+        try:
+            got = sources.git_docs(repo, version, pkg, max_pages)
+            git_pages, ref = got["pages"], got["ref"]
+            if git_pages:
+                used.append(f"git {repo['web']} @ {ref}" + ("" if got["tagged"] else f" (no tag for {version}: default branch)"))
+        except Exception as e:
+            errors.append(f"git: {str(e)[:160]}")
+    guides = [pg for pg in git_pages if not re.search(r"readme|changelog|changes|history", pg[1].rsplit("/", 1)[-1], re.I)]
+    if meta["docs_url"] and len(guides) < 3:      # the repository has little prose: the docs site is the source
+        try:
+            site_pages = _llms_from_site(meta["docs_url"], follow, max_pages)
+            if site_pages:
+                used.append(f"llms.txt {meta['docs_url']}")
+            else:
+                from .sources import crawl
+                site_pages = crawl(meta["docs_url"], min(max_pages, 15))
+                if site_pages:
+                    used.append(f"site {meta['docs_url']}")
+        except Exception as e:
+            errors.append(f"site: {str(e)[:160]}")
+    links = [f"- Source: {repo['web']}" + (f" (tag {ref})" if ref and ref != "HEAD" else "") if repo else "",
+             f"- Docs: {meta['docs_url']}" if meta["docs_url"] else "", f"- Registry: {meta['registry_url']}"]
+    overview = f"# {meta['name']} {version}\n\n{meta['summary']}\n\n" + "\n".join(x for x in links if x)
+    if not git_pages and not site_pages:          # nothing better: the README the registry shows
+        overview += "\n\n" + (meta.get("readme") or "")
+        if eco == "npm" and not meta.get("readme"):
+            qp = urllib.parse.quote(pkg, safe="@")
+            for cdn in (f"https://unpkg.com/{qp}@{version}/README.md", f"https://cdn.jsdelivr.net/npm/{qp}@{version}/README.md"):
+                readme = _try(cdn) or ""
+                if readme:
+                    overview += readme
+                    break
+        used.append(f"registry {meta['registry_url']}")
+    readme, rest = git_pages[:1], git_pages[1:]
+    pages = [(f"{pkg} {version}: overview", meta["registry_url"], overview)] + readme + site_pages + rest
+    return {"name": _norm(pkg) if eco == "pypi" else _slug(pkg.lstrip("@")), "version": version, "pages": pages,
+            "extra": {"repo": repo["web"] if repo else "", "ref": ref, "docs_url": meta["docs_url"] or "", "sources": used, "errors": errors,
+                      "released": meta.get("released", "")}}
+
+
+def from_git(spec: str, max_pages: int = 60) -> dict:
+    """`git:<clone url>[#ref]` or `github:owner/repo[@ref]`: the docs in a repository, at a tag or branch."""
+    from . import sources
+    body, ref = spec.split(":", 1)[1].strip(), None
+    if spec.startswith("github:"):
+        body, _, r = body.partition("@")
+        body, ref = f"https://github.com/{body}", r or None
+    elif "#" in body:
+        body, ref = body.split("#", 1)
+    repo = sources.norm_repo(body) or (sources.norm_repo(body + ".git") if not body.endswith(".git") else None)
+    if not repo and (body.startswith("file://") or Path(body).expanduser().is_dir()):     # a local clone or mirror
+        loc = body if body.startswith("file://") else Path(body).expanduser().resolve().as_uri()
+        repo = {"git": loc, "web": loc, "host": "local", "path": loc.rstrip("/").rsplit("/", 1)[-1].removesuffix(".git"), "subdir": ""}
+    if not repo:
+        raise ValueError(f"not a git repository URL: {body}")
+    got = sources.git_docs(repo, "", "", max_pages, ref=ref)
+    if not got["pages"]:
+        raise RuntimeError(f"no documentation files (README, docs/, guides, changelog) in {repo['web']}")
+    version = re.sub(r"^v(?=\d)", "", ref or "") if ref and re.search(r"\d", ref) else ""
+    return {"name": _slug(repo["path"].split("/")[-1]), "version": version, "pages": got["pages"],
+            "extra": {"repo": repo["web"], "ref": got["ref"], "sources": [f"git {repo['web']} @ {got['ref']}"]}}
+
+
 def add(spec: str, name: str | None = None, follow: bool = True, max_pages: int = 40, dest: Path | None = None) -> dict:
-    """spec: an llms.txt / llms-full.txt / web page URL, `pypi:<pkg>[==ver]`, `npm:<pkg>[@ver]`, or a local file/folder of docs.
-    Without a version the latest release is fetched; with one, that release (for a repo that cannot upgrade yet)."""
+    """spec: `pypi:<pkg>[==ver]`, `npm:<pkg>[@ver]`, `git:<clone url>[#ref]`, `github:owner/repo[@ref]`, an llms.txt /
+    llms-full.txt / web page URL, or a local file/folder of docs. Packages are read from their git repository and docs site
+    (see from_package); without a version the latest release is fetched, with one that release (for a repo that cannot
+    upgrade yet)."""
     pages: list[tuple[str, str, str]] = []   # (title, url, markdown)
-    version, kind = "", "url"
-    local = Path(spec).expanduser() if not re.match(r"^(https?|pypi|npm):", spec) else None
+    version, kind, extra = "", "url", {}
+    local = Path(spec).expanduser() if not re.match(r"^(https?|pypi|npm|git|github):", spec) else None
     if local and local.exists():
         kind, spec = "local", str(local.resolve())
         pages = _from_local(local.resolve(), max(max_pages, 200))   # a local folder is usually a whole docs tree; MAX_LIB still caps it
         name = name or _slug(local.stem if local.is_file() else local.name)
-    elif spec.startswith("pypi:"):
-        pkg, _, want = spec[5:].strip().partition("==")
-        info = json.loads(get(f"https://pypi.org/pypi/{urllib.parse.quote(pkg)}/{urllib.parse.quote(want) + '/' if want else ''}json"))["info"]
-        name, version, kind = name or _norm(pkg), info.get("version", ""), "pypi"
-        pages.append((f"{pkg} {version}: overview", f"https://pypi.org/project/{pkg}/", f"# {info.get('name')} {version}\n\n{info.get('summary') or ''}\n\n{info.get('description') or ''}"))
-        urls = info.get("project_urls") or {}
-        docs = next((v for k, v in urls.items() if re.search(r"doc", k, re.I)), None) or info.get("home_page") or next(iter(urls.values()), None)
-        if docs:
-            base = docs.rstrip("/") + "/"
-            for cand in ("llms-full.txt", "llms.txt"):
-                t = _try(urllib.parse.urljoin(base, cand))
-                if t and not looks_html(t):
-                    spec_llms = (urllib.parse.urljoin(base, cand), t)
-                    break
-            else:
-                spec_llms = None
-            if spec_llms:
-                pages += _from_llms(spec_llms[0], spec_llms[1], follow, max_pages)
-    elif spec.startswith("npm:"):
-        pkg, want = spec[4:].strip(), ""
-        if "@" in pkg[1:]:   # npm:zod@3.22.4, npm:@scope/pkg@1.0
+    elif spec.startswith(("pypi:", "npm:")):
+        eco, pkg = spec.split(":", 1)
+        pkg, want = pkg.strip(), ""
+        if eco == "pypi":
+            pkg, _, want = pkg.partition("==")
+        elif "@" in pkg[1:]:   # npm:zod@3.22.4, npm:@scope/pkg@1.0
             pkg, want = pkg[0] + pkg[1:].split("@", 1)[0], pkg[1:].split("@", 1)[1]
-        qp = urllib.parse.quote(pkg, safe="@")
-        meta = json.loads(get(f"https://registry.npmjs.org/{qp}/{urllib.parse.quote(want) if want else 'latest'}"))   # the full packument can be many MB
-        version = meta.get("version", "")
-        name, kind = name or _slug(pkg.lstrip("@")), "npm"
-        readme = ""
-        for cdn in (f"https://unpkg.com/{qp}@{version}/README.md", f"https://cdn.jsdelivr.net/npm/{qp}@{version}/README.md"):
-            readme = _try(cdn) or ""
-            if readme:
-                break
-        pages.append((f"{pkg} {version}: readme", f"https://www.npmjs.com/package/{pkg}", f"# {pkg} {version}\n\n{meta.get('description') or ''}\n\n{readme or meta.get('readme') or ''}"))
-        home = meta.get("homepage")
-        if home and home.startswith("http"):
-            for cand in ("llms-full.txt", "llms.txt"):
-                t = _try(urllib.parse.urljoin(home.rstrip("/") + "/", cand))
-                if t and not looks_html(t):
-                    pages += _from_llms(urllib.parse.urljoin(home.rstrip("/") + "/", cand), t, follow, max_pages)
-                    break
+        got = from_package(eco, pkg, want, follow, max_pages)
+        name, version, kind, pages, extra = name or got["name"], got["version"], eco, got["pages"], got["extra"]
+    elif spec.startswith(("git:", "github:")):
+        got = from_git(spec, max(max_pages, 60))
+        name, version, kind, pages, extra = name or got["name"], got["version"], "git", got["pages"], got["extra"]
     else:
         text = get(spec)
         if spec.rstrip("/").endswith("llms.txt") or spec.rstrip("/").endswith("llms-full.txt"):
@@ -194,7 +253,7 @@ def add(spec: str, name: str | None = None, follow: bool = True, max_pages: int 
             name = name or _default_name(spec)
     if not pages:
         raise RuntimeError(f"nothing fetched from {spec}")
-    return _save(name or _slug(spec), spec, kind, version, pages, follow, max_pages, dest)
+    return _save(name or _slug(spec), spec, kind, version, pages, follow, max_pages, dest, extra)
 
 
 LOCAL_EXT = {".md", ".mdx", ".markdown", ".txt", ".rst", ".html", ".htm"}
@@ -234,7 +293,8 @@ def _from_llms(url: str, text: str, follow: bool, max_pages: int) -> list[tuple[
     return pages
 
 
-def _save(name: str, spec: str, kind: str, version: str, pages: list[tuple[str, str, str]], follow: bool, max_pages: int, dest: Path | None) -> dict:
+def _save(name: str, spec: str, kind: str, version: str, pages: list[tuple[str, str, str]], follow: bool, max_pages: int, dest: Path | None,
+          extra: dict | None = None) -> dict:
     d = (dest or docs_dir()) / name
     shutil.rmtree(d, ignore_errors=True)
     d.mkdir(parents=True)
@@ -243,12 +303,13 @@ def _save(name: str, spec: str, kind: str, version: str, pages: list[tuple[str, 
         body = f"<!-- source: {url} -->\n{md[:MAX_PAGE]}\n"
         if total + len(body) > MAX_LIB:
             break
+        title = " ".join(title.split()).strip(" —-") or url
         fn = f"{i:02d}-{_slug(title)}.md"
         (d / fn).write_text(body, encoding="utf-8")
         total += len(body)
-        meta.append({"file": fn, "url": url, "title": title[:120], "sha1": hashlib.sha1(md.encode()).hexdigest()[:12]})
+        meta.append({"file": fn, "url": url, "title": " ".join(title.split())[:120], "sha1": hashlib.sha1(md.encode()).hexdigest()[:12]})
     man = {"name": name, "source": spec, "kind": kind, "version": version, "fetched": time.strftime("%Y-%m-%d"), "pages": meta,
-           "bytes": total, "follow": follow, "max_pages": max_pages}
+           "bytes": total, "follow": follow, "max_pages": max_pages, **{k: v for k, v in (extra or {}).items() if v}}
     (d / "manifest.json").write_text(json.dumps(man, indent=1), encoding="utf-8")
     return man
 
@@ -258,7 +319,8 @@ def list_libs(base: Path | None = None) -> list[dict]:
     out = []
     for m in sorted((base or docs_dir()).glob("*/manifest.json")):
         man = json.loads(m.read_text(encoding="utf-8"))
-        out.append({**{k: man.get(k) for k in ("name", "source", "kind", "version", "fetched", "bytes")}, "pages": len(man.get("pages", [])), "age_days": core.age_days(man)})
+        out.append({**{k: man.get(k) for k in ("name", "source", "kind", "version", "fetched", "bytes")}, "pages": len(man.get("pages", [])), "age_days": core.age_days(man),
+                    **{k: man[k] for k in ("repo", "ref", "docs_url", "sources", "errors") if man.get(k)}})
     return out
 
 
@@ -281,7 +343,7 @@ def refresh(names: list[str] | None = None) -> dict:
     return res
 
 
-ONLINE = ("url", "pypi", "npm")
+ONLINE = ("url", "pypi", "npm", "git", "llms")
 
 
 def refresh_days() -> int:
@@ -394,7 +456,7 @@ def scan_deps(root: Path) -> list[dict]:
 def latest_version(eco: str, name: str) -> str | None:
     try:
         if eco == "pypi":
-            return json.loads(get(f"https://pypi.org/pypi/{urllib.parse.quote(name)}/json", 10))["info"]["version"]
+            return json.loads(get(f"https://pypi.org/pypi/{urllib.parse.quote(name)}/json", 20, limit=REGISTRY_MAX))["info"]["version"]
         return json.loads(get(f"https://registry.npmjs.org/{urllib.parse.quote(name, safe='@')}/latest", 10)).get("version")
     except Exception:
         return None
@@ -444,7 +506,7 @@ def write_libs(root: Path, online: bool = True) -> list[dict]:
     return rows
 
 
-def render_libraries_md(rows: list[dict]) -> str:
+def render_libraries_md(rows: list[dict], plans: list[str] | None = None) -> str:
     out = ["# Libraries", "What this repo depends on and how current it is. **For a new requirement, check the library's CURRENT docs "
            "(`devmem docs \"<need>\"`) before copying older code in this or other repos; prefer built-in features of the latest "
            "version over hand-written helpers.** Rows marked behind use an older API surface than the latest release.", "",
@@ -452,6 +514,8 @@ def render_libraries_md(rows: list[dict]) -> str:
     order = {"major": 0, "minor": 1, "unpinned": 2, "unknown": 3, "current": 4}
     for r in sorted(rows, key=lambda r: (order.get(r["behind"], 5), r["name"]))[:60]:
         out.append(f"| {r['name']} ({r['eco']}) | {r['spec'] or '-'} | {r['latest'] or '?'} | {r['behind']} | {'yes' if r['docs'] else 'no'} |")
+    if plans:
+        out += ["", f"**Upgrade prompts prepared** for {', '.join(plans)}: `devmem upgrade <library>` prints the steps, what changed and the code it touches."]
     return "\n".join(out)
 
 
@@ -470,13 +534,13 @@ def copy_relevant(root: Path) -> list[str]:
 # ---------- upgrade notes: what changed between the version a repo uses and the latest ----------
 def _ver(s: str) -> tuple:
     m = re.search(r"(\d+(?:\.\d+)*)", s or "")
-    return tuple(int(x) for x in m.group(1).split(".")[:3]) + (0, 0, 0) if m else ()
+    return (tuple(int(x) for x in m.group(1).split(".")[:3]) + (0, 0, 0))[:3] if m else ()   # "1.10" == "1.10.0"
 
 
 def source_repo(eco: str, name: str) -> str | None:
     """owner/repo on GitHub for a package, from its PyPI project URLs or npm `repository`."""
     if eco == "pypi":
-        info = json.loads(get(f"https://pypi.org/pypi/{urllib.parse.quote(name)}/json", 15))["info"]
+        info = json.loads(get(f"https://pypi.org/pypi/{urllib.parse.quote(name)}/json", 20, limit=REGISTRY_MAX))["info"]
         urls = list((info.get("project_urls") or {}).values()) + [info.get("home_page") or ""]
     else:
         meta = json.loads(get(f"https://registry.npmjs.org/{urllib.parse.quote(name, safe='@')}/latest", 15))

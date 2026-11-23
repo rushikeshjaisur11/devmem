@@ -1,15 +1,18 @@
 import { useState } from "react";
 import { api, q } from "../api";
+import { nav } from "../route";
 import { Badge, Empty, Err, fmtBytes, Icon, Menu, useAsync, useConfig, useRepo } from "../components";
 import { UploadBox } from "../UploadBox";
 
 const EXAMPLES: [string, string, string][] = [
-  ["Python package", "pypi:pydantic", "latest release; pypi:pydantic==1.10.13 for a fixed one"],
-  ["npm package", "npm:zod", "latest release; npm:zod@3.22.4 for a fixed one"],
+  ["Python package", "pypi:pydantic", "read from its git repo at the release tag; pypi:pydantic==1.10.13 for a fixed one"],
+  ["npm package", "npm:zod", "read from its git repo at the release tag; npm:zod@3.22.4 for a fixed one"],
+  ["Git repository", "github:encode/httpx@0.28.1", "README, docs/ and guides at a tag; or git:<any clone URL>#<ref>"],
   ["llms.txt", "https://docs.example.dev/llms.txt", "the best source when the library publishes one"],
   ["Any docs page", "https://docs.example.dev/guide/", "a single page, converted to text"],
 ];
-const KIND: Record<string, [string, string]> = { pypi: ["PyPI", "globe"], npm: ["npm", "globe"], url: ["Web", "globe"], local: ["Folder", "folder"], upload: ["Upload", "upload"] };
+const KIND: Record<string, [string, string]> = { pypi: ["PyPI", "globe"], npm: ["npm", "globe"], git: ["Git", "git"], llms: ["llms.txt", "globe"], url: ["Web", "globe"], local: ["Folder", "folder"], upload: ["Upload", "upload"] };
+const ONLINE = ["url", "pypi", "npm", "git", "llms"];
 
 export default function Docs(_: any) {
   const libs = useAsync<any[]>(() => api.get("/api/docs"), []);
@@ -44,7 +47,7 @@ export default function Docs(_: any) {
   return (
     <>
       <h1>Library docs</h1>
-      <p className="sub">Agents usually cannot browse the web, so they write against whatever API the old code in the repo uses. Put the current documentation here once; Publish copies it into each repo that uses the library, and agents search it offline with <code>devmem docs</code>.</p>
+      <p className="sub">Agents usually cannot browse the web, so they write against whatever API the old code in the repo uses. Put the current documentation here once; Publish copies it into each repo that uses the library, and agents search it offline with <code>devmem docs</code>. Packages are read from where their docs are written: the project's git repository at the release's tag, then its docs site; the registry's README is only the fallback.</p>
       <Err msg={libs.error || err} />
       {msg && <div className="ok">{msg}</div>}
 
@@ -58,7 +61,7 @@ export default function Docs(_: any) {
         {src === "web" && (
           <>
             <div className="row">
-              <input className="grow" placeholder="pypi:pydantic, npm:zod, or https://docs.example.dev/llms.txt" value={spec} onChange={(e) => setSpec(e.target.value)} onKeyDown={(e) => e.key === "Enter" && spec.trim() && busy !== "add" && run("add", () => api.post("/api/docs", { spec, follow }), added)} aria-label="Package or address" />
+              <input className="grow" placeholder="pypi:pydantic, npm:zod, github:owner/repo, or https://docs.example.dev/llms.txt" value={spec} onChange={(e) => setSpec(e.target.value)} onKeyDown={(e) => e.key === "Enter" && spec.trim() && busy !== "add" && run("add", () => api.post("/api/docs", { spec, follow }), added)} aria-label="Package or address" />
               <button className="primary" disabled={!spec.trim() || busy === "add"} onClick={() => run("add", () => api.post("/api/docs", { spec, follow }), added)}><Icon name="download" />{busy === "add" ? "Fetching…" : "Fetch docs"}</button>
             </div>
             <label className="row" style={{ marginTop: 10 }} title="For an llms.txt index: also fetch the pages it links to (up to 40)"><input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} />Also fetch the pages an <code>llms.txt</code> links to</label>
@@ -98,6 +101,7 @@ export default function Docs(_: any) {
                 <option value={1}>every day</option><option value={7}>every week</option><option value={30}>every month</option><option value={0}>never</option>
               </select>
             </label>
+            <button className="ghost" onClick={() => nav("upgrades")} title="New releases of the libraries your repos use, and step-by-step upgrade prompts">Upgrades</button>
             <button disabled={!!busy || !list.length || !repo} title="Release notes between the version this repo uses and the latest, saved with each library's docs"
               onClick={() => run("notes", () => api.post("/api/docs/upgrade-notes", { repo }), (r) => Object.keys(r).length ? Object.entries(r).map(([k, v]) => `${k}: ${v}`).join("; ") + ". Publish the repo to ship them." : `${repo} is on the latest version of every library with docs here.`)}>
               {busy === "notes" ? "Fetching…" : `Get upgrade notes for ${repo || "a repo"}`}</button>
@@ -111,10 +115,11 @@ export default function Docs(_: any) {
               <tr key={l.name}>
                 <td><b>{l.name}</b></td>
                 <td className="mono">{l.version || <span className="muted">-</span>}</td>
-                <td>{l.age_days > 120 ? <Badge kind="warn">{l.age_days} days old</Badge> : <Badge kind="good">{l.age_days <= 1 ? "today" : `${l.age_days} days ago`}</Badge>}{["url", "pypi", "npm"].includes(l.kind) && (auto.data?.refresh_days ?? 7) > 0 && <div className="muted" style={{ fontSize: 12 }}>auto-refresh on</div>}</td>
+                <td>{l.age_days > 120 ? <Badge kind="warn">{l.age_days} days old</Badge> : <Badge kind="good">{l.age_days <= 1 ? "today" : `${l.age_days} days ago`}</Badge>}{ONLINE.includes(l.kind) && (auto.data?.refresh_days ?? 7) > 0 && <div className="muted" style={{ fontSize: 12 }}>auto-refresh on</div>}</td>
                 <td className="num">{l.pages}</td>
                 <td className="num">{l.bytes ? fmtBytes(l.bytes) : "-"}</td>
-                <td><span className="tag" title={l.source}><Icon name={(KIND[l.kind] || KIND.url)[1]} /> {(KIND[l.kind] || KIND.url)[0]}</span> <span className="mono muted src">{String(l.source).replace(/^(uploaded: |https?:\/\/)/, "")}</span></td>
+                <td><span className="tag" title={l.source}><Icon name={(KIND[l.kind] || KIND.url)[1]} /> {(KIND[l.kind] || KIND.url)[0]}</span> <span className="mono muted src">{String(l.source).replace(/^(uploaded: |https?:\/\/)/, "")}</span>
+                  {l.sources?.length > 0 && <div className="muted src-from" title={l.sources.join("\n")}>from {l.sources.map((x: string) => x.split(" ")[0]).join(" + ")}{l.ref && l.ref !== "HEAD" ? ` @ ${l.ref}` : ""}</div>}</td>
                 <td><div className="row actions"><Menu label={`Actions for ${l.name}`} disabled={!!busy} items={[
                   ...(l.kind !== "upload" ? [{ label: "Refresh now", icon: "refresh", hint: l.kind === "local" ? "read the folder again" : "fetch the current version", onClick: () => run("rf" + l.name, () => api.post("/api/docs/refresh", { names: [l.name] }), (r: any) => `${l.name}: ${r[l.name] ?? "refreshed"}`) }] : []),
                   { label: "Remove", icon: "trash", danger: true, hint: "agents keep the copy already published in repos", onClick: () => { if (confirm(`Remove the ${l.name} docs?`)) run("rm" + l.name, () => api.del(`/api/docs/${l.name}`), () => `Removed ${l.name}.`); } },

@@ -259,7 +259,8 @@ def publish(root: str | Path, idx: dict, peers: dict | None = None) -> list[str]
         docsmod.write_libs(root, online=False)
     if lp.exists():
         try:
-            _write(root, f"{k}/libraries.md", docsmod.render_libraries_md(json.loads(lp.read_text(encoding="utf-8"))), commit, written)
+            plans = sorted(json.loads(f.read_text(encoding="utf-8")).get("lib", f.stem) for f in (root / ".devmem/upgrades").glob("*.json"))
+            _write(root, f"{k}/libraries.md", docsmod.render_libraries_md(json.loads(lp.read_text(encoding="utf-8")), plans), commit, written)
         except ValueError:
             pass
     got = docsmod.copy_relevant(root)

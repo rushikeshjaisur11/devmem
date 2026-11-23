@@ -9,7 +9,9 @@ files, and builds prompts for the agent that will do the work.
 - **Cross-repo reuse**: find what other repos already built, rated by effort to adapt; share it through a central **hub** git repo.
   **Cross-repo impact**: "what breaks if" also lists the functions in other onboarded repos that call, subclass or type-hint
   the symbol (live in the app; in `devmem impact` as of the last publish, from `.devmem/consumers.json`).
-- **Library docs** (llms.txt, web pages, PyPI, npm, or a local docs folder) fetched where there is internet and shipped to agents that have none; reuse
+- **Library docs** read from where they are written: a package's git repository at its release tag (README, `docs/`, migration guides,
+  changelog), then its docs site (llms.txt, else a short crawl); PyPI/npm only say which version is current. Also any git URL, web page or
+  local folder. Fetched where there is internet and shipped to agents that have none; reuse
   suggestions are checked against them and flagged `MODERNIZE` when code hand-rolls what a library now provides.
 - **Chat** (web UI): ask your repos, or describe something new / paste a plan and get a compact prompt for another agent.
 - **Guards**: `devmem diffcheck` blocks oversized, out-of-scope or test-weakening diffs, and renames or signature changes that leave callers, subclasses or type hints behind; lessons and rules (added by agents, or by you in the UI) persist what was learned.
@@ -104,7 +106,9 @@ FakePayments"*, scope it to `tests/**`, and choose *Only this repo* or *Every re
 when they touch matching files; `**` rules apply to every task. Hub rules reach repos on *Sync hub*. Lessons work the same way: agents
 save them with `devmem remember` in their PRs, you edit or promote them here.
 
-**4. Add the docs your code depends on.** Docs fetched from the web re-fetch themselves while devmem runs (weekly by default; set it
+**4. Add the docs your code depends on.** `pypi:<pkg>` and `npm:<pkg>` are read from the project's git repository at the tag of
+that release (one shallow, sparse clone: no API and no rate limit, any git host), then from its docs site; the registry's README is
+only the fallback. `github:owner/repo@tag` or `git:<clone URL>#<ref>` read any repository directly. Docs fetched from the web re-fetch themselves while devmem runs (weekly by default; set it
 on the page or with `DEVMEM_DOCS_REFRESH_DAYS`), and the copies in published repos are updated.  In **Library docs**, fetch `pypi:pydantic`, `npm:zod` or `https://<docs-site>/llms.txt`, or
 upload a folder or `.zip` of your own guides (Markdown, text, HTML); a local folder such as `C:\docs\internal-api` also works. Publish the repo again. Agents can search them offline (`devmem docs "validate an email"`), and whenever they `show` code that
 imports one of these libraries, the matching section of the latest docs is listed with it.
@@ -158,6 +162,19 @@ exploitable; each SAST finding points at the line where the data is used and say
 (`--report-format sarif`), CodeQL, Semgrep and any other scanner that writes **SARIF 2.1.0** are imported with *Import SARIF*,
 `devmem-app sarif <repo> <file>`, or by leaving the `.sarif` file at the repo root, where every re-index picks it up. Rule
 descriptions from the report are shown with each finding.
+
+**Upgrade a library without guessing.** **Upgrades** watches every library your repos depend on (every 12 hours while the app runs,
+or `devmem-app releases check` from cron). A new release shows up with its size (major / minor / patch), its breaking changes, security
+fixes and highlights, and the repos still on an older version; the docs on file move to the new version, and an optional webhook
+(Slack, Teams, Discord) gets a message. *Build upgrade prompt* gathers, for one library of one repo: the exact dependency line and the
+new constraint, the lockfile command (`uv`, `poetry`, `pip`, `npm`, `pnpm`, `yarn`, `bun`), the release notes or changelog between the
+two versions (GitHub releases, the releases feed, or the changelog in the repository), the project's own migration guide, what a web
+search finds about this upgrade (DuckDuckGo with no key, or SearXNG, Brave, Tavily, Google; only the name and versions are sent), and
+every line in the repo that uses the library, including lines one import away that call a removed method on a model built on it. Each
+breaking or deprecated note that names code the repo uses is listed with those lines, most important first, and the prompt tells the
+agent to bump, install, fix those lines, run the tests that reach them and `devmem diffcheck`. With a model set up it can also suggest
+the concrete edits. The prompt is saved in `.devmem/upgrades/<lib>.md` and the gathered notes as a page of the library's docs, so after
+a publish an offline agent runs `devmem upgrade <lib>` and `devmem docs "<api>" --lib <lib>`. devmem still edits no code.
 
 **Stop maintaining what a library already does.** **Modernize** scans every function for code written by hand that the language, a
 library you already use, or a well-known library provides: a retry loop with sleep (`tenacity`), a dict used as a cache
@@ -231,7 +248,8 @@ in the repo: it checks every layer, down to a real MCP round trip, and prints th
 - **Hub (recommended with several repos)**: `devmem-app hub set git@github.com:acme/devmem-hub.git`, then `devmem-app hub push --push`.
   `publish` writes the URL to `.devmem/hub.txt` (or set `DEVMEM_HUB`); agents run `devmem hub sync` and `devmem reuse "<need>"`. With no
   hub or no access they fall back to the catalog committed in the repo. Agents need git read access to the hub.
-- **Library docs**: `devmem-app docs add https://docs.example.dev/llms.txt` (or a page URL, `pypi:<pkg>`, `npm:<pkg>`, a local file or folder), `docs refresh`,
+- **Library docs**: `devmem-app docs add pypi:<pkg>` / `npm:<pkg>` (read from the git repository at the release tag, then the docs site),
+  `github:owner/repo@tag`, `git:<clone URL>#<ref>`, an llms.txt or page URL, or a local file or folder; `docs refresh`,
   `devmem-app libs <repo>` (declared vs latest versions). Docs ship via `hub push` and `publish`; agents search them with `devmem docs`.
   When an agent opens code (`devmem show`, `recall`), devmem lists the latest docs section for each library that code imports, so
   edits follow the current API rather than the older pattern in the file; `devmem docs --for <file|symbol>` prints those sections.
@@ -256,6 +274,7 @@ in the repo: it checks every layer, down to a real MCP round trip, and prints th
 | `add`, `index`, `publish`, `ui`, `watch` | onboard, re-index, write knowledge into a repo, web UI, re-index when HEAD moves |
 | `reuse`, `prompt`, `ask`, `find` | cross-repo reuse, agent prompts, retrieval across repos |
 | `hub set/push/status`, `docs add/list/refresh/remove/upgrade-notes`, `libs` | central hub, library docs, upgrade notes, dependency freshness |
+| `releases check/list/events/read`, `upgrade <repo> [lib]` | release watcher; upgrade prompt for one library (`--to`, `--no-search`, `--ai`) |
 | `hygiene`, `clones`, `verify`, `flaky`, `impact-column`, `schema`, `memory`, `metrics` | lint/dead-code/complexity, duplicates, test commands, lineage, lessons, PR metrics |
 
 | `devmem` (agents, offline) | |
@@ -265,6 +284,7 @@ in the repo: it checks every layer, down to a real MCP round trip, and prints th
 | `mcp` | the same commands as MCP tools over stdio |
 | `recall`, `remember`, `feedback` | lessons, rules and cross-repo pointers for a task |
 | `reuse`, `docs`, `hub`, `plan` | other repos' code, current library docs, the central hub, step-by-step plan briefs |
+| `upgrade [lib]` | the prepared upgrade prompt: dependency line, what changed, the lines it touches, tests |
 | `tests-for`, `check`, `diffcheck`, `hygiene`, `report` | affected tests, lint/types, minimal-diff guard, PR metrics |
 | `review`, `gaps` | PR summary with blast radius and untested changes; untested code with many callers |
 | `connect`, `doctor` | register devmem with coding agents in this repo (MCP + AGENTS.md); check that agents can use it, with fixes |
