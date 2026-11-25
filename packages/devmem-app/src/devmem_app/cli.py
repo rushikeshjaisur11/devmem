@@ -82,6 +82,7 @@ def _main(argv=None) -> int:
                    help="address to listen on; anything but 127.0.0.1 (e.g. 0.0.0.0 on a server) turns on sign-in with an access token "
                         "(DEVMEM_TOKEN, or one is generated and printed)")
     s.add_argument("--no-watch", action="store_true", help="do not re-index repos whose HEAD moved while the app runs")
+    s.add_argument("--no-release-watch", action="store_true", help="do not check the registries for new releases of the libraries your repos use")
     s.add_argument("--publish", action="store_true", help="watcher also publishes after re-indexing")
     s = sub.add_parser("watch", help="re-index onboarded repos whenever their HEAD moves (pull, merge, commit, branch switch)")
     s.add_argument("--interval", type=int, default=60, help="seconds between checks"); s.add_argument("--publish", action="store_true")
@@ -95,10 +96,20 @@ def _main(argv=None) -> int:
     s.add_argument("--summarize", action="store_true", help="have the configured LLM (Vertex) describe each function so offline search matches by meaning")
     s.add_argument("--prune", action="store_true", help="remove repos from the hub that are no longer onboarded")
     s.add_argument("--per-repo", type=int, default=400)
-    s = sub.add_parser("docs", help="library docs for offline agents: add <llms.txt|url|pypi:pkg|npm:pkg|local path> | list | refresh [name..] | remove <name>")
+    s = sub.add_parser("docs", help="library docs for offline agents: add <pypi:pkg|npm:pkg|github:owner/repo[@tag]|git:<url>[#ref]|llms.txt|url|local path> "
+                                    "| list | refresh [name..] | remove <name>; packages are read from their git repository and docs site")
     s.add_argument("action", choices=["add", "list", "refresh", "remove", "upgrade-notes"]); s.add_argument("args", nargs="*")
     s.add_argument("--name"); s.add_argument("--no-follow", action="store_true", help="llms.txt: do not fetch the pages it links to")
     s.add_argument("--max-pages", type=int, default=40)
+    s = sub.add_parser("releases", help="release watcher: check | list | events | read  (new releases of the libraries your repos use)")
+    s.add_argument("action", choices=["check", "list", "events", "read"]); s.add_argument("names", nargs="*", help="only these packages (check)")
+    s.add_argument("--json", action="store_true")
+    s = sub.add_parser("upgrade", help="build an upgrade prompt for one library of a repo: version bump, what changed, the code it touches, tests")
+    s.add_argument("repo", help="onboarded repo name"); s.add_argument("lib", nargs="?", help="package name (omit to list what is behind)")
+    s.add_argument("--to", help="target version (default: the latest release)")
+    s.add_argument("--no-search", action="store_true", help="do not search the web for migration guides")
+    s.add_argument("--ai", action="store_true", help="let the configured model suggest the edits from the notes and the repo's call sites")
+    s.add_argument("--quiet", action="store_true", help="do not print the prompt (it is saved in .devmem/upgrades/<lib>.md)")
     s = sub.add_parser("libs", help="what a repo depends on vs the latest releases (needs internet); feeds knowledge/libraries.md on publish")
     s.add_argument("repo", help="onboarded repo name"); s.add_argument("--offline", action="store_true")
     s = sub.add_parser("prompt", help="build a prompt for another agent from a requirement or your plan (read-only; nothing is written to any repo)")
@@ -305,6 +316,9 @@ def _main(argv=None) -> int:
                     print(f"docs refresh failed: {e}", flush=True)
                 time.sleep(6 * 3600)
         threading.Thread(target=keep_docs_fresh, daemon=True).start()
+        if not a.no_release_watch:
+            from . import releases
+            releases.start(lambda: _ws()["repos"], log=lambda m: print(m, flush=True))
         uvicorn.run("devmem_app.server:app", host=a.host, port=a.port, log_level="warning",
                     proxy_headers=True, forwarded_allow_ips=os.environ.get("FORWARDED_ALLOW_IPS", "127.0.0.1"))
     elif a.cmd == "watch":
@@ -328,10 +342,14 @@ def _main(argv=None) -> int:
         from . import docs as dm
         if a.action == "add":
             if not a.args:
-                sys.exit("usage: devmem-app docs add <llms.txt-url | page-url | pypi:pkg | npm:pkg | local file or folder>")
+                sys.exit("usage: devmem-app docs add <pypi:pkg | npm:pkg | github:owner/repo[@tag] | git:<url>[#ref] | llms.txt-url | page-url | local file or folder>")
             for spec in a.args:
                 m = dm.add(spec, a.name if len(a.args) == 1 else None, not a.no_follow, a.max_pages)
                 print(f"{m['name']} {m['version']}: {len(m['pages'])} pages, {m['bytes'] // 1024} KB")
+                for src in m.get("sources", []):
+                    print(f"  from {src}")
+                for err in m.get("errors", []):
+                    print(f"  note: {err}", file=sys.stderr)
         elif a.action == "list":
             for m in dm.list_libs():
                 print(f"{m['name']} {m['version'] or ''}  fetched {m['fetched']} ({m['age_days']}d)  {m['pages']} pages  <- {m['source']}")
@@ -346,6 +364,66 @@ def _main(argv=None) -> int:
             print("publish the repo to ship them to its agents")
         else:
             print("removed" if a.args and dm.remove(a.args[0]) else "not found")
+    elif a.cmd == "releases":
+        from . import releases
+        repos = _ws()["repos"]
+        if a.action == "check":
+            r = releases.check(repos, a.names or None, log=lambda m: print(f"new: {m}"))
+            if a.json:
+                print(json.dumps(r, indent=1))
+            else:
+                print(f"checked {r['checked']} packages: {len(r['new'])} new release(s)" + (f"; {len(r['errors'])} could not be read" if r["errors"] else ""))
+                for k, v in r["errors"].items():
+                    print(f"  {k}: {v}", file=sys.stderr)
+                for k, v in r["refreshed"].items():
+                    print(f"  docs {k}: {v}")
+                for k, v in r["planned"].items():
+                    print(f"  upgrade plan {k}: {v}")
+                if r["webhook"]:
+                    print(f"  {r['webhook']}")
+        elif a.action == "read":
+            print(f"marked {releases.mark_read(None)} event(s) read")
+        else:
+            st = releases.status(repos)
+            if a.json:
+                print(json.dumps(st[a.action if a.action == "events" else "libs"], indent=1))
+            elif a.action == "events":
+                for e in st["events"][:40]:
+                    print(f"{e['seen_at'][:10]}  {e['name']} {e['from']} -> {e['to']} ({e['level']})  repos: {', '.join(f'{r}@{v}' for r, v in e['repos'].items()) or '-'}"
+                          + ("  [unread]" if not e.get("read") else ""))
+                    for line in (e["summary"].get("security", []) + e["summary"].get("breaking", []))[:4]:
+                        print(f"    ! {line[:150]}")
+            else:
+                print(f"last check: {st['last_check'] or 'never'} (every {st['settings']['interval_hours']}h inside devmem-app ui)")
+                for l in st["libs"]:
+                    print(f"{l['name']} ({l['eco']}) latest {l['latest']}" + "".join(f"  {r}@{v}{' [' + l['behind'][r] + ']' if r in l['behind'] else ''}" for r, v in l["repos"].items()))
+    elif a.cmd == "upgrade":
+        from . import upgrade as up
+        repos = _ws()["repos"]
+        if a.repo not in repos:
+            sys.exit(f"unknown repo {a.repo}")
+        root = Path(repos[a.repo])
+        if not a.lib:
+            for c in up.candidates(Index.load(root), online=True):
+                print(f"{c['name']} ({c['eco']}) {c['using'] or c['spec'] or 'unpinned'} -> {c['latest']}  [{c['level']}]  used in {c['files']} file(s)"
+                      + (f"  plan: {c['plan']['to']} ({c['plan']['affected']} change(s) touch the code)" if c["plan"] else ""))
+            return 0
+        prov = None
+        if a.ai:
+            from .chat import provider_from_env
+            prov = provider_from_env()
+            if prov is None:
+                sys.exit("no AI model is set up (devmem-app ui -> AI setup, or DEVMEM_AI_PROVIDER + key)")
+        try:
+            d = up.plan(root, a.lib, a.to, not a.no_search, prov, progress=lambda m: print(f"... {m}", file=sys.stderr))
+        except (LookupError, ValueError) as e:
+            sys.exit(str(e))
+        if not a.quiet:
+            print(d["prompt"])
+        print(f"--- {d['lib']} {d['from'] or '?'} -> {d['to']} ({d['level']}): {len(d['affected'])} change(s) name code this repo uses, "
+              f"{d['usage']['sites']} line(s) use it; notes from {d['notes']['source'] or 'nowhere'}"
+              + (f"; web: {d['web']['error']}" if d["web"]["error"] and not a.no_search else f"; {len(d['web']['pages'])} web page(s)" if not a.no_search else "")
+              + f"; ~{d['tokens']} tokens. Saved to .devmem/upgrades/; publish so agents can run `devmem upgrade {d['lib']}`.", file=sys.stderr)
     elif a.cmd == "libs":
         from . import docs as dm
         repos = _ws()["repos"]

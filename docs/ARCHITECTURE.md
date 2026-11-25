@@ -70,7 +70,8 @@ Budgets in `knowledge.py`: `AGENTS.md` index 300 tokens, `map.md` 1,500, any oth
 | Where | What |
 | --- | --- |
 | `<repo>/.devmem/` | index, knowledge, lessons (`failures.jsonl`, `feedback.jsonl`), `flaky.txt`, `no-touch.txt`, `hub.txt`; reviewed like code |
-| `~/.devmem` (`DEVMEM_HOME`) | workspace, library-docs store, hub clone, `clones/<name>`, `uploads/<name>` (repos onboarded by upload), `settings.json` (AI provider and key) |
+| `~/.devmem` (`DEVMEM_HOME`) | workspace, library-docs store, hub clone, `clones/<name>`, `uploads/<name>` (repos onboarded by upload), `settings.json` (AI provider and key, web search, release watcher), `releases.json` (last version seen per package, release events) |
+| `<repo>/.devmem/upgrades/` | `<lib>.md` upgrade prompt and `<lib>.json` its data; read offline by `devmem upgrade` |
 | hub git repo | every repo's reuse catalog and library docs, so agents can find code other repos already wrote |
 
 ## Where to start reading
@@ -85,6 +86,12 @@ Budgets in `knowledge.py`: `AGENTS.md` index 300 tokens, `map.md` 1,500, any oth
 - Optional AI pass: `devmem_app/analysis.py` (descriptions in bulk, module summaries, overview; background job with progress) -> `.devmem/analysis.json`, read by `publisher.py` and `chat.py`
 - Code health: `devmem_app/hygiene.py` (built-in tools), `sonar.py` (SonarQube Web API, read-only -> `.devmem/sonar.json`), `checkmarx.py` (Checkmarx One API, read-only -> `.devmem/checkmarx.json`), `sarif.py` (any SARIF 2.1.0 report -> `.devmem/sarif.json`), `explain.py` (what each rule means), `health.py` (merges them all, maps findings to symbols, ranks by severity x callers x tested)
 - Prompts for agents: `devmem_app/prompts.py` (fix / file / test / duplicate prompts in one fixed shape, with code, callers and the test command), `implement.py` (task and plan prompts)
+- Library docs and release history from their source: `devmem_app/sources.py` (registry metadata only for the version and links;
+  shallow blob-less sparse `git clone` at the release tag for README / docs / guides / changelog; GitHub releases API, releases feed,
+  changelog parsing), used by `docs.py` (`from_package`, `from_git`)
+- Upgrades: `devmem_app/releases.py` (watcher: registry polling, events, docs refresh, webhook; thread in `devmem-app ui`),
+  `upgrade.py` (dependency lines, notes classification, usage + note-driven call-site scan, affected changes, prompt),
+  `websearch.py` (DuckDuckGo / SearXNG / Brave / Tavily / Google)
 - Modernize: `devmem_app/modernize.py` (pattern catalog `RULES`, docs match, declared runtime versions and dependencies -> `.devmem/modernize.json`); add a rule there to teach it a new pattern
 - Freshness of answers: `Index.read` / `file_state` (devmem/index.py) re-locate symbols in files changed since indexing; `schema.atomic_write`, `paths.repo_lock`, `paths.diagnose`
 - Measured coverage: `devmem_app/coverage_import.py` -> `.devmem/coverage.json`, read by `Index` (impact, tests_for_files) and `review.gaps`
